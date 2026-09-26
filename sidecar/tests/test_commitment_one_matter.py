@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from protagine.commitments import extract
 from protagine.commitments.extract import owner_reminder, record_items
 from protagine.commitments.store import CommitmentStore
@@ -304,3 +306,31 @@ def test_a_similar_new_item_never_moves_a_different_listed_one(tmp_path):
     assert {row["id"]: row["due_at"][:16] for row in _open(store) if row["id"] in {q3["id"], lease["id"]}} == {
         q3["id"]: _at(60)[:16], lease["id"]: _at(60)[:16]}
     assert [c.type for c in _candidates(store, 61) if c.source_id == q3["id"]] == ["commitment_reminder"]
+
+
+@pytest.mark.parametrize("item, word", [
+    ("Send p-41 invoice 123", "Remind me to send p-41 invoice 456"),
+    ("Send p-05 the Q3 report", "Remind me about the p-05 Q4 report"),
+    ("File form W-2 for p-05", "Remind me to file form W-4 for p-05"),
+])
+def test_a_reminder_about_another_numbered_document_is_its_own_item(tmp_path, item, word):
+    """Two identifiers are two matters: a reminder is never folded into an item it names another number or id
+    of, in the same turn or against a listed row."""
+    counterpart = "p-41" if "p-41" in item else "p-05"
+    store = CommitmentStore(tmp_path / "c.db")
+    result = _record(store, [_create(item, _at(60), counterpart=counterpart),
+                             _reminder(word, _at(60), counterpart=counterpart)])
+    assert result["folded"] == 0 and sorted(row["description"] for row in _open(store)) == sorted([item, word])
+    listed_store = CommitmentStore(tmp_path / "listed.db")
+    row = listed_store.create(person_id=OWNER, description=item, due_at=_at(90), source_type="cognition",
+                              metadata={"counterpart": counterpart, "obligor": "owner"})
+    result = _record(listed_store, [_reminder(word, _at(60), counterpart=counterpart)], existing=[row])
+    assert result["folded"] == 0 and len(_open(listed_store)) == 2
+
+
+def test_a_reminder_naming_the_same_number_still_folds(tmp_path):
+    store = CommitmentStore(tmp_path / "c.db")
+    result = _record(store, [_create("Send p-41 invoice 123", _at(60), counterpart="p-41"),
+                             _reminder("Remind me to send p-41 invoice 123", _at(60), counterpart="p-41")])
+    row, = _open(store)
+    assert result["folded"] == 1 and row["description"] == "Send p-41 invoice 123"

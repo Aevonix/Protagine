@@ -611,16 +611,30 @@ def _matter_words(description: Any, parties: set) -> set:
             if len(word) >= 3 and not word.isdigit() and word not in _MATTER_STOP and word not in names}
 
 
+# A number or an id ("invoice 123", "the Q3 report", "form W-2"): a token that holds a digit.
+_IDENTIFIER = re.compile(r"[^\W_]+(?:[-./#:][^\W_]+)*")
+
+
+def _identifiers(description: Any, parties: set) -> set:
+    """The numbers and ids an item names, its parties' own ids ("p-41") aside: which document, which invoice.
+    ``_matter_words`` leaves them out, so they are compared here on their own."""
+    names = {token for name in parties for token in _IDENTIFIER.findall(str(name).casefold())}
+    return {token for token in _IDENTIFIER.findall(str(description or "").casefold())
+            if any(char.isdigit() for char in token) and token not in names}
+
+
 def _adds_no_matter(word: tuple, item: tuple) -> bool:
     """A word's (description, parties) is about an item's matter and adds none of its own: a party of one is
-    a party of, or named by, the other, and every matter word of the word is one of the item's. "Remind me to
-    pay p-41 the floor plan deposit" adds the deposit to "Send p-41 the floor plan": two matters."""
+    a party of, or named by, the other, every matter word of the word is one of the item's, and so is every
+    number or id it names. "Remind me to pay p-41 the floor plan deposit" adds the deposit to "Send p-41 the
+    floor plan", and "Remind me to send p-41 invoice 456" invoice 456 to "Send p-41 invoice 123": two matters."""
     (word_text, word_parties), (item_text, item_parties) = word, item
     named = (bool(word_parties & item_parties) or any(_names(name, item_text) for name in word_parties)
              or any(_names(name, word_text) for name in item_parties))
     both = word_parties | item_parties
     mine = _matter_words(word_text, both)
-    return named and bool(mine) and mine <= _matter_words(item_text, both)
+    return (named and bool(mine) and mine <= _matter_words(item_text, both)
+            and _identifiers(word_text, both) <= _identifiers(item_text, both))
 
 
 def _word_to_owner(kind: Any, obligor: Any, source_type: Any) -> bool:
