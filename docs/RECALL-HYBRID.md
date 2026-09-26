@@ -185,7 +185,9 @@ nothing) and the listed commitments' previous deadlines. A line is a record's
 only by identity: it carries the commitment's `id=`, or the claim's id or the
 `turn:` of the source that stated it. Shared subject words, or the same value on
 another record's line, never count. A record's line counts when it carries the
-old value without the current one.
+old value without the current one, or a note whose value the record has since
+replaced (a deadline moved twice), or, on a commitment line, a due other than
+the current one.
 
 The host replays earlier turns' context as it was. The sidecar keeps, per
 conversation and in memory only, what it served; when a value served earlier has

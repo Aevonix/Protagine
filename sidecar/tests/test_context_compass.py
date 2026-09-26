@@ -393,3 +393,22 @@ def test_a_changed_claim_marks_only_lines_from_its_own_record():
     ])), ContextSection(id="protagine-stances", title="Your recorded views", body="- The corner office is too loud.")]
     lines = body_of(compass.annotate_superseded(sections, [record])).split("\n")
     assert [compass.MARKER in line for line in lines] == [True, False, True, False, False]
+
+
+def test_a_second_reschedule_corrects_a_value_first_served_as_a_correction():
+    """Finding 2: a value a note introduced is superseded in turn."""
+    a, b, c = "2026-09-21T09:00:00+00:00", "2026-09-25T09:00:00+00:00", "2026-09-29T09:00:00+00:00"
+    key = ("viewer", "s-1")
+    first = compass.commitment_reschedules([commitment("c-1", "Send the form", b, a)])
+    served = compass.annotate_superseded([ContextSection(id="protagine-commitments", title="Pending Commitments",
+                                                         body=commitment_line("c-1", "Send the form", a))], first)
+    compass.SERVED.remember(key, body_of(served))
+    second = compass.commitment_reschedules([commitment("c-1", "Send the form", c, b)])
+    assert f'rescheduled to "{c}"' in compass.SERVED.corrections(key, second)
+    # The same through a served correction line: its note carried B, and B is now old.
+    compass.SERVED.clear()
+    compass.SERVED.remember(key, commitment_line("c-1", "Send the form", a))
+    note = compass.SERVED.corrections(key, first)
+    assert f'rescheduled to "{b}"' in note
+    compass.SERVED.remember(key, note)
+    assert f'rescheduled to "{c}"' in compass.SERVED.corrections(key, second)

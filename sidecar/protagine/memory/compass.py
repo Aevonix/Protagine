@@ -377,10 +377,30 @@ class Superseded:
 
     def note(self) -> str:
         date = f" since {self.since[:10]}" if self.since else ""
+        value = json.dumps(self.current, ensure_ascii=False)
         if self.kind == "rescheduled":
-            return f'{MARKER} rescheduled to "{self.current}"{date}]' if self.current else f"{MARKER} due time removed{date}]"
+            return f"{MARKER} rescheduled to {value}{date}]" if self.current else f"{MARKER} due time removed{date}]"
         verb = "corrected to" if self.kind == "corrected" else "now"
-        return f'{MARKER} {verb} "{self.current}"{date}]'
+        return f"{MARKER} {verb} {value}{date}]"
+
+
+# A note states a value as current; a later record can supersede that value in turn.
+_NOTE = re.compile(r'\s*\[superseded: (?:(?:now|corrected to|rescheduled to) ("(?:[^"\\]|\\.)*")|due time removed)'
+                   r'(?: since [^\]]*)?\]')
+
+
+def _notes(line: str) -> tuple[str, list[str]]:
+    """``line`` without its notes, and the values its notes state as current."""
+    values = []
+
+    def take(match):
+        literal = match.group(1)
+        try:
+            values.append(json.loads(literal) if literal else "")
+        except ValueError:
+            values.append(literal[1:-1])
+        return ""
+    return _NOTE.sub(take, line), values
 
 
 def _normal(value: str) -> str:
@@ -409,16 +429,31 @@ def _carries(line: str, record: Superseded) -> bool:
     return pattern is not None and bool(pattern.search(line))
 
 
-def asserts_superseded(line: str, record: Superseded) -> bool:
-    """``line`` is ``record``'s (it carries the record's identity) and states ``record.old`` as it stands: the old
-    value without the current one and without a note."""
-    if MARKER in line or not _carries(line, record):
-        return False
-    old = _pattern(record.old)
-    if old is None or not old.search(line):
-        return False
+def _same(value: str, other: str) -> bool:
+    return _normal(value) == _normal(other)
+
+
+def line_state(line: str, record: Superseded) -> str | None:
+    """``"current"`` when ``line`` is ``record``'s (it carries the record's identity) and shows the current value, in
+    its words or in a note; ``"stale"`` when it is the record's and shows a value the record replaced, in its words
+    or as a note's current value; otherwise ``None``."""
+    if not _carries(line, record):
+        return None
+    text, notes = _notes(line)
     current = _pattern(record.current)
-    return current is None or not current.search(line)
+    if any(_same(value, record.current) for value in notes) or (current is not None and current.search(text)):
+        return "current"
+    old = _pattern(record.old)
+    shown = (old is not None and bool(old.search(text))) or any(_same(value, record.old) for value in notes)
+    if not shown and record.kind == "rescheduled":
+        due = _DUE.search(text)  # a commitment line's own due field: any due but the current one is replaced
+        shown = due is not None and not _same(due.group(1), record.current)
+    return "stale" if shown else None
+
+
+def asserts_superseded(line: str, record: Superseded) -> bool:
+    """``line`` is ``record``'s and shows a value the record has replaced, with no note of the current one."""
+    return line_state(line, record) == "stale"
 
 
 def annotate_superseded(sections: list, records: list[Superseded], *, per_line: int = 2) -> list:
