@@ -749,11 +749,11 @@ def _tick_output(rows, cases):
 
 DEAD_VALUE_BASIS = (
     'Secondary, report-only: in the last agent model request of each episode whose artifacts forbid a value, the '
-    'lines of the injected memory context that show, outside a "[superseded" note, a value an artifact forbids '
-    'while the line (its notes included) shows none of the values that same artifact expects; a note answers only '
-    'for the artifact whose expected value it states, and an artifact that expects no value counts its forbidden '
-    'value wherever it is shown. JSON escapes are read as the characters they stand for. Read from the private trace; no trace text is '
-    'copied.')
+    'lines of the injected memory context that show, outside a "[superseded" note, more of the values an artifact '
+    'forbids than the line answers: each note stating one of that artifact\'s expected values answers one, and each '
+    'of its fields whose expected value the line itself shows answers one; one field\'s answer never covers '
+    'another\'s, and an artifact that expects no value counts its forbidden values wherever shown. JSON escapes are '
+    'read as the characters they stand for. Read from the private trace; no trace text is copied.')
 _MEMORY_CONTEXT = re.compile(r'<memory-context>(.*?)</memory-context>', re.S)
 _SUPERSEDED_NOTE = re.compile(r'\[superseded(?: id=[^\s\]"]+?)?:(?:[^\]"]|"(?:[^"\\]|\\.)*")*\]')
 
@@ -791,12 +791,13 @@ def _dead_values(directory, members):
         case = (member or {}).get('case') or {}
         specs = [spec for spec in (case.get('oracle') or {}).get('artifacts', [])
                  if isinstance(spec, dict) and spec.get('forbidden')]
-        # Each artifact pairs its forbidden values with its own expected ones: a note stating one artifact's
-        # expected value says nothing about another artifact's forbidden value on the same line.
+        # Each artifact pairs its forbidden values with its own fields' expected values: a note stating one
+        # artifact's expected value says nothing about another artifact's forbidden value on the same line.
         pairs = [({value.casefold() for value in spec['forbidden'] if isinstance(value, str) and value.strip()},
-                  {value.casefold() for item in spec.get('assertions', [])
+                  [expected for item in spec.get('assertions', [])
                    if isinstance(item, dict) and item.get('op') == 'label_one_of'
-                   for value in item.get('value', []) if isinstance(value, str) and len(value.strip()) >= 3})
+                   for expected in [{value.casefold() for value in item.get('value', [])
+                                     if isinstance(value, str) and len(value.strip()) >= 3}] if expected])
                  for spec in specs]
         pairs = [(forbidden, expected) for forbidden, expected in pairs if forbidden]
         if not pairs or not case.get('id'):
@@ -828,9 +829,20 @@ def _dead_values(directory, members):
             continue
         observed += 1
         def dead(line):
+            # Every forbidden value the line shows needs its own answer: a note stating one of the artifact's
+            # expected values, or a field whose expected value the line itself shows. One field's answer never
+            # covers another field's stale value; two notes answer two versions of one field.
+            notes = _SUPERSEDED_NOTE.findall(line)
             bare = _SUPERSEDED_NOTE.sub(' ', line)
-            return any(any(value in bare for value in forbidden) and not any(value in line for value in expected)
-                       for forbidden, expected in pairs)
+            for forbidden, fields in pairs:
+                shown = sum(value in bare for value in forbidden)
+                if not shown:
+                    continue
+                answers = (sum(any(value in note for field in fields for value in field) for note in notes)
+                           + sum(any(value in bare for value in field) for field in fields))
+                if shown > answers:
+                    return True
+            return False
         count = sum(1 for text in blocks for line in (_unescaped(raw).casefold() for raw in text.split('\n'))
                     if dead(line))
         lines += count

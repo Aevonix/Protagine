@@ -254,3 +254,28 @@ def test_a_note_naming_its_record_is_read_as_a_note(tmp_path):
             'Review [superseded id=c-1: rescheduled to "Friday, was Tuesday"]')
     member = dead_value_member(tmp_path, [spec('tuesday', 'thursday')], line)
     assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 0
+
+
+def fields_spec(forbidden, *expected):
+    """One artifact forbidding several values, with one expected-value assertion per field."""
+    return {'path': 'answer.json', 'forbidden': list(forbidden),
+            'assertions': [{'path': [f'field{n}'], 'op': 'label_one_of', 'value': list(values)}
+                           for n, values in enumerate(expected)]}
+
+
+def test_each_shown_superseded_value_needs_its_own_answer_within_one_artifact(tmp_path):
+    """Round 3, finding 8: one field's expected value never answers for another field's stale value."""
+    artifact = fields_spec(['locker 42', 'blue door', 'tuesday'], ['locker 43'], ['green door'], ['thursday'])
+    line = 'Locker 42, the blue door, every Tuesday.'
+    partial = line + ' [superseded: now "locker 43"] [superseded: now "green door"]'
+    marked = partial + ' [superseded: now "Thursday"]'
+    member = dead_value_member(tmp_path, [artifact], '\n'.join([partial, marked]))
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+    # Two versions of one field, each with its own note, are answered; one note for two versions is not.
+    artifact = fields_spec(['corner office', 'east room'], ['front lobby'])
+    both = 'Corner office, later the east room.'
+    member = dead_value_member(tmp_path, [artifact], '\n'.join([
+        both + ' [superseded id=c-1: now "front lobby"] [superseded id=c-2: now "front lobby"]',
+        both + ' [superseded id=c-1: now "front lobby"]',
+        'It moved from the corner office to the front lobby.']))
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
