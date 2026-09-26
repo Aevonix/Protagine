@@ -616,6 +616,8 @@ def _matter(description: Any, metadata: Any) -> tuple:
 
 
 def _identity(description: Any, due_at: Any, metadata: Any) -> tuple:
+    """The item exactly (``_matter``) and its deadline. The whole description counts, never a prefix: the
+    row stores it whole, so two items differing only past any length are two items."""
     due = _utc(due_at)
     return (*_matter(description, metadata), due.isoformat() if due is not None else None)
 
@@ -1021,12 +1023,12 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         if metadata is None:
             ignored += 1       # a cadence only the owner sets, with whole minutes
             continue
-        this = _identity(description[:1000], item.get("due_at"), metadata)
+        this = _identity(description, item.get("due_at"), metadata)
         try:
             # The only duplicate decision: the store's, over the person's open rows as they are now, in the
             # insert's own transaction (the turn's listing may be stale).
             row = commitment_store.create(
-                person_id=person_id, description=description[:1000],
+                person_id=person_id, description=description,
                 dedupe=lambda other: _identity(other.get("description"), other.get("due_at"),
                                                other.get("metadata")) == this,
                 allow_overdue=True,

@@ -668,3 +668,17 @@ def test_a_listed_item_whose_kind_or_parties_changed_since_is_a_conflict_never_a
         return
     assert result["conflicts"] == 1 and result["created"] == result["updated"] == result["resolved"] == [], change
     assert row["due_at"] == listed["due_at"] and row["status"] == "pending"
+
+
+def test_identity_compares_the_whole_description_however_long(tmp_path):
+    """Two reminders share their first thousand characters and end in different account numbers: two rows,
+    no skip, each keeping its own number. The same long reminder said again is one row."""
+    store = CommitmentStore(tmp_path / "c.db")
+    prefix = "Remind me to reconcile the ledger " + "and the ledger " * 80
+    assert len(prefix) > 1000
+    first, second = prefix + "for account 111-A", prefix + "for account 222-B"
+    result = _record(store, [_reminder(first, _at(60)), _reminder(second, _at(60))])
+    assert result["skipped_duplicates"] == 0 and len(result["created"]) == 2
+    assert sorted(row["description"] for row in _open(store)) == [first, second]
+    again = _record(store, [_reminder(second, _at(60))])
+    assert again["skipped_duplicates"] == 1 and again["created"] == [] and len(_open(store)) == 2
