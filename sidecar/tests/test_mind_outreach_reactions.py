@@ -154,7 +154,7 @@ async def test_a_followup_keeps_the_promise_captured_from_the_reply_and_duty_for
     await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
     promise = fx.commitments.create(person_id=OWNER, description="Send the owner the tidal energy details",
                                     due_at=(fx.now + 2 * H).isoformat(), source_type="cognition",
-                                    metadata={"obligor": "assistant", "source_turn": "t-dig"})
+                                    metadata={"obligor": "assistant", "source_turn": "t-dig", "kind": "answer"})
     with fx.commitments._connect() as conn:          # captured from the reply, on the mind's clock
         conn.execute("UPDATE commitments SET made_at=? WHERE id=?", (fx.now.isoformat(), promise["id"]))
     await fx.tick()
@@ -596,8 +596,8 @@ async def test_an_unrelated_dismissal_seen_by_the_appraisal_touches_no_outreach(
 
 # -- a follow-up keeps only the promise its own reply made -----------------------------------------------
 
-def _promise(fx, description, *, turn=None):
-    metadata = {"obligor": "assistant", **({"source_turn": turn} if turn else {})}
+def _promise(fx, description, *, turn=None, kind=None):
+    metadata = {"obligor": "assistant", **({"source_turn": turn} if turn else {}), **({"kind": kind} if kind else {})}
     row = fx.commitments.create(person_id=OWNER, description=description, due_at=(fx.now + 2 * H).isoformat(),
                                 source_type="cognition", metadata=metadata)
     with fx.commitments._connect() as conn:
@@ -683,19 +683,23 @@ async def test_a_quoted_stop_never_pauses_outreach(make):
     assert "paused" not in summary["applied"] and fx.mind.state()["outreach"]["paused_until"] is None
 
 
-def test_a_promise_keeps_a_followup_only_when_it_does_what_the_reply_asked():
+def test_only_an_answer_the_turn_asked_for_keeps_a_followup():
+    """Round 2: the binding is typed. A promise binds only when capture typed it an answer (finding out and
+    reporting back) and it is about the topic; what the finding shared never makes an action an answer."""
     item = outreach.Followup(outreach_id="o-1", topic="tidal energy", slug="tidal-energy",
-                             shared="QX-41: A practical study of tidal energy was published.")
-    assert outreach.keeps_followup("Find out the tidal energy study's field site", item,
-                                   "Dig deeper: find out its field site")
-    assert outreach.keeps_followup("Send the owner the tidal energy details", item, "Yes, dig deeper into it.")
-    assert not outreach.keeps_followup("Cancel the tidal energy newsletter subscription", item,
-                                       "Dig deeper into tidal energy and cancel the newsletter subscription")
-    assert not outreach.keeps_followup("Research kelp farming", item, "Dig deeper into it.")
+                             shared="The tidal energy board will cancel the pilot trial next week.")
+    answer = {"description": "Find out the tidal energy study's field site", "metadata": {"kind": "answer"}}
+    assert outreach.binds_followup(answer, item)
+    for record in ({"description": "Cancel the tidal energy pilot trial", "metadata": {}},
+                   {"description": "Cancel the tidal energy pilot trial", "metadata": None},
+                   {"description": "Send the owner the tidal energy details", "metadata": {"kind": "deliverable"}},
+                   {"description": "Cancel the tidal energy pilot trial", "metadata": {"kind": "reminder"}},
+                   {"description": "Research kelp farming", "metadata": {"kind": "answer"}}):
+        assert not outreach.binds_followup(record, item), record
     offer = outreach.Followup(outreach_id="o-2", topic="parcel receipt", slug="parcel-receipt", shared="", offer=True)
-    assert outreach.keeps_followup("Draft the parcel receipt email to the courier", offer,
-                                   "Yes please, draft the parcel receipt email to the courier")
-    assert not outreach.keeps_followup("Cancel the parcel receipt order", offer, "Yes please, draft the email")
+    assert outreach.binds_followup({"description": "Look into the parcel receipt", "metadata": {"kind": "answer"}},
+                                   offer)
+    assert not outreach.binds_followup({"description": "Draft the parcel receipt email", "metadata": {}}, offer)
 
 
 async def test_a_requested_answer_the_body_never_takes_goes_to_the_digest_after_its_tries(make):
@@ -718,3 +722,57 @@ async def test_a_requested_answer_the_body_never_takes_goes_to_the_digest_after_
     await fx.tick()
     digest, = [p["text"] for p in fx.sent if p["type"] == "digest"]
     assert "KD-83" in digest
+
+
+
+@pytest.mark.parametrize("action", ["Cancel the tidal energy pilot trial", "Cancel the pilot trial next week",
+                                    "Tell the tidal energy board to cancel the pilot trial",
+                                    "Send the owner the tidal energy details"])
+async def test_research_delivered_never_fulfils_an_action_asked_in_the_same_reply(make, action):
+    """Re-check F4: the finding shared "The tidal energy board will cancel the pilot trial next week"; the reply
+    asks for more and for the cancellation, both captured from that turn. The research answer is sent and the
+    action stays open: only an answer-typed promise is the follow-up's."""
+    fx = make()
+    await say(fx, "I care a lot about tidal energy; anything new on it is worth hearing about.", "t-declare")
+    fx.shift(timedelta(minutes=15))
+    await fx.research("tidal energy", "finding: The tidal energy board will cancel the pilot trial next week.")
+    await fx.tick()
+    fx.shift(timedelta(minutes=5))
+    other = _promise(fx, action, turn="t-dig")
+    await say(fx, "Yes, dig deeper into the tidal energy item, and cancel the pilot trial.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert "bound_commitment" not in task.context
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The trial site is KD-83 and runs until May.")
+    await fx.tick()
+    assert fx.outreach_rows("outreach_answer")[0].status == "sent"
+    assert fx.commitments.get(other["id"])["status"] in {"pending", "overdue"}
+
+
+async def test_two_answers_from_one_reply_leave_the_followup_unbound(make):
+    """Which one the dig keeps is not certain: neither is bound, and duty keeps both."""
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    first = _promise(fx, "Find out more about the tidal energy study", turn="t-dig", kind="answer")
+    second = _promise(fx, "Look into tidal energy grants", turn="t-dig", kind="answer")
+    await say(fx, "Yes, dig deeper into the tidal energy item.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert "bound_commitment" not in task.context
+    assert {first["id"], second["id"]} <= {row["id"] for row in fx.commitments.list(
+        status=["pending"], person_id=OWNER)["commitments"]}
+
+
+def test_capture_keeps_the_answer_kind_it_is_given(tmp_path):
+    from protagine.commitments.extract import record_items
+    from protagine.commitments.store import CommitmentStore
+    store = CommitmentStore(tmp_path / "c.db")
+    item = {"action": "create", "target": None, "description": "Look further into tidal energy for the owner",
+            "due_at": None, "priority": 70, "source_type": "cognition", "metadata": {"kind": "answer"},
+            "listed_due": None, "counterpart": None, "obligor": "assistant"}
+    record_items([item], person_id=OWNER, commitment_store=store, existing=[], rejections=[], turn_id="t-dig",
+                 owner_id=OWNER, owner_text="Dig deeper into it.")
+    row, = store.list(status=["pending"], person_id=OWNER)["commitments"]
+    assert row["metadata"]["kind"] == "answer" and row["metadata"]["source_turn"] == "t-dig"

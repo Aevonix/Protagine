@@ -1289,9 +1289,10 @@ class Mind:
 
     def _followups(self, now: datetime, inputs: DriveInputs) -> List[outreach_functions.Followup]:
         """The owner's "dig deeper" (or "yes, help me with it") replies of the last week not yet made a task.
-        A promise the assistant made in that very reply (capture's ``metadata.source_turn`` is the reply's
-        turn) to do what the reply asked (``outreach.keeps_followup``) is what the follow-up keeps; any other
-        promise is its own obligation. ``words`` carries the reply's turn id until the ledger is read."""
+        The follow-up keeps an assistant promise only when that is certain: captured from that very reply
+        (``metadata.source_turn`` is the reply's turn), typed an answer about the topic (``outreach.binds_followup``),
+        and the only such promise of the turn. Any other promise is its own obligation, which duty keeps.
+        ``words`` carries the reply's turn id until the ledger is read."""
         o = outreach_functions
         replies = []
         for row in self.store.intentions(kind=["message"], since=now - timedelta(days=7), limit=500,
@@ -1299,7 +1300,6 @@ class Mind:
             reaction = self._reaction(row)
             if row.type in OUTREACH_MESSAGES and reaction.get("class") == "positive" and not reaction.get("followup"):
                 replies.append((row, str(reaction.get("turn") or "")))
-        said = self._owner_words([turn for _, turn in replies])
         items = []
         for row, turn in replies:
             context = row.context if isinstance(row.context, dict) else {}
@@ -1307,18 +1307,19 @@ class Mind:
             item = o.Followup(outreach_id=row.id, topic=topic, slug=slug(topic),
                               shared=o.excerpt(str(context.get("text") or ""), topic, limit=300), words=turn,
                               offer=row.type in {"outreach_loop", "outreach_care"})
-            reply = reactions.strip_prefix(said.get(turn, ""))
-            promise = next((record for record in inputs.commitments if turn
-                            and str((record.get("metadata") if isinstance(record.get("metadata"), dict) else {})
-                                    .get("source_turn") or "") == turn
-                            and drive_functions._obligor(record, record.get("metadata") if isinstance(
-                                record.get("metadata"), dict) else {}, str(record.get("person_id") or "") or None,
-                                self.owner_id) == "assistant"
-                            and o.keeps_followup(record.get("description"), item, reply)), None)
-            if promise is not None:
-                item.commitment, item.commitment_due = str(promise["id"]), _utc(promise.get("due_at"))
+            answers = [record for record in inputs.commitments if turn and self._assistant_answer_of(record, turn)]
+            bound = [record for record in answers if o.binds_followup(record, item)]
+            if len(answers) == 1 and len(bound) == 1:
+                item.commitment, item.commitment_due = str(bound[0]["id"]), _utc(bound[0].get("due_at"))
             items.append(item)
         return items
+
+    def _assistant_answer_of(self, record: Dict[str, Any], turn: str) -> bool:
+        """An open answer the assistant promised on ``turn`` (capture's ``source_turn`` and ``kind``)."""
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        return (str(metadata.get("source_turn") or "") == turn and metadata.get("kind") == outreach_functions.ANSWER_KIND
+                and drive_functions._obligor(record, metadata, str(record.get("person_id") or "") or None,
+                                             self.owner_id) == "assistant")
 
     def _digested(self, now: datetime) -> List[str]:
         """What the digest listed, or holds to list, of the last month's findings: shared already, so a later

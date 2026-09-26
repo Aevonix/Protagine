@@ -33,7 +33,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .drives import slug as _slug, task_body
 from .rank import OUTREACH_ANSWER, OUTREACH_FOLLOWUP, Candidate
@@ -616,34 +616,19 @@ def answer_candidate(finding: Finding, inputs: OutreachInputs) -> Optional[Candi
                            **({"bound_commitment": finding.bound_commitment} if finding.bound_commitment else {})})
 
 
-# The words of a promise to do what a "dig deeper" asks, beyond its topic: find out more and report it.
-FOLLOWUP_WORDS = frozenset("""
-dig deeper further more research researched researching look looking looked into find finding findings found out
-report reports reporting reported detail details specifics specific sources source information info learn
-investigate investigating explore exploring check checking read reading update updates news latest follow following
-followup follow-up send share get give tell back summary summarise summarize owner owner's item items piece thing
-things sent shared the for about and with what how who when where which why that this those these its their them
-you your
-""".split())
+# The kind capture gives the assistant's promise to find something out and report it back (``commitments.extract``).
+ANSWER_KIND = "answer"
 
 
-def keeps_followup(promise: Any, item: Followup, reply: str = "") -> bool:
-    """Whether an assistant promise captured from the owner's reply is the follow-up that reply asked for: about
-    its topic, and asking nothing beyond it. For a finding that is finding out more (``FOLLOWUP_WORDS``) about the
-    topic, what was shared, or what the dig was aimed at (the rest of the cue's own clause, up to a conjunction);
-    for an offer of help, what the reply itself says. "Cancel the tidal energy newsletter" is never the research
-    on tidal energy, even said in the same turn: delivering the research would mark it done."""
-    from .reactions import _CONJUNCTIONS, read
-    text = str(promise or "")
-    if not similar(item.topic, text):
-        return False
-    if item.offer:
-        aimed = reply
-    else:
-        aimed = " ".join(" ".join(re.findall(r"[\w'-]+", tail)[:next(
-            (index for index, word in enumerate(re.findall(r"[\w'-]+", tail)) if word.casefold() in _CONJUNCTIONS),
-            None)]) for tail in read(reply).positive_tails)
-    return not (_tokens(text) - _tokens(item.topic) - _tokens(item.shared) - _tokens(aimed) - FOLLOWUP_WORDS)
+def binds_followup(record: Mapping[str, Any], item: Followup) -> bool:
+    """Whether an assistant promise captured from the owner's reply is the follow-up that reply asked for. The
+    decision is typed: capture recorded it as an answer to find out and report back (``ANSWER_KIND``), and it is
+    about the follow-up's topic. What the finding shared, or the reply's other words, never make an action an
+    answer: "Cancel the tidal energy pilot trial" is not the research on tidal energy, whatever was shared about
+    the trial, so delivering the research never marks it done. The caller also requires the reply's own turn and
+    a single such promise."""
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), Mapping) else {}
+    return metadata.get("kind") == ANSWER_KIND and similar(item.topic, str(record.get("description") or ""))
 
 
 def followup_candidate(item: Followup, inputs: OutreachInputs) -> Candidate:
@@ -779,5 +764,5 @@ __all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "CHECK_IN_OFFERS", "CONVERSATION_GAP
            "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NO_SUBSTANCE", "NULL_REPORT", "repeated", "says_something", "settle",
            "NOT_NOW_HOLD", "OWNER_TURN_KEY", "OutreachInputs", "PAUSE_KEY", "REPLY_HOURS", "Sent", "TIMING_PREFIX", "answer_candidate",
            "backoff_until", "candidates", "care_candidate", "digest_value", "excerpt", "finding_candidate",
-           "followup_candidate", "followups", "holds", "keeps_followup", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
+           "followup_candidate", "followups", "holds", "binds_followup", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
            "novelty", "open_loops", "overlap", "pause_until", "pressure", "quote", "relevance", "similar", "terms", "weight"]

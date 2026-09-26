@@ -92,15 +92,15 @@ POLL_SECONDS = 0.1
 
 SYSTEM = (
     "You audit ONE finished assistant turn and extract any follow-up worth recording, as STRICT JSON. You get what "
-    "the person SAID and what the assistant REPLIED, the recent conversation before it, and the person's "
+    "the person SAID and what the assistant REPLIED, the conversation before it, and the person's "
     "already-recorded OPEN items, numbered. The Speaker line says who the person is: the assistant's owner, or a "
     "contact (with the contact's id). Decide only from the literal words.\n\n"
     "Record a NEW item (action \"create\", target null) only when the turn clearly contains one of:\n"
     "1. A DURABLE COMMITMENT: an explicit promise, obligation, or reminder to do something later (\"remind me to "
     "X\", \"I'll get back to you on X\", \"I'll send you X by 3pm\", \"follow up on X by Friday\"). When all that is "
     "owed then is a word to the person (a reminder, a nudge, a word if something has not happened), metadata is "
-    "{\"kind\":\"reminder\"}: a message when it falls due, never a task. Work the assistant promised (\"I'll "
-    "look up X and tell you by 5\") is no reminder.\n"
+    "{\"kind\":\"reminder\"}: a message when it falls due, never a task. Work the assistant promised is none; one to find "
+    "out and report (\"I'll look up X and tell you by 5\") is {\"kind\":\"answer\"}.\n"
     "2. An IMMEDIATE OWED DELIVERABLE: the person asked to be SENT something themselves through a channel the reply "
     "did NOT satisfy (email it, text it to their other number, send it later) AND the content to send is in the "
     "exchange. A chat reply already IS a message to the person, so a plain \"text me\" is satisfied: record one "
