@@ -702,3 +702,15 @@ def test_a_quotation_of_only_a_timestamp_is_still_the_records_value():
     # The same instant in the line's own metadata is not its value.
     timed = claim_quote(record.record, "The deadline is set.", reported_at=old, observed_at=old)
     assert compass.dead_value_lines(timed, [record]) == 0
+
+
+def test_the_superseded_value_annotation_ships_off_and_turns_on_only_when_asked(monkeypatch):
+    from protagine.memory.compass import ANNOTATION_ENV, records_annotation_enabled
+    monkeypatch.delenv(ANNOTATION_ENV, raising=False)
+    assert records_annotation_enabled() is False
+    for value in ("1", "true", "on", "YES"):
+        monkeypatch.setenv(ANNOTATION_ENV, value)
+        assert records_annotation_enabled() is True
+    for value in ("", "0", "off", "false", "maybe"):
+        monkeypatch.setenv(ANNOTATION_ENV, value)
+        assert records_annotation_enabled() is False

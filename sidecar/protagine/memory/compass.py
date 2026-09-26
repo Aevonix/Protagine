@@ -49,6 +49,12 @@ TIMEOUT_ENV = "PROTAGINE_CONTEXT_SELECTION_TIMEOUT_MS"
 CANDIDATES_ENV = "PROTAGINE_CONTEXT_SELECTION_CANDIDATES"
 DUE_SOON_ENV = "PROTAGINE_CONTEXT_DUE_SOON_HOURS"
 MIN_SCORE_ENV = "PROTAGINE_CONTEXT_SELECTION_MIN_SCORE"
+ANNOTATION_ENV = "PROTAGINE_CONTEXT_ANNOTATION"
+
+
+def records_annotation_enabled() -> bool:
+    """The superseded-value annotation (and its history corrections) runs only when switched on; it ships off."""
+    return os.environ.get(ANNOTATION_ENV, "").strip().lower() in {"1", "true", "on", "yes"}
 DEFAULT_ENABLED = True
 DEFAULT_BUDGET = 3000
 DEFAULT_TIMEOUT_MS = 2000

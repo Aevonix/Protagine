@@ -2132,7 +2132,9 @@ async def _assemble_sections(
                 contact_id=contact_id, session_id=body.context.session_id))
         except Exception:
             logger.debug("superseded claim values unavailable", exc_info=True)
-    if records:
+    # The superseded-value annotation ships off until its review closes.
+    from protagine.memory.compass import records_annotation_enabled
+    if records and records_annotation_enabled():
         from protagine.memory.compass import annotate_superseded
         sections = annotate_superseded(sections, records)
         if superseded is not None:
