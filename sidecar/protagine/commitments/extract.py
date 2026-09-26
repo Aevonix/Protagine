@@ -243,7 +243,11 @@ SYSTEM = (
     "They said: Still working on the recap. | Assistant replied: Take your time.\n"
     "[]   (a stall on a listed item changes nothing)")
 # The HOLD rule above is for a listed item. A first mention the person wants no reminder about is held from the
-# start: open, with no time, so nothing is ever said about it unasked (a later time reinstates it).
+# start: open, with no time, so nothing is ever said about it unasked (a later time reinstates it). ``record_items``
+# marks it held as a listed hold is marked (``metadata.reschedule`` with no date), so nothing that leaves a
+# held item alone (an offer of help about an open loop, ``outreach.open_loops``) takes it for an undated one.
+_NO_REMINDERS = re.compile(r"\b(?:no|without|skip(?:\s+the)?)\s+(?:more\s+)?reminders?\b"
+                           r"|\b(?:don't|dont|do\s+not|no\s+need\s+to|never|stop)\s+remind(?:ing)?\s+me\b", re.IGNORECASE)
 
 ITEM_SCHEMA = {
     "type": "object",
@@ -1139,6 +1143,9 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             metadata["due_text"] = _due_text(item, owner_text)
         if turn_id:
             metadata["source_turn"] = str(turn_id)    # the turn it came from (a follow-up keeps only its own)
+        if not item.get("due_at") and owner_text and _NO_REMINDERS.search(str(owner_text)):
+            # Held from its first mention: undated because the person wants no word about it.
+            metadata["reschedule"] = {"from": None, "by": "conversation", "note": note, "hold": "first_mention"}
         try:
             row = commitment_store.create(
                 person_id=person_id, description=description[:1000], dedupe=not confirmed, allow_overdue=True,

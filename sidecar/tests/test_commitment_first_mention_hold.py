@@ -72,3 +72,25 @@ async def test_a_held_first_mention_is_open_says_nothing_and_a_later_time_reinst
     assert "[1] Send p-05 the parcel receipt (no due)" in router.prompts[0]
     [row] = commitments.get_pending_for_person(OWNER)
     assert row["due_at"] is not None
+
+
+async def test_a_held_first_mention_is_never_offered_as_an_open_loop(tmp_path, monkeypatch):
+    """Held from its first mention (open, undated, "no reminders about it"): no offer of help about it either,
+    however long the owner stays quiet. An undated item the owner said nothing of the kind about still is one."""
+    from protagine.mind import outreach
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    commitments = CommitmentStore(tmp_path / "commitments.db")
+    ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
+    extractor = CommitmentExtractor(ledger, lambda: commitments)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    for turn, said, description in (
+            ("t-1", "I am handling the parcel receipt myself. No reminders about it.", "Send p-05 the parcel receipt"),
+            ("t-2", "At some point I need to renew the parking permit.", "Renew the parking permit")):
+        ledger.record_source(turn, contact_id=OWNER, session_id="owner-1", occurred_at=now.isoformat(), messages=[
+            {"role": "user", "content": said}, {"role": "assistant", "content": "Understood."}])
+        assert await extractor.process_one(_Router([_item(description)])) is True
+    rows = commitments.list(status=["pending"], person_id=OWNER)["commitments"]
+    assert sorted(row["description"] for row in rows) == ["Renew the parking permit", "Send p-05 the parcel receipt"]
+    assert all(row["due_at"] is None for row in rows)
+    loops = outreach.open_loops(rows, owner_id=OWNER, now=now + timedelta(days=2))
+    assert [loop.description for loop in loops] == ["Renew the parking permit"]
