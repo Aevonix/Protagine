@@ -10,7 +10,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
@@ -533,9 +533,12 @@ class CommitmentStore:
         source_type: str = "manual",
         source_context: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        *, dedupe: bool = False, allow_overdue: bool = False,
+        *, dedupe: Union[bool, Callable[[Dict[str, Any]], bool]] = False, allow_overdue: bool = False,
     ) -> Dict[str, Any]:
         """Create, optionally reusing the same open obligation under one write lock.
+
+        ``dedupe`` is True for the similar-description predicate, or a predicate
+        over the person's open rows deciding which one is the same obligation.
 
         ``allow_overdue`` imports an obligation whose deadline has already
         passed (a promise captured late, after an outage or a backlog): it
@@ -561,7 +564,8 @@ class CommitmentStore:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 if dedupe:
-                    existing = self._find_open_duplicate(conn, person_id, description)
+                    existing = self._find_open_duplicate(conn, person_id, description,
+                                                         None if dedupe is True else dedupe)
                     if existing is not None:
                         conn.commit()
                         return {**existing, "deduped": True}
@@ -890,15 +894,16 @@ class CommitmentStore:
                 out.append(item)
         return out
 
-    def _find_open_duplicate(self, conn, person_id, description):
+    def _find_open_duplicate(self, conn, person_id, description, same=None):
         norm = _normalize_desc(description)
-        if not norm:
+        if not norm and same is None:
             return None
         rows = conn.execute(
             "SELECT * FROM commitments WHERE person_id=? AND status IN (?,?) ORDER BY made_at DESC",
             (person_id, *OPEN_STATUSES))
         for row in rows:
-            if _similar_desc(norm, _normalize_desc(row["description"] or "")):
+            if (same(self._row_to_dict(row)) if same is not None
+                    else _similar_desc(norm, _normalize_desc(row["description"] or ""))):
                 return self._row_to_dict(row)
         return None
 

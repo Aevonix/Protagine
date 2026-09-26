@@ -4,8 +4,9 @@ Architecture 3.1 and 4.6. After every person-scoped turn the projection worker
 judges the turn on the sidecar router (no tools, no private endpoint) and
 records durable commitments and immediate owed deliverables in the commitment
 store, on by default whenever a router is configured. The dedupe against
-open and recently rejected items is enforced in code, not only in the prompt:
-a repeated mention of an open item is never a second item. An item withdrawn
+open and recently rejected items is enforced in code, not only in the prompt,
+and is exact: an open item repeated as the same item (kind, parties, deadline,
+wording) is never a second item, and nothing is merged into another. An item withdrawn
 or dismissed as obsolete is only shown to the model as closed, so a clear fresh
 commitment to it can be recorded again.
 
@@ -54,6 +55,7 @@ import logging
 import math
 import re
 import time
+import unicodedata
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -591,186 +593,23 @@ def _for_third_party(stated: Optional[Dict[str, Any]], counterpart: Any, person_
         "kind": "notice", "recipient": other, "grant": "owner"}
 
 
-# One matter, one item. On the owner's own turn, a word the owner asks for about an item (``kind: reminder``)
-# is that item's own word only when it is the same word, about the same object, to the same person: its object
-# is the item's own word for word (``_same_object``: only the reminder verb and the time said with it set aside),
-# the item's own word at its deadline is a reminder to the owner (not a message to someone else and not work
-# the assistant owes), that deadline is still ahead, and it falls at the deadline (the same word), before it
-# where the item has no heads-up yet (its heads-up), or within ``FOLD_AFTER`` after it at no time the owner
-# named ("if it passes, nudge me"). Anything else stays its own item: a word the owner asked for is never
-# dropped, moved to a time they did not ask for, or turned into a word to someone else. A duplicate reminder
-# is acceptable; a lost one is not.
+# A new item is a duplicate only when an open item is the same item exactly (``_identity``): the same kind of
+# action (a reminder, a check-in, a notice, a deliverable or a plain item), the same obligor, counterpart and
+# recipient, the same deadline and the same description, compared after only Unicode NFC normalisation,
+# casefolding and whitespace collapsing. Nothing is ever merged into another item: a heads-up is what the
+# extractor states on the item itself (``metadata.heads_up_at``). A duplicate row is acceptable; a lost one is not.
 REMINDER_KIND = "reminder"
-SAME_WORD = timedelta(minutes=1)
-FOLD_AFTER = timedelta(minutes=30)
 
 
-def _parties_of(item: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> set:
-    """The named third parties of an item or a stored row (never the owner or the assistant)."""
-    from protagine.commitments.parties import ASSISTANT, OWNER, party
+def _plain(value: Any) -> str:
+    return " ".join(unicodedata.normalize("NFC", str(value or "").casefold()).split())
+
+
+def _identity(description: Any, due_at: Any, metadata: Any) -> tuple:
     metadata = metadata if isinstance(metadata, dict) else {}
-    values = (item.get("counterpart"), item.get("obligor"), metadata.get("recipient"), metadata.get("counterpart"),
-              metadata.get("obligor"))
-    return {name for name in (party(value) for value in values) if name not in (None, OWNER, ASSISTANT)}
-
-
-# A reminder's own time is set aside before its object is compared, and only that: a time or a date said with
-# the reminder verb itself, before its object ("remind me at 5pm to ...", "remind me tomorrow at 9 about ...")
-# or closing it ("remind me to ... at 17:00", "... on Oct 2 at 4pm", "... in 2 hours"). Every other date, month,
-# weekday, ordinal or number is part of the object ("the invoice due 2026-10-02", "the report on March
-# inflation", "the Monday rota", "the 2nd draft") and must match the item's word for word.
-_MONTHS = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|"
-           r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?")
-_WEEKDAYS = r"(?:mon|tues|wednes|thurs|fri|satur|sun)day|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun"
-_CLOCK_NUMBERS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
-_WHEN_EXPR = rf"""(?:
-    \d{{4}}-\d{{1,2}}-\d{{1,2}}(?:[t\s]\d{{1,2}}:\d{{2}}(?::\d{{2}})?)?(?!\w)                   # 2026-10-02[ 16:00]
-  | \d{{1,2}}(?::\d{{2}})?\s*[ap]\.?\s?m\b\.?                                        # 5pm, 5:00 p.m.
-  | \d{{1,2}}:\d{{2}}(?::\d{{2}})?(?!\w) | \d{{1,2}}h\d{{2}}\b                          # 17:00, 17h00
-  | (?:{_MONTHS})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b                     # Oct 2, October 2nd 2026
-  | \d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:{_MONTHS})\b(?:\s+\d{{4}})?                # 2nd of October
-  | \d{{1,2}}[/.]\d{{1,2}}(?:[/.]\d{{2,4}})?\b                                           # 2/10, 2/10/2026
-  | (?:the\s+)?\d{{1,2}}(?:st|nd|rd|th)\b                                               # the 3rd
-  | (?:{_WEEKDAYS})\b\.? | (?:{_MONTHS})\b\.?(?!\s*\d)                                  # Friday, May
-  | (?:the\s+)?(?:morning|afternoon|evening|night|weekend|week|month|year|noon|midday|midnight)\b
-  | (?:the\s+)?end\s+of\s+(?:the\s+)?(?:day|week|month)\b | eod\b | eow\b | cob\b | asap\b
-  | (?:\d+|an?|one|two|three|few|a\s+few|a\s+couple\s+of|couple\s+of)\s+
-        (?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\b                             # 2 hours (after in)
-)"""
-# A bare number or clock word is a time only after a clock preposition ("at 9", "by five"), never "room 9".
-_CLOCK = rf"(?:(?:at|by|before|after|until|till|around)\s+(?:\d{{1,4}}|{_CLOCK_NUMBERS})\b(?![-_./#:]\w)(?:\s*o'?clock)?)"
-# "due" is not one of the reminder's own prepositions: "the invoice due 2026-10-02" names the invoice.
-_REMINDER_PREP = r"(?:at|by|on|before|after|until|till|around|in|within|this|next)"
-_DAY_WORD = r"(?:today|tonight|tomorrow|tmrw)\b"
-_REMINDER_TIME = rf"""(?: {_REMINDER_PREP}\s+{_WHEN_EXPR} | {_CLOCK} | {_DAY_WORD} )
-    (?: \s*,?\s* (?: (?:{_REMINDER_PREP}\s+)?{_WHEN_EXPR} | {_CLOCK} | {_DAY_WORD} ) )*"""
-_CONNECTOR = r"(?:to|about|of|that|re|regarding)\b"
-_REMINDER_VERB = re.compile(rf"""(?ix) ^\W*(?:please\s+)?(?:remind|nudge|ping|tell|warn|alert)\s+(?:me|(?:the\s+)?owner)\b
-    (?: (?P<when> \s*,?\s* {_REMINDER_TIME} ) \s*,?\s* {_CONNECTOR} | \s*,?\s* (?:{_CONNECTOR})? )""")
-_CLOSING_TIME = re.compile(rf"""(?ix) {_REMINDER_TIME} \W*""")
-_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "′": "'", "`": "'"})
-_OBJECT_TOKEN = re.compile(r"[^\W_]+(?:[-_./#:'][^\W_]+)*")
-_WORD_START = re.compile(r"(?<![\w'-])\w")
-
-
-def _normal(text: str) -> str:
-    """Case, spacing and punctuation outside a token normalized; joiners inside one ("p-41", "AB_12", "2.1",
-    "17:00") kept."""
-    return " ".join(token.casefold() for token in _OBJECT_TOKEN.findall(text))
-
-
-def _object_text(description: Any) -> str:
-    """An item's object: its wording, with a leading reminder verb ("remind me", "nudge me", ...) and a time
-    said between that verb and its "to"/"about" ("remind me at 5pm to ...") set aside (``_normal``)."""
-    text = str(description or "").translate(_APOSTROPHES)
-    verb = _REMINDER_VERB.match(text)
-    return _normal(text[verb.end():] if verb is not None else text)
-
-
-def _readings(description: Any) -> set:
-    """What a reminder's object may be: its ``_object_text``, and, when no time stands between its verb and
-    its "to"/"about", that with a time phrase closing it set aside ("remind me to ... at 17:00", "... on Oct 2
-    at 4pm": each closing time phrase, the whole of it or its last part). Nothing else is ever set aside."""
-    text = str(description or "").translate(_APOSTROPHES)
-    verb = _REMINDER_VERB.match(text)
-    if verb is None:
-        return {_normal(text)} - {""}
-    rest = text[verb.end():]
-    readings = {_normal(rest)}
-    if not verb.group("when"):
-        readings |= {_normal(rest[:word.start()]) for word in _WORD_START.finditer(rest)
-                     if _CLOSING_TIME.fullmatch(rest, word.start())}
-    return readings - {""}
-
-
-def _same_object(word: tuple, item: tuple) -> bool:
-    """A reminder's ``(description, parties)`` is about exactly an item's object: one of its ``_readings`` is
-    the item's ``_object_text``, word for word and not empty, and a party of either is the other's or named in
-    it. "Remind me to send p-41 the invoice due 2026-10-03" is not about "Send p-41 the invoice due 2026-10-02",
-    nor "Remind me about the p-41 floor plan" about "Send p-41 the floor plan": each is its own reminder."""
-    (word_text, word_parties), (item_text, item_parties) = word, item
-    wording = _object_text(item_text)
-    if not wording or wording not in _readings(word_text):
-        return False
-    return all(_names(name, wording) for name in set(word_parties) ^ set(item_parties))
-
-
-def _same_word(word: tuple, other: tuple) -> bool:
-    """A reminder ``(description, parties, due)`` repeats a known item: the same time (``SAME_WORD``, or neither
-    has one) and the same object (``_same_object``). Anything less certain keeps the reminder as its own item: a
-    word the owner asked for is never dropped as a duplicate."""
-    (text, parties, due), (other_text, other_parties, other_due) = word, other
-    if (due is None) != (other_due is None) or (due is not None and abs(due - other_due) > SAME_WORD):
-        return False
-    return _same_object((text, parties), (other_text, other_parties))
-
-
-def _word_to_owner(kind: Any, obligor: Any, source_type: Any) -> bool:
-    """True when an item's own word at its deadline is a reminder to the owner (the duty drive's rule): a
-    reminder, or an item of no kind that is not the assistant's work. A message to someone else, a
-    deliverable, a cadence and the assistant's own work (a task at its deadline) are not."""
-    from protagine.commitments.parties import ASSISTANT, party
-    if kind == REMINDER_KIND:
-        return True
-    if kind:
-        return False
-    if not str(obligor or "").strip():
-        return source_type == "cognition"      # a row without an obligor: the speaker's own, or the agent's work
-    return party(obligor) != ASSISTANT
-
-
-def _folds(prepared: Dict[int, Any], listed: List[Dict[str, Any]], *, owner_turn: bool,
-           turn_time: Optional[datetime], owner_text: Optional[str], person_id: str) -> Dict[int, tuple]:
-    """For each of the turn's reminders that is another item's own word: ``(where, into, how)``, with
-    ``where`` ``"turn"`` (``into`` the index of an item of the same turn: a substantive one first, else an
-    earlier reminder) or ``"listed"`` (``into`` an open row the prompt listed), and ``how`` ``"same"`` (the
-    word at the deadline), ``"heads_up"`` (a word before it, becoming its heads-up) or ``"after"``."""
-    if not owner_turn or turn_time is None:
-        return {}
-    now = turn_time.astimezone(timezone.utc)
-    facts, targets = {}, []
-    for index, entry in prepared.items():
-        if entry is None:
-            continue
-        item, stated = entry[0], entry[1]
-        kind = stated.get("kind") or None
-        facts[index] = (str(item.get("description") or ""), _parties_of(item, stated), kind,
-                        _utc(item.get("due_at")), _due_text(item, owner_text))
-        if _word_to_owner(kind, item.get("obligor"), item.get("source_type")):
-            targets.append(("turn", index, facts[index][:2], kind, facts[index][3], _warns(stated), True))
-    for row in listed:
-        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        kind = metadata.get("kind") or None
-        if _word_to_owner(kind, metadata.get("obligor"), row.get("source_type")):
-            targets.append(("listed", row, (str(row.get("description") or ""), _parties_of({}, metadata)), kind,
-                            _utc(row.get("due_at")), _warns(metadata), row.get("person_id") == person_id))
-    targets.sort(key=lambda target: (target[0] == "listed", target[3] == REMINDER_KIND))
-    folds: Dict[int, tuple] = {}
-    warned: set = set()
-    for index, (text, parties, kind, due, own_time) in facts.items():
-        if kind != REMINDER_KIND or due is None:
-            continue
-        for where, into, matter, other_kind, other_due, warns, own_row in targets:
-            key = (where, into if where == "turn" else into.get("id"))
-            if where == "turn" and (into == index or into in folds
-                                    or (other_kind == REMINDER_KIND and into > index)):
-                continue
-            if other_due is None or other_due <= now or not _same_object((text, parties), matter):
-                continue
-            if abs(due - other_due) <= SAME_WORD:
-                how = "same"
-            elif due < other_due:
-                if warns or key in warned or not own_row:
-                    continue             # its heads-up is taken, or would go to someone else: a word of its own
-                how = "heads_up"
-                warned.add(key)
-            elif own_time is None and due - other_due <= FOLD_AFTER:
-                how = "after"
-            else:
-                continue
-            folds[index] = (where, into, how)
-            break
-    return folds
+    due = _utc(due_at)
+    return (*(_plain(metadata.get(key)) for key in ("kind", "obligor", "counterpart", "recipient")),
+            due.isoformat() if due is not None else None, _plain(description))
 
 
 _WORDING_FILLER = frozenset("a an the to for of on by with and my your their his her its our".split())
@@ -781,25 +620,21 @@ def _wording(text: Any) -> frozenset:
     return frozenset(word for word in _normalize_desc(str(text or "")).split() if word not in _WORDING_FILLER)
 
 
-def _restated(listed: List[Dict[str, Any]], norm: str, due_at: Any) -> Optional[Dict[str, Any]]:
-    """The one listed open item a new item restates with a different deadline, or None. A restatement has
-    the item's own wording (its words, articles and prepositions aside); a similar item (another number,
-    another document, one more word: "the Q4 report", "the lease renewal form") is never one, and the
-    listed deadline stays (the duplicate check judges the new item as before)."""
+def _restated(listed: List[Dict[str, Any]], norm: str, due_at: Any, kind: Any) -> Optional[Dict[str, Any]]:
+    """The one listed open item a new item restates with a different deadline, or None. A restatement is of
+    the same kind (a reminder never moves a check-in) and has the item's own wording (its words, articles and
+    prepositions aside); a similar item (another number, another document, one more word: "the Q4 report",
+    "the lease renewal form") is never one, and the listed deadline stays."""
     due = _utc(due_at)
     wording = _wording(norm)
     if due is None or not wording:
         return None
-    alike = [row for row in listed if _wording(row.get("description")) == wording]
+    alike = [row for row in listed if _wording(row.get("description")) == wording
+             and _plain((row.get("metadata") or {}).get("kind")) == _plain(kind)]
     if len(alike) != 1:
         return None
     listed_due = _utc(alike[0].get("due_at"))
     return alike[0] if listed_due is not None and listed_due != due else None
-
-
-def _warns(metadata: Optional[Dict[str, Any]]) -> bool:
-    metadata = metadata if isinstance(metadata, dict) else {}
-    return metadata.get("heads_up_at") is not None or metadata.get("lead_minutes") is not None
 
 
 DUE_TEXT_CHARS = 120
@@ -1047,37 +882,31 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     ``assistant_names`` the assistant's, and ``speaker_names`` the turn's own person's (one person).
     ``conversation_text`` is the recent conversation the extractor saw: with the listed items, what the
     owner's words asking for a message may refer back to (``request_problem``).
-    One matter is one item (``_folds``): on the owner's turn, a reminder that is the same word to the owner
-    as an item of the same turn or a listed open item gives is that item's own, counted in ``folded``; one
-    due before the item's deadline is its heads-up (written compare-and-set on an open row of the owner's).
-    A new item with the wording of one listed item and a different deadline (``_restated``) moves it,
-    compare-and-set, as a ``reschedule`` would.
+    A new item is skipped as a duplicate only when an open item is the same item exactly (``_identity``),
+    or when its description is exactly (``_plain``) that of an extraction rejected as invalid or a
+    duplicate. Nothing is merged into another item. A new item with the wording and kind of one listed
+    item and a different deadline (``_restated``) moves it, compare-and-set, as a ``reschedule`` would.
     """
     from protagine.commitments.parties import ASSISTANT_KINDS, between_others
-    from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
+    from protagine.commitments.store import CommitmentConflict, _normalize_desc
     items = [_with_defaults(item) for item in items if isinstance(item, dict)]
     listed = list(existing[:OPEN_ITEMS_LISTED])
-    known = [(_normalize_desc(c.get("description") or ""), _effect(c.get("metadata"))) for c in existing]
+    known = {row.get("id"): _identity(row.get("description"), row.get("due_at"), row.get("metadata"))
+             for row in existing}
     # A rejected extraction (invalid, duplicate) is a hard block on the same wording; an item
     # withdrawn or dismissed as obsolete is shown to the model as a closed item but a fresh, clear
     # commitment to it may be recorded again.
-    known += [(_normalize_desc(r.get("description") or ""), _effect(r.get("metadata")))
-              for r in rejections if r.get("outcome") != "obsolete"]
-    known = [k for k in known if k[0]]
-    # What a reminder is compared with (``_same_word``): the open items and blocked wordings with their times.
-    known_words = [(str(c.get("description") or ""), _parties_of({}, c.get("metadata")), _utc(c.get("due_at")))
-                   for c in [*existing, *(r for r in rejections if r.get("outcome") != "obsolete")]]
+    blocked = {_plain(r.get("description")) for r in rejections if r.get("outcome") != "obsolete"} - {""}
     note = f"turn:{turn_id}" if turn_id else source_context
     created: List[str] = []
     updated: List[str] = []
     resolved: List[str] = []
-    skipped = ignored = conflicts = others = reminders = folded = 0
+    skipped = ignored = conflicts = others = reminders = 0
     owners = [name for name in (owner_id, *owner_names) if name]
     owner_turn = bool(owner_id) and person_id == owner_id
     referents = _referents(conversation_text, listed)
     own_names = [*speaker_names, *(owners if owner_turn else ())]
-    # Every new item as it will be recorded (``None``: a relay the reply passes on), then which of them is
-    # another item's own word (``_folds``); the loop below applies both in the items' order.
+    # Every new item as it will be recorded (``None``: a relay the reply passes on).
     prepared: Dict[int, Any] = {}
     for index, item in enumerate(items):
         if str(item.get("action") or "create").strip().lower() != "create" or not str(item.get("description")
@@ -1097,11 +926,6 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
                 item = owner_reminder(item, stated, owners)
                 stated, converted = dict(item.get("metadata") or {}), True
         prepared[index] = (item, stated, confirmed, converted)
-    folds = _folds(prepared, listed, owner_turn=owner_turn, turn_time=turn_time, owner_text=owner_text,
-                   person_id=person_id)
-    for index, (where, into, how) in folds.items():
-        if where == "turn" and how == "heads_up":        # a word before the deadline is its heads-up
-            prepared[into][1]["heads_up_at"] = _utc(prepared[index][0].get("due_at")).isoformat()
     for index, item in enumerate(items):
         description = str(item.get("description") or "").strip()
         action = str(item.get("action") or "create").strip().lower()
@@ -1129,9 +953,6 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
                                                    note=note, expect=expect)
                     if row is not None:
                         resolved.append(row["id"])
-                    # A closed row no longer blocks a fresh item worded like it.
-                    closed = _normalize_desc(target.get("description") or "")
-                    known = [k for k in known if k[0] != closed]
             except CommitmentConflict:
                 logger.info("commitment %s skipped: the row changed since it was listed", action)
                 conflicts += 1
@@ -1146,32 +967,15 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             continue
         item, stated, confirmed, converted = prepared[index]
         reminders += int(converted)
-        if index in folds:
-            folded += 1
-            where, row, how = folds[index]
-            due = _utc(item.get("due_at"))
-            if where == "listed" and how == "heads_up":
-                # A word before an open item's deadline is its heads-up, written against what was listed.
-                try:
-                    changed = commitment_store.update(row["id"], metadata={"heads_up_at": due.isoformat()},
-                                                      expect={"description": row.get("description"),
-                                                              "due_at": row.get("due_at")})
-                    if changed is not None:
-                        updated.append(changed["id"])
-                except CommitmentConflict:
-                    logger.info("commitment heads-up skipped: the row changed since it was listed")
-                    conflicts += 1
-            continue
         if (str((stated or {}).get("kind") or "") not in ASSISTANT_KINDS
                 and between_others(item.get("obligor"), item.get("counterpart"), owner_names=owners,
                                    assistant_names=assistant_names, same=speaker_names)):
             logger.info("commitment candidate dropped for %s: an obligation between two other people", person_id)
             others += 1
             continue
-        norm = _normalize_desc(description)
-        effect = ("message", _words(stated.get("recipient"))) if confirmed else ("word",)
         again = None if confirmed else _restated(
-            [row for row in listed if row.get("id") not in {*updated, *resolved}], norm, item.get("due_at"))
+            [row for row in listed if row.get("id") not in {*updated, *resolved}], _normalize_desc(description),
+            item.get("due_at"), stated.get("kind"))
         if again is not None:
             # The person restating a listed item with a new time moves it, written against what was listed.
             due_at = _utc(item.get("due_at")).isoformat()
@@ -1191,15 +995,7 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
                 logger.debug("commitment restatement skipped (%s)", type(error).__name__)
                 ignored += 1
             continue
-        # A message the owner asked for is its own action: only a message to the same recipient worded
-        # alike repeats it, never the promise it chases ("Chase p-05 for the site photos" beside "p-05
-        # sends the site photos"). Anything else is judged against every open item, as the store does.
-        # A reminder the owner asked for repeats something only when it is the same word at the same time
-        # (``_same_word``); when that is not certain it is kept as its own item, never dropped.
-        word = str((stated or {}).get("kind") or "") == REMINDER_KIND and not confirmed
-        this = (description, _parties_of(item, stated), _utc(item.get("due_at")))
-        if (any(_same_word(this, other) for other in known_words) if word else
-                any(_similar_desc(norm, wording) for wording, other in known if not confirmed or other == effect)):
+        if _plain(description) in blocked:
             skipped += 1
             continue
         metadata = message_metadata(stated, owner_turn=owner_turn, turn_text=owner_text,
@@ -1218,9 +1014,17 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         if not item.get("due_at") and owner_text and asks_no_reminders(owner_text):
             # Held from its first mention: undated because the person wants no word about it.
             metadata["reschedule"] = {"from": None, "by": "conversation", "note": note, "hold": "first_mention"}
+        this = _identity(description[:1000], item.get("due_at"), metadata)
+        # A row moved or closed by this turn is judged by the store as it is now.
+        if any(same == this for key, same in known.items() if key not in {*updated, *resolved}):
+            skipped += 1
+            continue
         try:
+            # The store checks the person's open rows again in the insert's own transaction.
             row = commitment_store.create(
-                person_id=person_id, description=description[:1000], dedupe=not confirmed and not word,
+                person_id=person_id, description=description[:1000],
+                dedupe=lambda other: _identity(other.get("description"), other.get("due_at"),
+                                               other.get("metadata")) == this,
                 allow_overdue=True,
                 due_at=(item.get("due_at") or None), priority=int(item["priority"]),
                 source_type=item["source_type"], source_context=source_context,
@@ -1232,20 +1036,10 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             skipped += 1
         else:
             created.append(row.get("id"))
-        known.append((norm, effect))
-        known_words.append(this)
+            known[row.get("id")] = this
     return {"created": created, "updated": updated, "resolved": resolved, "candidates": len(items),
             "skipped_duplicates": skipped, "ignored_actions": ignored, "conflicts": conflicts,
-            "between_others": others, "owner_reminders": reminders, "folded": folded}
-
-
-def _effect(metadata: Any) -> tuple:
-    """What an item does when it falls due, for the duplicate check: ``("message", recipient)`` for a
-    granted notice or check-in, ``("word",)`` for anything else."""
-    metadata = metadata if isinstance(metadata, dict) else {}
-    if metadata.get("kind") in MESSAGE_KINDS and metadata.get("grant") == "owner":
-        return ("message", _words(metadata.get("recipient")))
-    return ("word",)
+            "between_others": others, "owner_reminders": reminders}
 
 
 def _heads_up_patch(target: Dict[str, Any], new_due: Optional[str], stated: Optional[Dict[str, Any]]) -> Dict[str, Any]:

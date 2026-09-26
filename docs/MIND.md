@@ -95,19 +95,16 @@ The design is in
    shape from a contact is an ordinary item.
    A word the person asked for (a reminder, a nudge, a word if something has
    not happened) is `kind: reminder`: a message when due, never a task, on any
-   lane. On the owner's turn such a word is another item's own only when it is
-   the same word to the owner: that item's word at its deadline is a reminder
-   to the owner (not a message to someone else, not the assistant's work), its
-   deadline is still ahead, the word adds no matter of its own, and it falls at
-   the deadline, before it where the item has no heads-up yet (it becomes the
-   heads-up, compare-and-set on an open row of the owner's), or within 30
-   minutes after it at no time the owner named ("if I go quiet past that,
-   nudge me"). Anything else stays its own item, so a word the owner asked for
-   is never dropped, moved or sent to someone else. A new item with a listed
-   item's own wording and a new time moves it, compare-and-set; a merely
-   similar one (the Q4 report beside the Q3 report) never does. A message the
-   owner asked for is a duplicate only of a message to the same recipient,
-   never of the promise it chases. The
+   lane. It is never merged into another item: beside an item of the same
+   turn or an open one it is its own row, whatever its wording, and a
+   heads-up is only what the extractor states on the item itself
+   (`metadata.heads_up_at`). A new item is a duplicate only of an open item
+   that is the same item exactly: the same kind, obligor, counterpart,
+   recipient and deadline, and the same description after only Unicode NFC
+   normalisation, casefolding and whitespace collapsing. A new item with a
+   listed item's own wording and kind and a new time moves it,
+   compare-and-set; a merely similar one (the Q4 report beside the Q3 report)
+   never does. The
    person's own words for the time are kept as `metadata.due_text` and shown
    beside the converted date in Pending Commitments. A message to
    pass on now ("tell Kim the meeting moved") is the reply's own job: nothing
