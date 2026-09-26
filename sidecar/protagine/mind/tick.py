@@ -352,7 +352,7 @@ class Mind:
         night = self._consolidation_task
         if night is not None and not night.done():
             night.cancel()          # what it wrote stays; the next due tick after ``mind on`` runs it again
-        cancelled = self.outbox.cancel_unsent("mind off")
+        cancelled = self.outbox.cancel_unsent("mind off", owed=self.authority.OWED_OWNER_TYPES)
         row, created = self.store.create_intention(
             kind="note", type="off_switch", title=f"mind off ({reason}) by {by}", drive="upkeep", cls="internal",
             decision="act", decision_reason="off switch", status="done", dedup_key=None, hermes_kind="none",
@@ -395,7 +395,8 @@ class Mind:
         result: Dict[str, Any] = {"autonomy": level, "previous": previous}
         if level == "off" and previous != "off":
             # Level off is the off switch by another name: nothing queued goes out either.
-            result["cancelled_messages"] = self.outbox.cancel_unsent("autonomy off")
+            result["cancelled_messages"] = self.outbox.cancel_unsent("autonomy off",
+                                                                     owed=self.authority.OWED_OWNER_TYPES)
         return result
 
     def reset(self, cls: str, *, by: str = "owner") -> Dict[str, Any]:
@@ -2432,6 +2433,10 @@ class Mind:
         verdict = self.authority.decide(kind="message", recipient=self.owner_id,
                                         text=f"{candidate.title}\n{candidate.text}", type=candidate.type,
                                         may_contact="auto", toolsets=self.policy.worker_toolsets, now=now)
+        if not self.enabled or self.level == "off":
+            # Owed, not dropped: it waits (deferred) and ``_reconsider`` decides it once the mind is back on.
+            verdict = Verdict(decision="defer", reason="the mind is off: the owed word waits until it is back on",
+                              cls=verdict.cls)
         status = {"act": "approved", "ask": "asked", "drop": "dropped", "defer": "proposed"}[verdict.decision]
         code = new_ask_code(self.store.open_ask_codes()) if verdict.decision == "ask" else None
         row, created = self.store.create_intention(

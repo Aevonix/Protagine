@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from protagine.initiatives.models import StoredInitiative
 
@@ -146,10 +146,17 @@ class Outbox:
             count += 1
         return count
 
-    def cancel_unsent(self, reason: str) -> int:
-        """The off switch: unsent entries are cancelled at once."""
-        count = 0
+    def cancel_unsent(self, reason: str, *, owed: Iterable[str] = ()) -> int:
+        """The off switch: unsent entries are cancelled at once, except a word owed to the owner (``owed``: a
+        task's report, a requested answer), which is its obligation's only word: it goes back to waiting
+        (deferred) and nothing sends it until the mind is back on and decides it again."""
+        count, owed = 0, set(owed)
         for row in self.store.intentions(status=["approved"], kind=["message"], limit=500):
+            if row.type in owed and (not row.entity_id or row.entity_id == self.owner_id):
+                self.store.transition(row.id, "proposed", action="deferred", decision="defer",
+                                      decision_reason=f"{reason}: owed to the owner, it waits for the mind",
+                                      at=self.clock())
+                continue
             self.store.transition(row.id, "cancelled", action="cancelled", outcome="cancelled",
                                   cancelled_at=self.clock(), cancelled_reason=reason, at=self.clock())
             count += 1

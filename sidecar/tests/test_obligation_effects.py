@@ -307,5 +307,38 @@ async def test_with_the_mind_off_a_task_report_is_not_queued(fx):
     row, task = await _one_task(fx)
     fx.mind.authority.set_enabled(False)
     fx.mind.outcomes.record(task["id"], status="done", summary="Agenda drafted.")
-    assert [report.status for report in _reports(fx)] in ([], ["dropped"])
+    assert [report.status for report in _reports(fx)] in ([], ["proposed"])
     assert [p for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"] == []
+
+
+@pytest.mark.parametrize("switch", ["authority", "off"])
+async def test_a_report_of_a_task_finished_while_the_mind_is_off_goes_once_it_is_back_on(fx, switch):
+    """Re-check new P2: the task was dispatched, the mind turned off, the task completed: the report waits and
+    reaches the owner when the mind is back on (the commitment is fulfilled; the report is its only word)."""
+    row, task = await _one_task(fx)
+    if switch == "off":
+        fx.mind.off(reason="test")
+    else:
+        fx.mind.authority.set_enabled(False)
+    fx.mind.outcomes.record(task["id"], status="done", summary="Agenda drafted: three sessions.")
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"] == []
+    if switch == "off":
+        fx.mind.on(by="owner")
+    else:
+        fx.mind.authority.set_enabled(True)
+    await fx.mind.tick(force=True)
+    sent = [p for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"]
+    assert len(sent) == 1 and "three sessions" in sent[0]["text"]
+
+
+async def test_a_report_waiting_to_go_when_the_mind_is_turned_off_goes_once_it_is_back_on(fx):
+    row, task = await _one_task(fx)
+    fx.mind.outcomes.record(task["id"], status="done", summary="Agenda drafted: three sessions.")
+    report, = _reports(fx)
+    assert report.status == "approved"
+    fx.mind.off(reason="test")
+    assert fx.store.get(report.id).status != "cancelled"
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"] == []
+    fx.mind.on(by="owner")
+    await fx.mind.tick(force=True)
+    assert [p["id"] for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"] == [report.id]
