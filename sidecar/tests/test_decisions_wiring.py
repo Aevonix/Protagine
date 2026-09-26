@@ -3,6 +3,7 @@ may change what the existing path decided, and where its silence (disabled, fail
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -200,6 +201,60 @@ async def test_a_held_item_and_a_message_to_a_contact_are_never_asked_about(tmp_
               "obligor": "assistant"}
     assert await extractor.process_one(_Router([notice, _item("Send p-05 the receipt")])) is True
     assert extractor.decisions.calls == []
+
+
+class Unanswered:
+    """A decision model that takes every question and never answers."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def enabled(self, point):
+        return True
+
+    async def decide(self, point, **fields):
+        self.calls += 1
+        await asyncio.Event().wait()
+
+
+def lease(extractor):
+    from contextlib import closing
+    with closing(extractor.ledger._connect()) as conn:
+        return dict(conn.execute("SELECT status, lease_until, attempts FROM commitment_runs").fetchone())
+
+
+async def test_a_drain_that_runs_out_during_a_decision_hands_the_job_back_at_once(tmp_path, monkeypatch):
+    """The capture call answered; the drain's budget runs out while the decision model is asked. The job goes back
+    pending and uncharged, claimable at once, and lands on the next pass."""
+    extractor, commitments, now = capture(tmp_path, monkeypatch, HANDLED)
+    extractor.decisions = Unanswered()
+    due = (now + timedelta(hours=2)).isoformat()
+    router = _Router([_item("Send p-05 the tax form", due_at=due)], [_item("Send p-05 the tax form", due_at=due)])
+    await extractor.drain(router, budget_seconds=0.2)
+    assert extractor.decisions.calls == 1
+    assert lease(extractor) == {"status": "pending", "lease_until": 0, "attempts": 0}
+    extractor.decisions = Decider(no_reminders=None)
+    assert await extractor.process_one(router) is True
+    [row] = commitments.get_pending_for_person(OWNER)
+    assert row["due_at"] is not None and lease(extractor)["status"] != "running"
+
+
+async def test_a_drain_that_runs_out_after_the_capture_call_anywhere_hands_the_job_back(tmp_path, monkeypatch):
+    """Not only a decision: any wait between the capture call's answer and the write (the owner's names here)."""
+    extractor, commitments, now = capture(tmp_path, monkeypatch, "Remind me to send p-05 the tax form at five.")
+    looked_up = []
+
+    async def names(contact_id):
+        looked_up.append(contact_id)
+        if len(looked_up) > 1:                        # the owner's names, looked up after the capture call
+            await asyncio.Event().wait()
+        return []
+
+    extractor.aliases = names
+    due = (now + timedelta(hours=2)).isoformat()
+    await extractor.drain(_Router([_item("Send p-05 the tax form", due_at=due)]), budget_seconds=0.2)
+    assert len(looked_up) == 2
+    assert lease(extractor) == {"status": "pending", "lease_until": 0, "attempts": 0}
 
 
 # -- the owner settling an interest -------------------------------------------------------------------------
