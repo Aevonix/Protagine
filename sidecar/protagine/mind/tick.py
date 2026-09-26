@@ -1378,7 +1378,10 @@ class Mind:
         keep = []
         for finding in state.findings:
             settled = o.settle(finding, state)
-            if settled:
+            if settled == o.UNCERTAIN:
+                # Whether it is a finding is uncertain: the digest carries it, never a message of its own.
+                self._mark_finding(finding.id, "digest", state.now, substance=o.UNCERTAIN)
+            elif settled:
                 self._mark_finding(finding.id, settled, state.now)
             elif o.muted(state, finding.slug, finding.topic):
                 self._mark_finding(finding.id, "muted", state.now)

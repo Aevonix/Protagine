@@ -309,6 +309,7 @@ NULL_REPORT = re.compile(
     r"|findings?|information|papers?|items?|changes?|reports?|sources?|articles?)"
     r"|(?:found|turned\s+up|there\s+(?:is|was|were|are))\s+(?:nothing|no\s+(?:new|relevant|recent))"
     r"|(?:could|did|can|was|were)(?:n't|\s+not)\s+(?:find|able\s+to\s+find|turn\s+up|locate)\s+(?:anything|any)"
+    r"|without\s+(?:anything|any\s+(?:news|change|update|development)s?)"
     r"|no\s+results?|finding\s*[:=]\s*(?:none|nothing|n/?a|null|-)(?=\W|$))",
     re.IGNORECASE)
 REPEAT_OVERLAP = 0.8
@@ -325,25 +326,57 @@ def _sentences(text: str) -> List[str]:
     return [" ".join(part.split()) for part in _SENTENCE.split(str(text or "")) if part.strip()]
 
 
-# Words that say nothing of the topic: the research itself (that it ran, was done, found or changed nothing),
-# its status, and the connecting words around them. A sentence of these and the topic is no finding: "No
-# changes to report about tidal energy", "Research on tidal energy is complete".
-NO_SUBSTANCE = frozenset("""
-finding findings report reports reported reporting update updates updated news research researched researching
-complete completed completes done finished finish looked look looking searched search searches checked check
-checking reviewed review reviewing scanned monitored monitoring change changes changed unchanged same still
-again nothing none anything something everything new notable noteworthy further more else additional add added
-status result results today yesterday week month currently now time this that these those there here the and
-for with about into from was were are has have had been being any all its it's can could would will not
+# Whether a report's sentence is a finding is a typed decision (``substance``): FINDING, EMPTY or UNCERTAIN, read
+# from word classes. A report about the research itself (``PROCESS_WORDS``) or holding only a null marker
+# (``NULL_MARKERS``) says nothing; a state the topic itself reached (``EVENT_WORDS`` with the topic named: "the
+# Orkney project was completed") is a milestone, a finding; facts beyond the topic are findings. What the rule
+# cannot decide (one stray word) is UNCERTAIN: it goes to the digest, never sent at once nor discarded.
+FINDING, EMPTY, UNCERTAIN = "finding", "empty", "uncertain"
+PROCESS_WORDS = frozenset("""
+research researched researching report reports reported reporting finding findings search searched searching
+searches look looked looking checked check checking review reviewed reviewing scan scanned scanning monitoring
+monitored investigation investigated investigating dig digging sources source summary results result status
 """.split())
+NULL_WORDS = frozenset("""
+nil nothing none quiet unchanged same remains remain remained significant notable noteworthy developments
+development news new updates update changes change changed further additional anything something everything
+relevant material major meaningful interesting successfully success without yet still more else add added
+""".split())
+NULL_MARKERS = frozenset("nil nothing none quiet unchanged remains remain remained without".split())
+EVENT_WORDS = frozenset("""
+complete completed completes done finished finish started starts launched launches approved approves opened opens
+closed closes cancelled canceled announced published released delayed postponed paused resumed awarded signed
+rejected
+""".split())
+CONNECTIVES = frozenset("""
+the and for with about into from was were are has have had been being any all its it's can could would will not
+this that these those there here today yesterday week month currently now time again got
+""".split())
+NO_SUBSTANCE = PROCESS_WORDS | NULL_WORDS | EVENT_WORDS | CONNECTIVES
+_LABEL = re.compile(r"^\s*(?:findings?|report|update|result|summary)\s*[:=-]\s*", re.IGNORECASE)
+
+
+def substance(sentence: str, topic: str) -> str:
+    """The typed decision on one sentence of a report: ``FINDING``, ``EMPTY`` or ``UNCERTAIN`` (see above)."""
+    sentence = _LABEL.sub("", str(sentence or ""))
+    if NULL_REPORT.search(sentence):
+        return EMPTY
+    words, about = _tokens(sentence), _tokens(topic)
+    content = words - about - NO_SUBSTANCE
+    if len(content) >= 2 or any(any(ch.isdigit() for ch in word) for word in content):
+        return FINDING
+    if words & PROCESS_WORDS:
+        return UNCERTAIN if content else EMPTY
+    if words & EVENT_WORDS and words & about:
+        return FINDING
+    if words & NULL_MARKERS or re.search(r"\bno\b", sentence, re.IGNORECASE):
+        return UNCERTAIN if content else EMPTY
+    return UNCERTAIN if content else EMPTY
 
 
 def says_something(sentence: str, topic: str) -> bool:
-    """A sentence that reports something: not a null report, and naming more than the topic and the research
-    itself (``NO_SUBSTANCE``)."""
-    if NULL_REPORT.search(sentence):
-        return False
-    return bool(_tokens(sentence) - _tokens(topic) - NO_SUBSTANCE)
+    """A sentence that is not certainly empty (``substance``): a finding, or one the rule cannot decide."""
+    return substance(sentence, topic) != EMPTY
 
 
 def repeated(text: str, inputs: OutreachInputs) -> bool:
@@ -359,14 +392,19 @@ def repeated(text: str, inputs: OutreachInputs) -> bool:
 
 
 def settle(finding: Finding, inputs: OutreachInputs) -> Optional[str]:
-    """``empty`` for a report that found nothing, ``repeat`` for one already shared, else None. An answer the
-    owner asked for is never settled here: "I looked and found nothing more" is its honest answer."""
+    """``empty`` for a report that found nothing, ``repeat`` for one already shared, ``uncertain`` for one whose
+    sentences the typed decision (``substance``) cannot call a finding, else None. An answer the owner asked for
+    is never settled here: "I looked and found nothing more" is its honest answer."""
     if finding.requested_by is not None:
         return None
     text = excerpt(finding.summary, finding.topic, substantive=True)
     if not text:
-        return "empty"
-    return "repeat" if repeated(text, inputs) else None
+        return EMPTY
+    if repeated(text, inputs):
+        return "repeat"
+    if not any(substance(sentence, finding.topic) == FINDING for sentence in _sentences(finding.summary)):
+        return UNCERTAIN            # the digest's, never a message of its own nor discarded
+    return None
 
 
 def novelty(inputs: OutreachInputs, slug: str, type: str) -> float:
@@ -762,7 +800,7 @@ def followups(inputs: OutreachInputs) -> List[Candidate]:
 def digest_value(finding: Finding, inputs: OutreachInputs) -> float:
     """What a finding that did not go now is worth in the digest: relevance x novelty. Timeliness is left
     aside (at 48 h it is e^-2: the reason it did not go now), as are holds and interruption."""
-    if settle(finding, inputs):
+    if settle(finding, inputs) in {EMPTY, "repeat"}:
         return 0.0
     r, _, _ = relevance(finding, inputs)
     return round(r * novelty(inputs, finding.slug, "outreach_finding"), 4)
@@ -784,7 +822,7 @@ def pause_until(entry: Optional[Dict[str, Any]]) -> Optional[datetime]:
 
 __all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "CHECK_IN_OFFERS", "CONVERSATION_GAP", "bears_on", "Care", "DIGEST_FLOOR",
            "FINDING_WINDOW", "Finding", "Followup", "INDEFINITE", "Interest", "Loop", "MESSAGE_CHARS", "MIN_GAP",
-           "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NO_SUBSTANCE", "NULL_REPORT", "repeated", "says_something", "settle",
+           "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NO_SUBSTANCE", "NULL_REPORT", "repeated", "says_something", "settle", "substance",
            "NOT_NOW_HOLD", "OWNER_TURN_KEY", "OutreachInputs", "PAUSE_KEY", "REPLY_HOURS", "Sent", "TIMING_PREFIX", "answer_candidate",
            "backoff_until", "candidates", "care_candidate", "digest_value", "excerpt", "finding_candidate",
            "followup_candidate", "followups", "held", "holds", "binds_followup", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
