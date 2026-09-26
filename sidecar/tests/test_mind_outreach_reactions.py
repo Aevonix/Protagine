@@ -662,6 +662,27 @@ async def test_a_requested_answer_that_expires_unsent_goes_out_once_the_body_is_
     assert len(sent) == 1 and "KD-83" in sent[0].context["text"]
 
 
+# -- a hold is the owner's own instruction --------------------------------------------------------------------
+
+async def test_a_quoted_resume_never_lifts_the_owners_pause(make):
+    fx = make()
+    await say(fx, "Please stop checking in with me unprompted.", "t-stop")
+    assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+    fx.shift(timedelta(minutes=30))
+    summary = await say(fx, 'Alice said: "you can check in again". What should I say?', "t-quote", "owner-2")
+    assert "resumed" not in summary["applied"]
+    assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+    fx.shift(timedelta(minutes=30))
+    await say(fx, "You can check in again.", "t-resume", "owner-3")
+    assert fx.mind.state()["outreach"]["paused_until"] is None
+
+
+async def test_a_quoted_stop_never_pauses_outreach(make):
+    fx = make()
+    summary = await say(fx, "My boss wrote \"stop checking in on the team every hour\". How do I answer that?", "t-1")
+    assert "paused" not in summary["applied"] and fx.mind.state()["outreach"]["paused_until"] is None
+
+
 def test_a_promise_keeps_a_followup_only_when_it_does_what_the_reply_asked():
     item = outreach.Followup(outreach_id="o-1", topic="tidal energy", slug="tidal-energy",
                              shared="QX-41: A practical study of tidal energy was published.")

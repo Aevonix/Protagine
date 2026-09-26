@@ -297,3 +297,22 @@ def test_a_turn_with_a_request_of_its_own_or_a_redo_is_not_a_reply(text):
                                   "Could you look into that study more?", "Not now, sorry."])
 def test_a_reply_about_the_outreach_itself_is_not_elsewhere(text):
     assert not reactions.elsewhere(text, known()), text
+
+
+@pytest.mark.parametrize("text", [
+    'Alice said: "you can check in again". What should I say?',
+    "My sister told me you can check in again whenever you like; odd thing to say.",
+    "Bob wrote 'stop checking in on me' in the group chat, how do I answer?",
+    "The note says “feel free to reach out” at the bottom.",
+    "My manager said: stop checking in so often. Is that fair?",
+])
+def test_a_hold_phrase_someone_else_said_is_not_the_owners_instruction(text):
+    reading = read(text)
+    assert not reading.resume and not reading.stop and not reading.pause_today
+
+
+@pytest.mark.parametrize("text", ["You can check in again, I said.", "Ok, you can check in again.",
+                                  "Stop checking in, I don't need it.", "I said stop checking in!"])
+def test_the_owners_own_hold_phrase_still_counts(text):
+    reading = read(text)
+    assert reading.resume or reading.stop

@@ -217,6 +217,19 @@ def strip_prefix(text: str) -> str:
     return _PREFIX.sub("", str(text or ""))
 
 
+# Someone else's words the owner passes on: a quotation ("...", \u201c...\u201d, \u2018...\u2019, or '...' set off as one)
+# and what a reporting verb introduces, to the end of its sentence ("Alice said: ...", "my boss wrote that ...";
+# the owner's own "I said ..." is theirs). A stop, a resume or a pause there is not the owner's instruction.
+_QUOTED = re.compile(r'"[^"\n]*"|\u201c[^\u201d\n]*\u201d|\u2018[^\u2019\n]*\u2019|(?<![\w\'])\'[^\'\n]+\'(?![\w\'])')
+_REPORTED = re.compile(r"\b(?!(?:i|we)\b)[\w'-]+,?\s+(?:said|says|told\s+(?:me|us|him|her|them)|tells\s+(?:me|us)|wrote|writes"
+                       r"|texted|texts|messaged|emailed|asked|asks|replied|replies|put\s+it)\b[^.?!;\n]*", re.IGNORECASE)
+
+
+def own_words(text: str) -> str:
+    """The owner's own words in a turn: quotations and reported speech blanked out, the rest where it was."""
+    return _REPORTED.sub(" ", _QUOTED.sub(" ", str(text or "")))
+
+
 def refers_back(text: str) -> bool:
     """Whether a turn reads as a reply to something just sent: short, or referring back to it. A position
     link (the owner's first turn after an outreach) needs this, so a long turn about something else that
@@ -453,14 +466,16 @@ def read(text: str, *, contacts: Iterable[str] = ()) -> Reading:
     reading = Reading()
     if not body.strip():
         return reading
-    reading.stop_explicit = bool(_find(body, STOP_CUES, contacts))
-    reading.stop = reading.stop_explicit or bool(_find(body, BARE_STOP_CUES, contacts))
-    reading.resume = bool(_find(body, RESUME_CUES, contacts))
-    reading.pause_explicit = bool(_find(body, PAUSE_TODAY_CUES, contacts))
-    reading.pause_today = reading.pause_explicit or bool(_find(body, VAGUE_PAUSE_CUES, contacts))
+    # A stop, a resume or a pause is an instruction to the assistant: read from the owner's own words only.
+    own = own_words(body)
+    reading.stop_explicit = bool(_find(own, STOP_CUES, contacts))
+    reading.stop = reading.stop_explicit or bool(_find(own, BARE_STOP_CUES, contacts))
+    reading.resume = bool(_find(own, RESUME_CUES, contacts))
+    reading.pause_explicit = bool(_find(own, PAUSE_TODAY_CUES, contacts))
+    reading.pause_today = reading.pause_explicit or bool(_find(own, VAGUE_PAUSE_CUES, contacts))
     reading.not_now = bool(_find(body, NOT_NOW_CUES, contacts))
     negatives = _hits(body, NEGATIVE_CUES, contacts)
-    stop_sending = [target for phrase, target, _ in negatives
+    stop_sending = [target for phrase, target, _ in _hits(own, NEGATIVE_CUES, contacts)
                     if phrase.casefold().startswith(("stop sending", "quit sending"))
                     and (target is None or target.casefold() in _GENERIC)]
     if stop_sending:
@@ -525,5 +540,5 @@ def resume(text: str) -> bool:
 
 
 __all__ = ["Cue", "MAX_OBJECT_WORDS", "REPLY_WORDS", "Reading", "classify_reaction", "clean_object", "content_terms",
-           "declared_interest", "disinterest", "elsewhere", "mentions_contact", "pause_today", "read", "refers_back",
+           "declared_interest", "disinterest", "elsewhere", "mentions_contact", "own_words", "pause_today", "read", "refers_back",
            "relief", "resume", "stop", "strain", "strip_prefix"]
