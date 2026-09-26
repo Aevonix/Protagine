@@ -12,7 +12,7 @@ from protagine.api.routers import mind as mind_router
 from protagine.mind import outcomes as outcomes_module
 from protagine.mind.drives import slug
 from protagine.mind.rank import Candidate
-from test_mind_loop import OWNER, Fixture
+from test_mind_loop import OWNER, Fixture, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 
 ROOMY = {"breaker": {"failures": 50}, "budgets": {"tasks_per_hour": 50, "concurrent_tasks": 50}}
 

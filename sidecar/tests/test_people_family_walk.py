@@ -336,7 +336,10 @@ async def plugin_arm(tmp_path, monkeypatch, vocabulary, profile='full'):
     app = FastAPI()
     app.add_middleware(ApiKeyMiddleware, api_key=KEY)
     worker.mount_routes(app, mind=True)
+    # The walk's body clock starts at 12:00 UTC, as a generated family's does (paired_body.CLOCK_STARTS):
+    # the scenario's clock advances alone decide whether a night falls, never the hour the suite runs.
     paired_body.install_clock(0)
+    paired_body.install_clock(paired_body.start_offset('12:00'))
     try:
         with paired_worker.provider_read_services(state):
             async with paired_worker.people_store(state):

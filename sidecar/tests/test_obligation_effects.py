@@ -17,7 +17,7 @@ from protagine.commitments.extract import record_items
 from protagine.commitments.store import CommitmentStore
 from protagine.mind import audit
 from protagine.mind.drives import DriveInputs, duty
-from test_mind_loop import CONTACT, OWNER, fx  # noqa: F401  (pytest fixture)
+from test_mind_loop import CONTACT, OWNER, fx, pinned_clock  # noqa: F401  (pinned_clock, fx: pytest fixtures)
 
 
 def _row(store, *, person=OWNER, metadata=None, due, description="Nudge the owner if the brief goes quiet",

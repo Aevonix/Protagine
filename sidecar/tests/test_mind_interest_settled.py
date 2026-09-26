@@ -17,7 +17,7 @@ import pytest
 
 from protagine.api.routers import mind as mind_router
 from protagine.mind.concerns import SETTLED_FOR
-from test_mind_loop import CONTACT, OWNER, Fixture
+from test_mind_loop import CONTACT, OWNER, Fixture, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 
 SETTLED = ("On tide tables: a friend explained it to me over lunch, so my curiosity is satisfied. "
            "Nothing to look into.")

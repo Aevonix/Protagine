@@ -434,7 +434,7 @@ def test_reschedule_shifts_an_absolute_heads_up_by_the_same_delta(tmp_path):
                           person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     assert result["updated"] == [row["id"]]
     after = cstore.get(row["id"])
-    assert after["metadata"]["heads_up_at"] == _iso(days=2, minutes=-5)
+    assert after["metadata"]["heads_up_at"] == (datetime.fromisoformat(pushed) - timedelta(minutes=10)).isoformat()
     assert heads_up_at(after) == datetime.fromisoformat(pushed) - timedelta(minutes=10)
     assert [c.type for c in _duty(cstore, _now())] == []
     assert [c.type for c in _duty(cstore, _now() + timedelta(days=2, minutes=-3))] == ["commitment_due_soon"]
@@ -780,7 +780,7 @@ def test_a_deadline_pulled_in_past_its_warning_time_keeps_the_heads_up_and_fires
     record_items([_item("Send Kim the invoice", action="reschedule", target=1, due_at=soon)],
                  person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     after = cstore.get(row["id"])
-    assert after["metadata"]["heads_up_at"] == _iso(minutes=-5)
+    assert after["metadata"]["heads_up_at"] == (datetime.fromisoformat(soon) - timedelta(minutes=10)).isoformat()
     assert [c.type for c in _duty(cstore, _now())] == ["commitment_due_soon"]
 
 
@@ -800,12 +800,13 @@ def test_a_created_item_records_who_owes_it_and_updates_leave_it_alone(tmp_path)
     promised, plain = (cstore.get(ident) for ident in result["created"])
     assert promised["metadata"] == {"counterpart": "owner", "obligor": "assistant"}
     assert plain["metadata"] is None
+    heads_up = _iso(hours=2, minutes=45)            # read once: a second boundary may fall between two reads
     record_items([_item("Send the owner the report", action="reschedule", target=1, due_at=_iso(hours=3),
-                        metadata={"heads_up_at": _iso(hours=2, minutes=45)})],
+                        metadata={"heads_up_at": heads_up})],
                  person_id=OWNER, commitment_store=cstore, existing=_open(cstore, OWNER), rejections=[])
     after = cstore.get(promised["id"])
     assert after["metadata"]["obligor"] == "assistant" and after["metadata"]["counterpart"] == "owner"
-    assert after["metadata"]["heads_up_at"] == _iso(hours=2, minutes=45)
+    assert after["metadata"]["heads_up_at"] == heads_up
 
 
 def test_the_contract_names_the_obligor():

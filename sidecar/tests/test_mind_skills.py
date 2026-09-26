@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 
 from protagine.api.routers import mind as mind_router
 from protagine.mind import skills as skills_module
-from test_mind_loop import OWNER, Fixture
+from test_mind_loop import OWNER, Fixture, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 
 ROOMY = {"breaker": {"failures": 50}, "budgets": {"tasks_per_hour": 50, "concurrent_tasks": 50}}
 FIELDS = {"signature": "topic:order-codes", "kind": "strategy", "title": "Order codes by channel",

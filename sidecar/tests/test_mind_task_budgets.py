@@ -14,6 +14,7 @@ from protagine.mind.concerns import Concern
 from protagine.mind.deliberate import GOAL_TASKS, RESPONSE_SCHEMA, SYSTEM, apply_proposal, build_prompt
 from protagine.mind.rank import Candidate
 from test_mind_drives_loop import DeliberationRouter, fx, idle, research  # noqa: F401  (fixture)
+from test_mind_loop import pinned_clock  # noqa: F401  (autouse pytest fixture: fx builds a Fixture)
 
 RESEARCH_TYPES = ("research", "question", "mastery_investigation", "goal_step", "outreach_followup")
 

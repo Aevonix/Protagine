@@ -13,7 +13,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 from protagine.mind.drives import schedule_key
-from test_mind_loop import OWNER, FakeRouter, Fixture
+from test_mind_loop import OWNER, FakeRouter, Fixture, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 
 DESCRIPTION = "Send Kim the summary"
 PROMISE = "I owe Kim the summary and it needs to be with them in five minutes."

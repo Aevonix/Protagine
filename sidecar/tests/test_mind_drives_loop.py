@@ -21,7 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from protagine.api.routers import mind as mind_router
 from protagine.mind.deliberate import ASK_RESPONSE_SCHEMA, RESPONSE_SCHEMA, TASK
 from protagine.mind.drives import period
-from test_mind_loop import AUTH, OWNER, Fixture
+from test_mind_loop import AUTH, OWNER, Fixture, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 
 
 class DeliberationRouter:

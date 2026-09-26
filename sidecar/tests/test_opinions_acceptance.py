@@ -36,7 +36,7 @@ from protagine.mind.rank import Candidate
 from protagine.qualification import native_memory_worker as worker
 from protagine.qualification import paired, paired_worker
 from protagine.self_model.judgments import Proposal
-from test_mind_loop import OWNER, Fixture
+from test_mind_loop import OWNER, Fixture, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 from test_turn_source_evidence import source_app  # noqa: F401  (pytest fixture)
 
 GUEST = "p-02"

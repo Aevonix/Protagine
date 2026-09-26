@@ -222,11 +222,12 @@ def test_reschedule_later_reopens_an_overdue_row_so_nothing_is_due_at_the_old_ti
     row = cstore.create(person_id=PERSON, description="Send Sam the build recap", due_at=_iso(hours=-1),
                         allow_overdue=True)
     assert row["status"] == "overdue"
-    later = _item("Send Sam the build recap", action="reschedule", target=1, due_at=_iso(days=1))
+    moved = _iso(days=1)                       # read once: a second boundary may fall between two reads
+    later = _item("Send Sam the build recap", action="reschedule", target=1, due_at=moved)
     result = record_items([later], person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     assert result["updated"] == [row["id"]]
     after = cstore.get(row["id"])
-    assert after["status"] == "pending" and after["due_at"] == _iso(days=1)
+    assert after["status"] == "pending" and after["due_at"] == moved
     # What the mind's overdue flip and the duty drive would see at the old deadline: nothing.
     now = _now()
     assert [r for r in cstore.list(status=["pending"])["commitments"]
@@ -293,9 +294,10 @@ def test_actions_with_a_bad_target_or_wording_are_ignored(tmp_path):
     assert result["ignored_actions"] == 5 and result["updated"] == [] and result["resolved"] == []
     assert cstore.get(row["id"])["status"] == "pending" and len(_open(cstore)) == 2
     # A number written as a string still points at the listed item; the wording must still be its own.
-    result = record_items([_item("Send Sam the build recap.", action="reschedule", target="1", due_at=_iso(days=3))],
+    moved = _iso(days=3)                       # read once: a second boundary may fall between two reads
+    result = record_items([_item("Send Sam the build recap.", action="reschedule", target="1", due_at=moved)],
                           person_id=PERSON, commitment_store=cstore, existing=existing, rejections=[])
-    assert result["updated"] == [row["id"]] and cstore.get(row["id"])["due_at"] == _iso(days=3)
+    assert result["updated"] == [row["id"]] and cstore.get(row["id"])["due_at"] == moved
 
 
 def test_hold_clears_the_deadline_and_yields_no_duty_candidate(tmp_path):
@@ -319,10 +321,11 @@ def test_reinstated_hold_reschedules_the_same_row(tmp_path):
     record_items([_item("Chase Sam for the signed form", action="reschedule", target=1, due_at=None)],
                  person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     assert cstore.get(row["id"])["due_at"] is None
-    result = record_items([_item("Chase Sam for the signed form", action="reschedule", target=1, due_at=_iso(days=1))],
+    moved = _iso(days=1)                       # read once: a second boundary may fall between two reads
+    result = record_items([_item("Chase Sam for the signed form", action="reschedule", target=1, due_at=moved)],
                           person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     assert result["updated"] == [row["id"]] and result["created"] == []
-    assert cstore.get(row["id"])["due_at"] == _iso(days=1)
+    assert cstore.get(row["id"])["due_at"] == moved
     assert [r["id"] for r in _open(cstore)] == [row["id"]]
     assert len(_duty_candidates(cstore, _now() + timedelta(days=2))) == 1
 
@@ -344,12 +347,13 @@ async def test_extraction_applies_an_action_end_to_end(tmp_path):
     cstore, ledger, extractor = _setup(tmp_path)
     row = cstore.create(person_id=PERSON, description="Send Sam the build recap", due_at=_iso(days=2))
     _turn(ledger, "t-2", "Sam needs the recap by tomorrow noon now, not the day after.")
-    router = _Router(_reply(_item("Send Sam the build recap", action="reschedule", target=1, due_at=_iso(days=1))))
+    moved = _iso(days=1)                       # read once: a second boundary may fall between two reads
+    router = _Router(_reply(_item("Send Sam the build recap", action="reschedule", target=1, due_at=moved)))
     assert await extractor.process_one(router) is True
     assert f"[1] Send Sam the build recap (due {row['due_at']})" in router.prompt()
     assert _job(ledger, "t-2")["disposition"] == "recorded"
     assert [r["id"] for r in _open(cstore)] == [row["id"]]
-    assert cstore.get(row["id"])["due_at"] == _iso(days=1)
+    assert cstore.get(row["id"])["due_at"] == moved
 
 
 # --- F3d: the previous turns travel with the audited turn -------------------------------------

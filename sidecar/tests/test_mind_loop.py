@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -37,6 +38,36 @@ CONTACT = "p-02"
 KEY = "test-api-key"
 AUTH = {"Authorization": "Bearer " + KEY}
 TARGET = f"telegram:{OWNER}-handle"      # where the body sends the owner's messages
+
+
+CLOCK_START = (0, 12, 0)     # Monday 12:00 UTC: the weekday and time of day every test here begins at
+_PINNED = [False]
+
+
+@pytest.fixture(autouse=True)
+def pinned_clock(monkeypatch):
+    """Start the wall clock of every test here at the next Monday 12:00 UTC, whatever the suite runs.
+
+    ``time.time`` is the one wall clock the sidecar reads (``temporal.now_utc``: the stores' stamps and
+    checks, such as a new commitment's due time having to lie ahead), so shifting it moves them all,
+    and the ``Fixture`` clock starts from it. The mind's calendar rules then fire, or not, by a test's
+    own ``shift`` alone, never by the hour or the weekday the suite ran at: a shift of hours stays
+    inside one day, a shift of a day crosses exactly one 03:00 night, and the ISO week that re-arms
+    self-work (``drives.period``) holds for six days. Forward only, as the paired body clock
+    (``paired_body.start_offset``). A module that builds a ``Fixture`` imports this fixture.
+    """
+    real = time.time
+    now = real()
+    weekday, hour, minute = CLOCK_START
+    start = datetime.fromtimestamp(now, timezone.utc).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    start += timedelta(days=(weekday - start.weekday()) % 7)
+    if start.timestamp() < now:
+        start += timedelta(days=7)
+    offset = start.timestamp() - now
+    monkeypatch.setattr(time, "time", lambda: real() + offset)
+    _PINNED[0] = True
+    yield start
+    _PINNED[0] = False
 
 
 class FakeRouter:
@@ -83,7 +114,8 @@ class FakeContacts:
 
 class Fixture:
     def __init__(self, tmp_path, *, autonomy="standard", config=None, router=None, drain=False):
-        self.now = datetime.now(timezone.utc).replace(microsecond=0)
+        assert _PINNED[0], "a module that builds a Fixture imports pinned_clock from test_mind_loop"
+        self.now = datetime.fromtimestamp(time.time(), timezone.utc).replace(microsecond=0)
         self.state = tmp_path
         self.store = InitiativeStore(state_dir=tmp_path)
         self.commitments = CommitmentStore(tmp_path / "protagine-commitments.db")
@@ -93,8 +125,9 @@ class Fixture:
         self.contacts = FakeContacts({OWNER: {"contact_id": OWNER, "may_contact": "auto"},
                                       CONTACT: {"contact_id": CONTACT, "may_contact": "ask"},
                                       "p-03": {"contact_id": "p-03", "may_contact": "never"}})
-        # The nightly consolidation has its own suite (test_mind_consolidate.py); here it stays off so a
-        # wall clock past 03:00 UTC never starts a background night against these fixtures' fake routers.
+        # The nightly consolidation has its own suite (test_mind_consolidate.py); here it stays off. The
+        # night itself (the lessons stage, the claim settling) still runs when a shift crosses 03:00 UTC,
+        # which the pinned clock (pinned_clock) leaves to the tests that shift by a day.
         config = dict(config or {})
         self.config = {"autonomy": autonomy, **config,
                        "faculties": {"consolidation": False, **(config.get("faculties") or {})}}
@@ -867,8 +900,8 @@ async def test_a_forced_tick_drains_pending_capture_before_it_decides(tmp_path, 
     and formed in that same tick; the summary records the drain."""
     import time as _time
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
-    due = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=45)   # pending at creation
-    fx = Fixture(tmp_path, router=SlowRouter(due, delay=0.3), drain=True)
+    fx = Fixture(tmp_path, router=SlowRouter(None, delay=0.3), drain=True)
+    fx.router.due_at = fx.now + timedelta(seconds=45)                                  # pending at creation
     try:
         fx.turn("turn-d1", OWNER, "I'll get the deck to them in a minute.", "Noted.")
         assert _pending_jobs(fx) == [("pending", 0, 0)]
@@ -893,7 +926,8 @@ async def test_a_tick_with_nothing_pending_does_not_wait(tmp_path, monkeypatch):
     """(b) No pending job: the drain costs one query, and the tick stays fast."""
     import time as _time
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
-    fx = Fixture(tmp_path, router=SlowRouter(datetime.now(timezone.utc), delay=5.0), drain=True)
+    fx = Fixture(tmp_path, router=SlowRouter(None, delay=5.0), drain=True)
+    fx.router.due_at = fx.now
     try:
         await fx.mind.tick(force=True)                       # first tick: retention and the health probes warm up
         started = _time.monotonic()
@@ -916,7 +950,8 @@ async def test_a_router_that_never_answers_returns_at_the_budget_with_the_job_st
     to pending with its attempt uncharged (the worker or the next tick takes it)."""
     import time as _time
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
-    fx = Fixture(tmp_path, router=SlowRouter(datetime.now(timezone.utc), hang=True), drain=True)
+    fx = Fixture(tmp_path, router=SlowRouter(None, hang=True), drain=True)
+    fx.router.due_at = fx.now
     try:
         fx.mind.drain_forced_s = 0.5
         fx.turn("turn-d3", OWNER, "I'll call them back before noon.", "OK.")
@@ -941,8 +976,8 @@ async def test_a_forced_drain_takes_a_job_that_is_backed_off(tmp_path, monkeypat
     import sqlite3
     import time as _time
     monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
-    due = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=45)
-    fx = Fixture(tmp_path, router=SlowRouter(due, delay=0.05), drain=True)
+    fx = Fixture(tmp_path, router=SlowRouter(None, delay=0.05), drain=True)
+    fx.router.due_at = fx.now + timedelta(seconds=45)
     try:
         fx.turn("turn-d4", OWNER, "Remind me to send the invoice in a minute.", "Will do.")
         with sqlite3.connect(fx.state / "turn-idempotency.db") as conn:

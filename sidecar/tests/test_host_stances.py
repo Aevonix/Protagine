@@ -9,7 +9,7 @@ from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import mind as mind_router
 from protagine.self_model.judgments import Proposal
 from onekey import AUTH, KEY
-from test_mind_loop import OWNER, Fixture
+from test_mind_loop import OWNER, Fixture, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 from test_turn_source_evidence import source_app  # noqa: F401  (pytest fixture)
 
 GUEST = "p-02"

@@ -30,7 +30,7 @@ from protagine.mind.deliberate import (
 )
 from protagine.mind.rank import Candidate, eligible, pick, rank, score, threshold_for
 from protagine.self_model.appraisals import AppraisalStore
-from test_mind_loop import AUTH, OWNER, Fixture
+from test_mind_loop import AUTH, OWNER, Fixture, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 from test_turn_source_evidence import source_app  # noqa: F401  (fixture)
 
 TOPIC = "quarterly figures"

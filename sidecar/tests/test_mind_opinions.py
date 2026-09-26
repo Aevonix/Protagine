@@ -17,7 +17,7 @@ from protagine.mind.drives import slug
 from protagine.mind.opinions import CONTEXT_CHARS, CUE_LINE, STANDING, Opinions
 from protagine.mind.rank import Candidate
 from protagine.self_model.judgments import Proposal
-from test_mind_loop import OWNER, Fixture
+from test_mind_loop import OWNER, Fixture, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 
 TOPIC = "bee dances"
 SIGNATURE = f"research:{slug(TOPIC)}"
