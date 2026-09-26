@@ -48,11 +48,11 @@ class TestServerCreation:
             new = await server.call_tool('protagine_health', {})
         assert old == new
         assert get.await_count == 2
-        assert len(await server.list_tools()) == 19
+        assert len(await server.list_tools()) == 18
         assert all(tool.name.startswith('protagine_') for tool in await server.list_tools())
 
-    def test_has_19_tools(self, tool_names):
-        assert len(tool_names) == 19
+    def test_has_18_tools(self, tool_names):
+        assert len(tool_names) == 18
 
     def test_has_expected_tools(self, tool_names):
         expected = [
@@ -61,7 +61,6 @@ class TestServerCreation:
             "protagine_check_commitments",
             "protagine_lookup_facts",
             "protagine_check_affect",
-            "protagine_search_world",
             "protagine_get_patterns",
             "protagine_create_commitment",
             "protagine_fulfill_commitment",
@@ -79,10 +78,13 @@ class TestServerCreation:
         ]
         for tool in expected:
             assert tool in tool_names, f"Missing tool: {tool}"
+        assert "protagine_search_world" not in tool_names       # the world model is gone (M8)
 
     def test_has_resources(self, server):
         resources = list(server._resource_manager._resources.keys())
-        assert len(resources) >= 4  # status, commitments, world, surprises
+        assert len(resources) >= 3  # status, commitments, surprises
+        assert not any("world" in str(uri) for uri in resources)
+        assert "world model" not in (server.instructions or "")
 
     def test_has_prompts(self, server):
         prompts = list(server._prompt_manager._prompts.keys())
@@ -93,7 +95,7 @@ class TestServerCreation:
     def test_read_only_tools(self, server):
         tools = server._tool_manager._tools
         ro_tools = [name for name, t in tools.items() if t.annotations.readOnlyHint]
-        assert len(ro_tools) == 7
+        assert len(ro_tools) == 6
         assert "protagine_health" in ro_tools
         assert "protagine_get_context" in ro_tools
 

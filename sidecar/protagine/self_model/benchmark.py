@@ -12,7 +12,7 @@ Metrics (stable ids):
   actions.success           all-domain outcome rate, per-domain detail
   journal.acted_share       acted / (acted+asked+held+blocked) decision mix
   recall.fact_coverage      probe: high-confidence shared facts re-queried
-                            against graph recall, token-coverage graded
+                            against canonical source recall, token-coverage graded
   latency.jobs_p50_secs     completed queue-job durations (p50; p95 detail)
   latency.* / surface.*     host-submitted samples (POST .../samples) rolled
                             up automatically: latency.* -> p50 (+p95),
@@ -39,6 +39,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ def _now() -> float:
 
 
 def week_id(dt: Optional[datetime] = None) -> str:
-    dt = dt or datetime.now(timezone.utc)
+    dt = dt or now_utc()
     return dt.strftime("%G-W%V")
 
 
@@ -161,7 +162,7 @@ def week_window(week: str) -> Tuple[datetime, datetime]:
 
 
 def previous_week(dt: Optional[datetime] = None) -> str:
-    dt = dt or datetime.now(timezone.utc)
+    dt = dt or now_utc()
     return week_id(dt - timedelta(days=7))
 
 
@@ -542,6 +543,28 @@ class BenchmarkStore:
         return out
 
 
+def canonical_probe_recall(state_dir: Any):
+    """The recall probe's read path: scoped lexical search over the source ledger.
+
+    ``recall(query, *, person_id=None, limit=5)`` returns rows with ``content``.
+    A probe without a subject falls back to the owner; with no owner configured
+    it returns nothing rather than reading another person's sources.
+    """
+    async def recall(query: str, *, person_id: Optional[str] = None,
+                     limit: int = 5) -> List[Dict[str, Any]]:
+        from protagine.identity import get_owner_contact_id
+        from protagine.turns import get_turn_idempotency_ledger
+        contact = person_id or get_owner_contact_id()
+        if not contact:
+            return []
+        ledger = get_turn_idempotency_ledger(state_dir)
+        rows = await asyncio.to_thread(
+            ledger.search_sources, query, contact_id=contact,
+            session_id="benchmark-probe", limit=limit)
+        return [{"content": str(row.get("content") or "")} for row in rows]
+    return recall
+
+
 class SelfhoodBenchmark:
     """Weekly metric derivation over the shipped stores.
 
@@ -552,15 +575,17 @@ class SelfhoodBenchmark:
 
     def __init__(self, store: BenchmarkStore, *,
                  commitments: Any = None, competence: Any = None,
-                 journal: Any = None, comms: Any = None, graph: Any = None,
+                 journal: Any = None, comms: Any = None, recall: Any = None,
                  facts: Any = None, queue: Any = None,
                  corrections: Any = None,
                  owner_contact_id: Optional[str] = None,
                  probes: Optional[int] = None) -> None:
         self.store = store
+        # ``recall(query, *, person_id, limit) -> [{"content": ...}]`` is the
+        # probe's read path; the server wires ``canonical_probe_recall``.
         self._deps = {
             "commitments": commitments, "competence": competence,
-            "journal": journal, "comms": comms, "graph": graph,
+            "journal": journal, "comms": comms, "recall": recall,
             "facts": facts, "queue": queue, "corrections": corrections,
         }
         self._owner = owner_contact_id
@@ -569,7 +594,7 @@ class SelfhoodBenchmark:
     # -- lazy dependency resolution -------------------------------------
     _HOST_GLOBALS = {
         "commitments": "_commitment_store", "comms": "_comms_log",
-        "graph": "_graph", "facts": "_facts_store",
+        "facts": "_facts_store",
         "corrections": "_learning_feedback_store",
     }
 
@@ -999,8 +1024,8 @@ class SelfhoodBenchmark:
         }
 
     async def _m_recall(self, since, until):
-        """Probe: re-query high-confidence shared facts against graph recall
-        and grade by token coverage. Records each probe as a sample."""
+        """Probe: re-query high-confidence shared facts against canonical source
+        recall and grade by token coverage. Records each probe as a sample."""
         rows = self._probe_rows()
         if rows is None or not rows:
             return None
@@ -1013,7 +1038,7 @@ class SelfhoodBenchmark:
         """On-demand recall probe: the same derivation as the weekly
         recall.fact_coverage metric, but with a seeded, deterministic fact
         pick so before/after comparisons measure the recall path rather than
-        sampling noise. Read-only against the graph. Samples are recorded
+        sampling noise. Read-only against the source ledger. Samples are recorded
         with source="manual-probe"; rollups never read recall.probe samples,
         so manual probing cannot distort the weekly scorecard."""
         rows = self._probe_rows()
@@ -1029,10 +1054,10 @@ class SelfhoodBenchmark:
 
     def _probe_rows(self) -> Optional[List[Dict[str, Any]]]:
         """High-confidence shared facts to probe, or None when a source
-        (graph or facts store) is unavailable — honest-skip, never zero."""
-        graph = self._dep("graph")
+        (recall path or facts store) is unavailable — honest-skip, never zero."""
+        recall = self._dep("recall")
         facts = self._dep("facts")
-        if graph is None or facts is None:
+        if recall is None or facts is None:
             return None
         kwargs: Dict[str, Any] = {"min_confidence": 0.75, "limit": 200}
         if cognition_p4_mode() == "live":
@@ -1064,9 +1089,9 @@ class SelfhoodBenchmark:
 
     async def _run_probes(self, picks: List[Any],
                           source: str) -> Optional[Dict[str, Any]]:
-        """Grade each picked fact against graph recall (token coverage),
+        """Grade each picked fact against canonical recall (token coverage),
         recording one recall.probe sample per fact under `source`."""
-        graph = self._dep("graph")
+        recall = self._dep("recall")
         hits = 0
         judged = 0
         for f in picks:
@@ -1079,15 +1104,15 @@ class SelfhoodBenchmark:
                        getattr(f, "subject_person_id", None)
                        or getattr(f, "contact_id", None))
             try:
-                # bound each probe so a wedged graph connection can't hang the
-                # benchmark (and, through it, the autonomy tick)
-                recall_kwargs = {"limit": 5, "min_confidence": 0.1}
+                # bound each probe so a wedged store can't hang the benchmark
+                # (and, through it, the mind tick)
+                person_id = None
                 if cognition_p4_mode() == "live":
                     if not subject:
                         continue
-                    recall_kwargs["person_id"] = str(subject)
+                    person_id = str(subject)
                 results = await asyncio.wait_for(
-                    graph.recall(fact, **recall_kwargs), timeout=8.0)
+                    recall(fact, person_id=person_id, limit=5), timeout=8.0)
             except (Exception, asyncio.TimeoutError):
                 continue
             hit = 1.0 if self._covered(fact, results) else 0.0

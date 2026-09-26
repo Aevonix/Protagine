@@ -5,7 +5,7 @@ import shutil
 root = Path('/opt/protagine')
 qualification = root / 'sidecar/protagine/qualification'
 keep = {'__init__.py', 'paired_worker.py', 'paired_transport.py', 'paired_trace.py',
-        'paired_workflow_runtime.py', 'paired_body.py', 'paired_arms.py',
+        'paired_workflow_runtime.py', 'paired_body.py', 'paired_arms.py', 'paired_history.py',
         'native_memory_worker.py', 'native_identity.py', 'native_memory_identity.py'}
 for path in qualification.iterdir():
     if path.name not in keep:

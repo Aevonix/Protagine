@@ -196,11 +196,20 @@ async def test_incident_changes_relevant_decision_replay_does_not_reinforce_and_
 
 
 @pytest.mark.asyncio
-async def test_private_views_stay_private_preference_has_attribution_and_values_are_not_grants(state, monkeypatch):
-    monkeypatch.setenv('PROTAGINE_AGENT_VALUES', json.dumps(['Be candid', 'Respect promises']))
+async def test_private_views_stay_private_preference_has_attribution_and_values_are_not_grants(state, monkeypatch, tmp_path):
+    from protagine.config import render_constitution, save_identity
+    identity = {'owner': {'name': 'Owner'}, 'agent': {'name': 'Agent', 'values': ['Be candid', 'Respect promises'],
+                                                      'boundaries': ['never send money']}}
+    monkeypatch.setenv('PROTAGINE_HOME', str(tmp_path))
+    save_identity(identity, tmp_path)
+    monkeypatch.setenv('PROTAGINE_AGENT_VALUES', json.dumps(['An old service unit value']))   # never read
     source(state, 'incident', 'The export has failed again after the same retry.')
     processor = Processor(); await state.process_one(processor)
-    assert 'chosen_values' not in processor.requests[0]
+    # The constitution (name, values and boundaries) is an input of the appraisal, never an output.
+    assert processor.requests[0]['agent_constitution'] == render_constitution(identity)
+    assert 'Respect promises' in processor.requests[0]['agent_constitution']
+    assert 'agent_constitution' not in json.dumps(module.RESPONSE_SCHEMA)
+    assert 'chosen_values' not in processor.requests[0] and 'agent_values' not in processor.requests[0]
     assert not {'source_id', 'source_version', 'source_contact_id', 'message_hash'} & set(processor.requests[0]['evidence'][0])
     assert view(state)['chosen_values'] == ['Be candid', 'Respect promises']
     assert state.view('person', viewer_contact_id='person')['records'] == []
@@ -293,57 +302,35 @@ async def test_concurrent_interpretations_cannot_overwrite_newer_head(state):
 
 
 @pytest.mark.asyncio
-async def test_durable_view_retains_pending_contrary_evidence_until_interval(state):
-    decide = lambda p: observation(p, kind='judgment', dimension='skepticism', hint='verify_before_relying')
+async def test_durable_hypothesis_retains_pending_contrary_evidence_until_interval(state):
+    def decide(payload):
+        current = next(e for e in payload['evidence'] if e['current'])
+        prior = [e for e in payload['evidence'] if not e['current']]
+        if not prior:
+            return observation(payload)
+        item = observation(payload, kind='behavior_hypothesis', dimension='working_style', topic='export reports',
+                           hint='verify_before_relying')
+        item['support'] = [{'handle': current['handle'], 'quote': current['text']},
+                           {'handle': prior[0]['handle'], 'quote': prior[0]['text']}]
+        return item
     source(state, 'first', 'The export report claimed completion before output existed.')
     await state.process_one(Processor(decide))
+    source(state, 'second', 'Another export report claimed completion before its output existed.')
+    await state.process_one(Processor(decide))
+    assert [r['kind'] for r in view(state)['records']].count('behavior_hypothesis') == 1
     source(state, 'contrary', 'The next export report matched the output verification.')
     await state.process_one(Processor(decide, name='processor-b'))
     with state.ledger._connect() as conn:
         assert conn.execute("SELECT status FROM appraisal_runs WHERE turn_id='contrary'").fetchone()[0] == 'pending'
     state.test_clock.value += module.DURABLE_INTERVAL + 1
     await state.process_one(Processor(decide, name='processor-b'))
-    assert view(state)['records'][0]['processor']['model_id'] == 'processor-b'
-
-
-@pytest.mark.asyncio
-async def test_canonical_preference_changes_cached_profiler_and_erasure_removes_it(state, tmp_path, monkeypatch):
-    from unittest.mock import AsyncMock
-    from protagine import identity
-    from protagine.tom.engagement import EngagementStore
-    from protagine.intelligence.relationships.profiler import RelationshipProfiler
-    monkeypatch.setattr(identity, 'get_owner_contact_id', lambda: 'owner')
-    engagement = EngagementStore(tmp_path/'engagement.db', source_ledger=state.ledger)
-    contacts = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(
-        display_name='A contact', trust_tier='regular', interaction_count=5)))
-    profiler = RelationshipProfiler(contacts_store=contacts, engagement_store=engagement,
-        db_path=str(tmp_path/'relationships.db'))
-    try:
-        assert 'concise explanations' not in (await profiler.profile('person')).render()
-        source(state, 'preference', 'I prefer concise explanations.')
-        admitted_preference(state, 'preference')
-        # No new contact interaction or scheduled profile refresh required.
-        assert 'concise explanations' in profiler.cached('person').render()
-        assert engagement.get_profile('person')['dims'] == {}
-        state.ledger.erase_sources(contact_id='person', turn_ids=['preference'])
-        assert 'concise explanations' not in profiler.cached('person').render()
-    finally:
-        engagement._conn.close()
-        profiler._conn.close()
-
-
-@pytest.mark.asyncio
-async def test_retired_numeric_engagement_does_not_call_another_model():
-    from unittest.mock import AsyncMock
-    from protagine.tom.extractor import TomExtractor
-    router = AsyncMock()
-    assert await TomExtractor(router).extract_engagement('I prefer concise explanations.', 'person') is None
-    assert router.mock_calls == []
+    hypothesis = next(r for r in view(state)['records'] if r['kind'] == 'behavior_hypothesis')
+    assert hypothesis['processor']['model_id'] == 'processor-b'
 
 
 @pytest.mark.asyncio
 async def test_revision_rehydrates_original_quotes_and_erasure_follows_both_sources(state):
-    decide = lambda p: observation(p, kind='judgment', dimension='skepticism', hint='verify_before_relying')
+    decide = lambda p: observation(p, kind='assessment', dimension='self_report', hint='verify_before_relying')
     source(state, 'first', 'The export report claimed completion before output existed.')
     await state.process_one(Processor(decide))
     state.test_clock.value += module.DURABLE_INTERVAL + 1
@@ -382,20 +369,20 @@ async def test_old_view_alone_cannot_reinforce_itself_on_a_new_turn(state):
 
 
 @pytest.mark.asyncio
-async def test_identity_invalidated_view_stays_a_tombstone_but_new_evidence_can_rebuild(state):
+async def test_identity_invalidated_record_is_deleted_and_new_evidence_rebuilds(state):
     source(state, 'first', 'The export has failed again.')
     await state.process_one(Processor())
     old_id = view(state)['records'][0]['id']
     with state.ledger._connect() as conn, conn:
         module.invalidate_source_attribution(conn, ['first'], 'person', 'other')
     assert view(state, history=True)['records'] == []
+    with state.ledger._connect() as conn:
+        assert conn.execute('SELECT count(*) FROM appraisal_records WHERE id=?', (old_id,)).fetchone()[0] == 0
+        assert conn.execute('SELECT count(*) FROM appraisal_heads WHERE record_id=?', (old_id,)).fetchone()[0] == 0
     source(state, 'later', 'My own separate export attempt failed after the retry.')
     await state.process_one(Processor(name='processor-b'))
     current = view(state)['records'][0]
-    assert current['sources'][0]['source_id'] == 'later'
-    with state.ledger._connect() as conn:
-        old = conn.execute('SELECT status,payload_json FROM appraisal_records WHERE id=?', (old_id,)).fetchone()
-        assert tuple(old) == ('invalidated', '{}')
+    assert current['sources'][0]['source_id'] == 'later' and current['supersedes'] is None
 
 
 @pytest.mark.asyncio
@@ -430,10 +417,11 @@ async def test_machine_formatted_topic_remains_relevant_and_repair_has_no_residu
 @pytest.mark.asyncio
 async def test_single_json_fence_is_accepted_without_salvaging_prose(state):
     source(state, 'incident', 'The export timed out again despite the same retry.')
-    job = state._claim(20)
+    job = state._claim()
     _, payload, _ = state._prepare(job)
     raw = json.dumps({'observations': [observation(payload)], 'incident_decisions': []})
-    assert len(state._validate('```json\n' + raw + '\n```', payload)) == 1
+    items, outcomes = state._validate('```json\n' + raw + '\n```', payload)
+    assert len(items) == 1 and outcomes == []
     with pytest.raises(ValueError):
         state._validate('Here is an observation: ' + raw, payload)
 
@@ -441,8 +429,8 @@ async def test_single_json_fence_is_accepted_without_salvaging_prose(state):
 @pytest.mark.asyncio
 async def test_duplicate_claim_across_sources_cannot_support_behavior_hypothesis(state):
     source(state, 'first', 'The export report was premature.')
-    await state.process_one(Processor(lambda p: observation(p, kind='judgment',
-        dimension='skepticism', hint='verify_before_relying')))
+    await state.process_one(Processor(lambda p: observation(p, kind='appraisal',
+        dimension='annoyance', hint='verify_before_relying')))
     source(state, 'second', 'The export report was premature.')
     def hypothesis(payload):
         item = observation(payload, kind='behavior_hypothesis', dimension='working_style', hint='none')
@@ -538,3 +526,118 @@ async def test_legacy_preference_is_history_only_and_owner_withdrawal_still_fenc
     state.correct(history[0]['id'], action='withdraw', correction_id='legacy-fix', reason='Incorrect interpretation', actor_id='owner')
     admitted_preference(state, 'preference')
     assert view(state)['records'] == []
+
+
+# ---------------------------------------------------------------------------
+# The contact signal: the speaker's valence and an opt-out, for non-owner speakers only (M5)
+# ---------------------------------------------------------------------------
+
+def with_contact(block):
+    def decide(payload):
+        return {'observations': [], 'incident_decisions': [], 'contact': block}
+    return decide
+
+
+def test_the_contact_block_is_required_by_the_schema_tolerated_when_missing_and_strictly_shaped(state):
+    """A strict binding rejects a schema with an optional property, so the block is required and
+    "no signal" is {their_valence: null, opt_out: false}; a prompt-only binding that leaves it out
+    is still read (integration map X3)."""
+    payload = {'evidence': [], 'previous': [], 'incident_ids': []}
+    assert state._validate(json.dumps({'observations': [], 'incident_decisions': []}), payload) == ([], [])
+    quiet = {'observations': [], 'incident_decisions': [], 'contact': {'their_valence': None, 'opt_out': False}}
+    assert state._validate(json.dumps(quiet), payload) == ([], [])
+    ok = {'observations': [], 'incident_decisions': [], 'contact': {'their_valence': -0.4, 'opt_out': False}}
+    assert state._validate(json.dumps(ok), payload) == ([], [])
+    assert module.contact_signal(ok) == {'their_valence': -0.4, 'opt_out': False}
+    assert module.contact_signal({'contact': {'their_valence': None, 'opt_out': True}}) == \
+        {'their_valence': None, 'opt_out': True}
+    for bad in ({'their_valence': 2, 'opt_out': False}, {'their_valence': True, 'opt_out': False},
+                {'their_valence': 0.1, 'opt_out': 'yes'}, {'their_valence': 0.1}, 'calm',
+                {'their_valence': 0.1, 'opt_out': False, 'mood': 'calm'}):
+        with pytest.raises(ValueError):
+            state._validate(json.dumps({**ok, 'contact': bad}), payload)
+    with pytest.raises(ValueError):
+        state._validate(json.dumps({**ok, 'stance': {}}), payload)
+    schema = module.RESPONSE_SCHEMA['schema']
+    assert 'contact' in schema['properties'] and 'contact' in schema['required']
+    # Both side outputs are required by the strict schema and tolerated when a prompt-only binding omits them.
+    assert {'observations', 'incident_decisions', 'outcomes', 'contact'} == set(schema['required'])
+    both = {**ok, 'outcomes': []}
+    assert state._validate(json.dumps(both), payload) == ([], [])
+    assert 'their_valence' in module.SYSTEM and 'opt_out' in module.SYSTEM
+    assert '"their_valence": null, "opt_out": false' in module.SYSTEM
+    assert module.VERSION == 'source-appraisals-v7'
+
+
+@pytest.mark.asyncio
+async def test_on_contact_is_awaited_after_the_commit_for_a_non_owner_speaker_only(state):
+    seen = []
+
+    async def on_contact(signal):
+        seen.append(signal)
+    state.on_contact = on_contact
+    source(state, 'from-person', 'Please do not message me again, I have this handled.')
+    await state.process_one(Processor(with_contact({'their_valence': -0.5, 'opt_out': True})))
+    signal, = seen
+    assert signal['contact_id'] == 'person' and signal['their_valence'] == -0.5 and signal['opt_out'] is True
+    assert signal['turn_id'] == 'from-person' and signal['source_version'] and signal['occurred_at']
+    source(state, 'from-owner', 'I am annoyed with the export today.', contact='owner')
+    await state.process_one(Processor(with_contact({'their_valence': -0.8, 'opt_out': True})))
+    source(state, 'neutral', 'The export ran fine.')
+    await state.process_one(Processor(with_contact({'their_valence': None, 'opt_out': False})))
+    source(state, 'no-block', 'The export ran fine again.')
+    await state.process_one(Processor(lambda p: None))
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_writer_records_linked_affect_once_and_an_opt_out_only_lowers(state, tmp_path):
+    from protagine.contacts.affect_writer import OPT_OUT_REASON, contact_signal_writer
+    from protagine.tom.affect import AffectStore
+    affect = AffectStore(str(tmp_path / 'affect.db'), source_ledger=state.ledger)
+
+    class Contacts:
+        def __init__(self):
+            self.lowered = []
+
+        async def lower_may_contact(self, contact_id, *, reason, source_ref):
+            self.lowered.append((contact_id, reason, source_ref))
+
+    contacts = Contacts()
+    write = contact_signal_writer(lambda: affect, lambda: contacts, owner_id_provider=lambda: 'owner')
+    state.on_contact = write
+    source(state, 'upset', 'Stop texting me, this is the third time today.')
+    await state.process_one(Processor(with_contact({'their_valence': -0.7, 'opt_out': True})))
+    event, = affect.list_events(contact_id='person')
+    assert event['source'] == 'appraisal' and event['valence'] == -0.7
+    assert event['source_lineage']['turn_id'] == 'upset' and event['evidence_basis'] == 'canonical_source'
+    assert contacts.lowered == [('person', OPT_OUT_REASON, 'turn:upset')]
+    # The same turn again adds no second event; the owner's signal is never written.
+    await write({'contact_id': 'person', 'their_valence': -0.7, 'opt_out': False, 'turn_id': 'upset',
+                 'source_version': 1, 'occurred_at': None})
+    await write({'contact_id': 'owner', 'their_valence': -0.9, 'opt_out': True, 'turn_id': 'upset',
+                 'source_version': 1, 'occurred_at': None})
+    assert affect.count_events(contact_id='person') == 1 and affect.count_events(contact_id='owner') == 0
+    assert len(contacts.lowered) == 1
+    affect.close()
+
+
+@pytest.mark.asyncio
+async def test_the_writer_reaches_an_affect_store_owned_by_another_thread(state, tmp_path):
+    """The benchmark's host routes own the affect store's connection on their thread; the source
+    worker runs on its own, so the writer uses a connection of its own to the same database."""
+    import threading
+    from protagine.contacts.affect_writer import contact_signal_writer
+    from protagine.tom.affect import AffectStore
+    holder = {}
+    thread = threading.Thread(target=lambda: holder.update(store=AffectStore(str(tmp_path / 'affect.db'),
+                                                                               source_ledger=state.ledger)))
+    thread.start()
+    thread.join()
+    state.on_contact = contact_signal_writer(lambda: holder['store'], lambda: None, owner_id_provider=lambda: 'owner')
+    source(state, 'glad', 'That worked out well, thank you.')
+    await state.process_one(Processor(with_contact({'their_valence': 0.6, 'opt_out': False})))
+    reader = AffectStore(str(tmp_path / 'affect.db'), source_ledger=state.ledger)
+    event, = reader.list_events(contact_id='person')
+    assert event['valence'] == 0.6 and event['source_lineage']['turn_id'] == 'glad'
+    reader.close()

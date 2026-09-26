@@ -25,7 +25,7 @@ async def test_name_candidate_has_separate_repeated_identity_then_exact_correcti
     first = await resolver.resolve(platform='whatsapp', user_id='test@lid', display_name='Robin', group_id='group')
     assert first.contact_id != target.contact_id
     assert first.candidate_contact_id == target.contact_id
-    assert not (await store.get(first.contact_id)).interaction_allowed
+    assert (await store.get(first.contact_id)).may_contact == "ask"   # a shadow: remembered, no permission
     assert not await store.get_handles(target.contact_id)
     assert (await resolver.resolve(platform='whatsapp', user_id='test@lid')).contact_id == first.contact_id
     inputs = dict(operation_id='correction-one', performed_by='owner-test', gateway='whatsapp', address='test@lid',
@@ -62,7 +62,9 @@ async def test_phone_country_codes_do_not_collide_and_cross_channel_aliases_work
     await store.add_handle(first.contact_id, 'sms', '+12125550101', verified=True)
     await store.add_handle(second.contact_id, 'signal', '+442125550101', verified=True)
     assert (await store.resolve_messaging_handle('whatsapp', '12125550101@s.whatsapp.net')).contact_id == first.contact_id
-    assert (await store.resolve_messaging_handle('rcs', '(212) 555-0101')).contact_id == first.contact_id
+    assert (await store.resolve_messaging_handle('rcs', '+1 (212) 555-0101')).contact_id == first.contact_id
+    # National digits with no ``+`` are not a phone number by their format: no cross-gateway match.
+    assert await store.resolve_messaging_handle('rcs', '(212) 555-0101') is None
     assert (await store.resolve_messaging_handle('signal', '+44 2125550101')).contact_id == second.contact_id
 
 

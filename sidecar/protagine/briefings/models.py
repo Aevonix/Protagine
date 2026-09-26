@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 
 class BriefingType(str, Enum):
@@ -59,7 +60,7 @@ class Briefing:
     priority: BriefingPriority = BriefingPriority.NORMAL
     triggered_by: Optional[str] = None
     gateway: Optional[str] = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: now_utc())
     delivered_at: Optional[datetime] = None
     read_at: Optional[datetime] = None
 

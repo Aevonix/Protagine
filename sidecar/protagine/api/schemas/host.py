@@ -9,7 +9,7 @@ from __future__ import annotations
 import os as _os
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 MAX_NAME_LEN = 256
@@ -22,10 +22,6 @@ class HostIdentity(BaseModel):
     host_version: Optional[str] = None
     plugin_version: Optional[str] = None
     instance_id: Optional[str] = None
-    protagine_id: Optional[str] = None
-    node_id: Optional[str] = None
-    node_cert_fingerprint: Optional[str] = None
-    trust_tier: Optional[Literal["REGULAR", "TRUSTED", "PRIVILEGED", "GENESIS"]] = None
 
 
 class HostTurnContext(BaseModel):
@@ -54,7 +50,6 @@ class TemporalMetrics(BaseModel):
     started_at: Optional[str] = None
     last_sync_at: Optional[str] = None
     last_tick_at: Optional[str] = None
-    last_initiative_at: Optional[str] = None
     last_prefetch_at: Optional[str] = None
     silence_hours: Dict[str, Optional[float]] = Field(default_factory=dict)
     stale_flags: List[str] = Field(default_factory=list)
@@ -68,6 +63,8 @@ class HostHealthResponse(BaseModel):
     capabilities: List[str] = []
     notes: Optional[Dict[str, str]] = None
     temporal: Optional[TemporalMetrics] = None
+    #: Every reason the status is not "ok", as sentences an operator can act on.
+    problems: List[str] = Field(default_factory=list)
 
 
 # --- Memory -----------------------------------------------------------------
@@ -108,19 +105,38 @@ class MemoryReadResponse(BaseModel):
     source: Dict[str, Any]
 
 
+MEMORY_SEARCH_MAX_LIMIT = 20
+
+
 class MemorySearchRequest(BaseModel):
+    """An explicit search of one person's canonical memory.
+
+    The key selects nobody by itself, so the body names the person: a missing
+    or blank ``person_id`` is refused, never read as the owner's search, so a
+    caller whose guest resolution failed gets no one's memory (security-6).
+    ``session_id`` admits that session's session-scoped evidence; without one
+    only person-scoped evidence is read and nothing is excluded. A ``limit``
+    above the maximum is clamped, not refused.
+    """
     model_config = ConfigDict(extra="forbid")
     identity: HostIdentity
     person_id: str = Field(min_length=1, max_length=256)
-    session_id: str = Field(min_length=1, max_length=256)
+    session_id: Optional[str] = Field(default=None, max_length=256)
     query: str = Field(min_length=1, max_length=4096)
-    limit: int = Field(default=5, ge=1, le=20, strict=True)
+    limit: int = Field(default=5, ge=1, strict=True)
     timezone: Optional[str] = Field(default=None, max_length=128)
 
+    @field_validator('limit')
+    @classmethod
+    def clamp_limit(cls, value: int) -> int:
+        return min(value, MEMORY_SEARCH_MAX_LIMIT)
+
     @model_validator(mode='after')
-    def exact_scope(self):
-        if not self.person_id.strip() or not self.session_id.strip():
-            raise ValueError('memory search requires an exact participant and session')
+    def named_person(self):
+        self.person_id = self.person_id.strip()
+        if not self.person_id:
+            raise ValueError('memory search names the person it searches (person_id)')
+        self.session_id = (self.session_id or '').strip() or None
         return self
 
 
@@ -179,13 +195,10 @@ class ContextAssembleRequest(BaseModel):
     available_tools: Optional[List[str]] = None
     citations_mode: Optional[Literal["off", "inline", "appendix"]] = None
     include_initiatives: Optional[bool] = None  # v0.13.0
-    projection_policy: Optional[
-        Literal["scoped_viewer_required"]
-    ] = None
-    # ``intact``: the host still shows this session's earlier turns verbatim, so recall must not
-    # repeat them; ``compressed``: it summarised them, so their sources are recallable again.
-    # Absent: the host said nothing, and recall includes them as before.
-    session_history: Optional[Literal["intact", "compressed"]] = None
+    # A memory provider from before M5 also sends ``projection_policy``, and one from before the
+    # recall fix sends ``session_history``; extra fields are ignored. A guest's context is
+    # contact-scoped by construction, and recall keeps the session's own turns, so neither changes
+    # anything.
 
 
 class ContextSection(BaseModel):
@@ -338,20 +351,6 @@ class MultimodalSearchResponse(BaseModel):
     model: str = ""
 
 
-class SkillExecuteRequest(BaseModel):
-    identity: HostIdentity
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-    context: Optional[HostTurnContext] = None
-
-
-class SkillExecuteResponse(BaseModel):
-    status: Literal["success", "failed", "timeout", "violated"]
-    output: Optional[Any] = None
-    error: Optional[str] = None
-    execution_id: Optional[str] = None
-    duration_ms: Optional[int] = None
-
-
 # --- Sender identity ---------------------------------------------------------
 
 class HostSender(BaseModel):
@@ -365,30 +364,6 @@ class HostSender(BaseModel):
     user_id: str = Field(..., max_length=256)
     display_name: str = Field(default="", max_length=256)
     group_id: str = Field(default="", max_length=256)
-
-
-# --- Signals ----------------------------------------------------------------
-
-class HostToolCall(BaseModel):
-    id: str
-    name: str
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-
-
-class SignalIngestRequest(BaseModel):
-    identity: HostIdentity
-    context: HostTurnContext
-    sender: Optional[HostSender] = None
-    incoming_message: Optional[HostMessage] = None
-    outgoing_message: Optional[HostMessage] = None
-    tool_calls: List[HostToolCall] = Field(default_factory=list)
-    correction: Optional[str] = None
-    signals: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class SignalIngestResponse(BaseModel):
-    accepted: bool
-    signals_recorded: int
 
 
 # --- Turns ------------------------------------------------------------------
@@ -507,6 +482,8 @@ class TurnSyncRequest(BaseModel):
     # Model that produced the assistant side of this turn (optional, additive).
     # Lets the mining layer detect provider escalations / cloud failovers from
     # real per-turn metadata instead of guessing from text.
+    # Sent by the adapter; nothing reads it since the escalation miner went (M9). Kept so an older
+    # adapter against this sidecar never gets a 422.
     model: Optional[str] = None
     # Evidence-only checkpoints never trigger ordinary turn/relationship effects.
     checkpoint_messages: Optional[List[CheckpointMessage]] = Field(
@@ -609,7 +586,10 @@ class ContactResponse(BaseModel):
     organization: Optional[str] = None
     relationship_score: float = 0.0
     trust_tier: Optional[str] = None
-    interaction_allowed: bool = True
+    may_contact: str = "ask"                    # never | ask | auto (architecture 7.4)
+    cadence_minutes: Optional[int] = None       # owner-set check-in cadence; None = none
+    digest: Optional[str] = None                # the per-contact digest
+    digest_sources: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
     privacy_level: Optional[str] = None
     person_node_id: Optional[str] = None
@@ -703,6 +683,8 @@ class ContactCreateRequest(BaseModel):
     family_name: Optional[str] = None
     organization: Optional[str] = None
     trust_tier: str = "regular"
+    may_contact: str = "ask"                    # a tier implies no permission; only the owner raises it
+    cadence_minutes: Optional[int] = None
     tags: Optional[List[str]] = None
     notes: Optional[str] = None
     handles: List[ContactHandleIn] = []
@@ -712,9 +694,9 @@ class ContactIntroRequest(BaseModel):
     """Capture an organic introduction: the agent met/learned of a new person.
 
     Creates (or annotates) a PROVISIONAL contact with introduction provenance.
-    A provisional contact is inert by design — trust_tier defaults to 'unknown'
-    and interaction_allowed is forced false — so capturing an intro never grants
-    anyone outreach standing; promotion/merge reconciles them later.
+    A provisional contact is inert by design: trust_tier defaults to 'unknown'
+    and may_contact starts at 'ask', so capturing an intro never grants anyone
+    outreach permission; only the owner raises it.
     """
     name: str
     gateway: Optional[str] = None              # optional handle to attach
@@ -756,63 +738,7 @@ class BriefingListResponse(BaseModel):
     briefings: List[BriefingResponse] = []
 
 
-# --- World Model ------------------------------------------------------------
-
-class EntityResponse(BaseModel):
-    id: str
-    entity_type: str
-    name: str
-    properties: Optional[Dict[str, Any]] = None
-
-
-class EntityListResponse(BaseModel):
-    entities: List[EntityResponse] = []
-
-
-class EntityQueryRequest(BaseModel):
-    identity: HostIdentity
-    query: str
-    entity_type: Optional[str] = None  # None or "all" = every type
-    limit: Optional[int] = 10
-
-
-class ExtractionRequest(BaseModel):
-    identity: HostIdentity
-    content: str  # Base64-encoded document content
-    filename: Optional[str] = None
-    mime_type: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class ExtractedEntityResponse(BaseModel):
-    name: str
-    entity_type: str
-    attributes: Optional[Dict[str, Any]] = None
-    confidence: float = 1.0
-
-
-class ExtractionResponse(BaseModel):
-    format_detected: str
-    entities: List[ExtractedEntityResponse] = []
-    text_length: int = 0
-
-
 # --- Cognition --------------------------------------------------------------
-
-class CognitivePerformanceIndex(BaseModel):
-    overall: float = 0.0
-    memory: float = 0.0
-    reasoning: float = 0.0
-    social: float = 0.0
-    autonomy: float = 0.0
-    domains: Optional[Dict[str, float]] = None
-
-
-class CognitionGap(BaseModel):
-    gap_id: str
-    domain: str
-    severity: float
-    description: Optional[str] = None
 
 
 # --- Research ---------------------------------------------------------------
@@ -885,40 +811,7 @@ class LearningCorrectionRequest(BaseModel):
     source_id: Optional[str] = None
 
 
-class LearningEngagementRequest(BaseModel):
-    identity: HostIdentity
-    briefing_id: str
-    action: str  # opened | dismissed | clicked | saved
-    dwell_seconds: Optional[float] = None
-
-
-class LearningWeightsResponse(BaseModel):
-    weights: Dict[str, float] = {}
-    stats: Dict[str, int] = {}
-
-
 # --- Skills -----------------------------------------------------------------
-
-class SkillSummary(BaseModel):
-    id: str
-    name: str
-    description: Optional[str] = None
-    version: Optional[str] = None
-    triggers: List[str] = []
-
-
-class SkillDetailResponse(BaseModel):
-    id: str
-    name: str
-    description: Optional[str] = None
-    version: Optional[str] = None
-    triggers: List[str] = []
-    input_schema: Optional[Dict[str, Any]] = None
-    permissions: Optional[Dict[str, Any]] = None
-
-
-class SkillsListResponse(BaseModel):
-    skills: List[SkillSummary] = []
 
 
 # --- Insights ---------------------------------------------------------------
@@ -936,40 +829,6 @@ class InsightResponse(BaseModel):
 
 class InsightsListResponse(BaseModel):
     insights: List[InsightResponse] = []
-
-
-# --- Chain / Identity -------------------------------------------------------
-
-class IdentityStatusResponse(BaseModel):
-    protagine_id: Optional[str] = None
-    public_key: Optional[str] = None
-    node_id: Optional[str] = None
-    node_public_key: Optional[str] = None
-    node_cert_fingerprint: Optional[str] = None
-    initialized: bool = False
-    keys_configured: bool = False
-    is_genesis: bool = False
-    trust_tier: Optional[Literal["REGULAR", "TRUSTED", "PRIVILEGED", "GENESIS"]] = None
-    trust_anchor_verified: bool = False
-
-
-class IdentityInitRequest(BaseModel):
-    identity: HostIdentity
-    force: bool = False
-
-
-class ChainVerifyRequest(BaseModel):
-    identity: HostIdentity
-    data: str
-    signature: Optional[str] = None
-
-
-class ChainVerifyResponse(BaseModel):
-    valid: bool
-    protagine_id: Optional[str] = None
-    signed_attestation: Optional[str] = None
-    attested_at: Optional[str] = None
-    signer_public_key: Optional[str] = None
 
 
 # --- Secrets ----------------------------------------------------------------
@@ -1289,110 +1148,6 @@ class TomExtractResponse(BaseModel):
     affect: Optional[Dict[str, Any]] = None
     facts: List[Dict[str, Any]] = []
     throttled: bool = False
-
-
-# ---------------------------------------------------------------------------
-# World Model — Entities
-# ---------------------------------------------------------------------------
-
-class WorldEntityCreateRequest(BaseModel):
-    name: str
-    entity_type: str
-    aliases: Optional[List[str]] = []
-    external_ids: Optional[Dict[str, str]] = {}
-    confidence: float = 0.5
-    properties: Optional[Dict[str, Any]] = {}
-
-
-class WorldEntityUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    confidence: Optional[float] = None
-    properties: Optional[Dict[str, Any]] = None
-    aliases: Optional[List[str]] = None
-
-
-class WorldEntityDetailResponse(BaseModel):
-    id: str
-    name: str
-    entity_type: str
-    aliases: List[str] = []
-    external_ids: Dict[str, str] = {}
-    confidence: float = 0.5
-    properties: Dict[str, Any] = {}
-    first_seen: Optional[str] = None
-    last_seen: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class WorldEntityListResponse(BaseModel):
-    entities: List[WorldEntityDetailResponse] = []
-    total: int = 0
-
-
-# ---------------------------------------------------------------------------
-# World Model — Relationships
-# ---------------------------------------------------------------------------
-
-class WorldRelationshipCreateRequest(BaseModel):
-    source_id: str
-    target_id: str
-    relationship_type: str
-    confidence: float = 0.5
-    valid_from: Optional[str] = None
-    properties: Optional[Dict[str, Any]] = {}
-
-
-class WorldRelationshipUpdateRequest(BaseModel):
-    confidence: Optional[float] = None
-    valid_to: Optional[str] = None
-    properties: Optional[Dict[str, Any]] = None
-
-
-class WorldRelationshipResponse(BaseModel):
-    id: str
-    source_id: str
-    target_id: str
-    relationship_type: str
-    confidence: float = 0.5
-    valid_from: Optional[str] = None
-    valid_to: Optional[str] = None
-    properties: Dict[str, Any] = {}
-    is_active: bool = True
-    created_at: Optional[str] = None
-
-
-class WorldRelationshipListResponse(BaseModel):
-    relationships: List[WorldRelationshipResponse] = []
-    total: int = 0
-
-
-# ---------------------------------------------------------------------------
-# World Model — Graph Traversal
-# ---------------------------------------------------------------------------
-
-class WorldNeighborhoodResponse(BaseModel):
-    center: Optional[WorldEntityDetailResponse] = None
-    reachable: List[WorldEntityDetailResponse] = []
-    edges: List[WorldRelationshipResponse] = []
-    hop_counts: Dict[str, int] = {}
-    truncated: bool = False
-
-
-class WorldPathResponse(BaseModel):
-    source_id: str
-    target_id: str
-    path: Optional[List[WorldRelationshipResponse]] = None
-    found: bool = False
-
-
-class WorldStatsResponse(BaseModel):
-    total_entities: int = 0
-    entities_by_type: Dict[str, int] = {}
-    total_relationships: int = 0
-    active_relationships: int = 0
-    total_observations: int = 0
-    merge_proposals_pending: int = 0
 
 
 # ---------------------------------------------------------------------------

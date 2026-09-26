@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import AssignmentHistory, InitiativeStatus, StoredInitiative
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,16 @@ def missing_mind_columns(conn: sqlite3.Connection) -> List[str]:
     return [name for name in MIND_COLUMNS if name not in present]
 
 
+#: SQLite's primary result codes for a damaged file; only these are recovered at open.
+_SQLITE_CORRUPT, _SQLITE_NOTADB = 11, 26
+
+
+def _damaged(exc: sqlite3.DatabaseError) -> bool:
+    """Whether SQLite reported the file itself as damaged (not locked, busy or unreadable)."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    return code is not None and code & 0xFF in {_SQLITE_CORRUPT, _SQLITE_NOTADB}
+
+
 def get_state_dir() -> Path:
     """Get Protagine state directory."""
     import os
@@ -70,35 +81,55 @@ class InitiativeStore:
         self._db = self._init_db()
 
     def _init_db(self) -> sqlite3.Connection:
-        """Initialize database with recovery."""
+        """Open the store; recover only a damaged file, and never delete it.
+
+        A locked, busy or unreadable store (any other error) is raised as it is:
+        its rows are intact and the caller retries once the other process lets go.
+        A file SQLite reports as damaged (SQLITE_CORRUPT, SQLITE_NOTADB) is renamed
+        aside with its WAL and shared-memory files, then the backup is restored when
+        one exists, else the store starts empty (cutover data-5).
+        """
         try:
             return self._connect()
-        except sqlite3.DatabaseError:
-            logger.warning("initiatives.db corrupted, attempting recovery")
-
+        except sqlite3.DatabaseError as exc:
+            if not _damaged(exc):
+                raise
+            aside = self._rename_aside()
+            logger.warning("initiatives.db is damaged (%s); kept as %s", exc, aside.name)
             if self._backup_path.exists():
                 shutil.copy(self._backup_path, self._db_path)
-                logger.info("Restored initiatives.db from backup")
+                logger.warning("Restored initiatives.db from %s", self._backup_path.name)
             else:
-                self._db_path.unlink(missing_ok=True)
-                logger.warning("No backup available, starting fresh")
-
+                logger.warning("No initiatives.db backup available, starting empty")
             return self._connect()
+
+    def _rename_aside(self) -> Path:
+        """Move the damaged store and its -wal/-shm files to ``initiatives.db.corrupt-<UTC stamp>``."""
+        stamp = now_utc().strftime("%Y%m%dT%H%M%S%fZ")
+        aside = self._db_path.with_name(f"{self._db_path.name}.corrupt-{stamp}")
+        for suffix in ("", "-wal", "-shm"):
+            source = self._db_path.with_name(self._db_path.name + suffix)
+            if source.exists():
+                source.rename(aside.with_name(aside.name + suffix))
+        return aside
 
     def _connect(self) -> sqlite3.Connection:
         """Connect to database with WAL mode."""
         # check_same_thread=False allows TestClient to access the DB from
         # a different thread (test thread vs event loop thread).
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
+        try:
+            conn.row_factory = sqlite3.Row
 
-        # WAL mode for better crash recovery
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+            # WAL mode for better crash recovery
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
 
-        self._create_tables(conn)
-
+            self._create_tables(conn)
+        except BaseException:
+            conn.close()
+            raise
         return conn
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
@@ -181,7 +212,13 @@ class InitiativeStore:
                 conn.commit()
                 logger.info("Migrated initiatives table: added %s column", name)
         except Exception as exc:
-            logger.warning("Initiative migration check failed (non-fatal): %s", exc)
+            # Two processes opening at once race to the same ALTER; the loser's
+            # duplicate-column error is harmless. Anything else is caught below.
+            logger.warning("Initiative migration check failed: %s", exc)
+        missing = missing_mind_columns(conn)
+        if missing:
+            raise sqlite3.OperationalError(
+                f"initiatives.db still lacks {', '.join(missing)}; another process may hold its write lock")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_initiatives_kind ON initiatives(kind, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_initiatives_ask_code ON initiatives(ask_code)")
@@ -334,7 +371,7 @@ class InitiativeStore:
         priority = max(0.0, min(1.0, priority))
         
         initiative_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         self._db.execute(
             """
@@ -562,7 +599,7 @@ class InitiativeStore:
         agent_name: Optional[str] = None,
     ) -> Optional[StoredInitiative]:
         """Assign initiative to agent (atomic)."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         # Atomic UPDATE - only works on pending initiatives
         cursor = self._db.execute(
@@ -604,7 +641,7 @@ class InitiativeStore:
         agent_id: str,
     ) -> Optional[StoredInitiative]:
         """Mark initiative as acknowledged by agent."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         initiative = self.get(initiative_id)
         if not initiative or initiative.assigned_agent_id != agent_id:
@@ -633,7 +670,7 @@ class InitiativeStore:
         result_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[StoredInitiative]:
         """Mark initiative as completed."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         initiative = self.get(initiative_id)
         if not initiative:
@@ -674,7 +711,7 @@ class InitiativeStore:
         retry: bool = False,
     ) -> Optional[StoredInitiative]:
         """Mark initiative as failed."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         initiative = self.get(initiative_id)
         if not initiative:
@@ -758,7 +795,7 @@ class InitiativeStore:
         reason: Optional[str] = None,
     ) -> Optional[StoredInitiative]:
         """Cancel an initiative."""
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         initiative = self.get(initiative_id)
         if not initiative or not initiative.is_active:
@@ -926,7 +963,7 @@ class InitiativeStore:
             if existing is not None:
                 return existing, "deduped"
         intention_id = str(uuid.uuid4())
-        now = created_at or datetime.now(timezone.utc)
+        now = created_at or now_utc()
         self._db.execute(
             """
             INSERT INTO initiatives (
@@ -959,7 +996,7 @@ class InitiativeStore:
                    details: Optional[Dict[str, Any]] = None, at: Optional[datetime] = None,
                    **updates) -> Optional[StoredInitiative]:
         """Move an intention to ``status`` and log the transition with its time."""
-        now = at or datetime.now(timezone.utc)
+        now = at or now_utc()
         row = self.update(initiative_id, status=status, **updates)
         if row is not None:
             self._db.execute(
@@ -977,16 +1014,44 @@ class InitiativeStore:
         kind: Optional[List[str]] = None,
         since: Optional[datetime] = None,
         limit: int = 100,
+        recipient: Optional[str] = None,
     ) -> List[StoredInitiative]:
-        """Mind rows (those with a ``kind``), newest first."""
+        """Mind rows (those with a ``kind``), newest first; ``recipient`` selects before the limit."""
         query = "SELECT * FROM initiatives WHERE kind IS NOT NULL"
         params: List[Any] = []
+        if recipient:
+            query += " AND entity_id = ?"
+            params.append(recipient)
         if status:
             query += f" AND status IN ({','.join('?' * len(status))})"
             params.extend(status)
         if kind:
             query += f" AND kind IN ({','.join('?' * len(kind))})"
             params.extend(kind)
+        if since is not None:
+            query += " AND created_at >= ?"
+            params.append(since.isoformat())
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        return [StoredInitiative.from_row(dict(row)) for row in self._db.execute(query, params).fetchall()]
+
+    def findings(self, states: List[str], types: List[str], limit: int = 500) -> List[StoredInitiative]:
+        """Done task rows of ``types`` whose finding outreach (``result_metadata.outreach.state``) is one of
+        ``states``, newest first, whatever their age: a finding is found by its state, never by when it formed."""
+        if not states or not types:
+            return []
+        query = (f"SELECT * FROM initiatives WHERE kind = 'task' AND status = 'done' "
+                 f"AND type IN ({','.join('?' * len(types))}) "
+                 f"AND json_extract(result_metadata, '$.outreach.state') IN ({','.join('?' * len(states))}) "
+                 "ORDER BY created_at DESC LIMIT ?")
+        params: List[Any] = [*types, *states, max(1, int(limit))]
+        return [StoredInitiative.from_row(dict(row)) for row in self._db.execute(query, params).fetchall()]
+
+    def lesson_rows(self, since: Optional[datetime] = None, limit: int = 20000) -> List[StoredInitiative]:
+        """Mind rows that carried a lesson (``lesson_ids``), newest first: the joins lessons are scored by."""
+        query = ("SELECT * FROM initiatives WHERE kind IS NOT NULL AND lesson_ids IS NOT NULL "
+                 "AND lesson_ids NOT IN ('', '[]')")
+        params: List[Any] = []
         if since is not None:
             query += " AND created_at >= ?"
             params.append(since.isoformat())
@@ -1011,8 +1076,10 @@ class InitiativeStore:
             "SELECT ask_code FROM initiatives WHERE status = 'asked' AND ask_code IS NOT NULL").fetchall()]
 
     def count_transitions(self, action: str, since: datetime, *, kind: Optional[str] = None,
-                          recipient: Optional[str] = None, exclude_types: Tuple[str, ...] = ()) -> int:
-        """Transitions of one kind since ``since``, from the history: the budget counters."""
+                          recipient: Optional[str] = None, exclude_types: Tuple[str, ...] = (),
+                          include_types: Tuple[str, ...] = ()) -> int:
+        """Transitions of one kind since ``since``, from the history: the budget counters. ``include_types``
+        counts only those types, ``exclude_types`` leaves those out."""
         query = ("SELECT COUNT(*) FROM assignment_history h JOIN initiatives i ON i.id = h.initiative_id "
                  "WHERE h.action = ? AND h.timestamp >= ?")
         params: List[Any] = [action, since.isoformat()]
@@ -1025,10 +1092,13 @@ class InitiativeStore:
         if exclude_types:
             query += f" AND i.type NOT IN ({','.join('?' * len(exclude_types))})"
             params.extend(exclude_types)
+        if include_types:
+            query += f" AND i.type IN ({','.join('?' * len(include_types))})"
+            params.extend(include_types)
         return int(self._db.execute(query, params).fetchone()[0])
 
     def last_transition_at(self, action: str, *, recipient: Optional[str] = None,
-                           type: Optional[str] = None) -> Optional[datetime]:
+                           type: Optional[str] = None, types: Tuple[str, ...] = ()) -> Optional[datetime]:
         query = ("SELECT MAX(h.timestamp) FROM assignment_history h JOIN initiatives i ON i.id = h.initiative_id "
                  "WHERE h.action = ?")
         params: List[Any] = [action]
@@ -1038,6 +1108,9 @@ class InitiativeStore:
         if type:
             query += " AND i.type = ?"
             params.append(type)
+        if types:
+            query += f" AND i.type IN ({','.join('?' * len(types))})"
+            params.extend(types)
         value = self._db.execute(query, params).fetchone()[0]
         if not value:
             return None
@@ -1182,7 +1255,7 @@ class InitiativeStore:
             "description": initiative.description,
             "reason": reason,
             "attempt_count": initiative.attempt_count,
-            "failed_at": datetime.now(timezone.utc).isoformat(),
+            "failed_at": now_utc().isoformat(),
         }
 
         with open(self._dlq_path, "a") as f:
@@ -1262,8 +1335,10 @@ class InitiativeStore:
         return cursor.rowcount
 
     def backup(self) -> None:
-        """Create backup of database."""
-        shutil.copy2(self._db_path, self._backup_path)
+        """Copy the store to ``initiatives.db.backup`` through SQLite, WAL commits included
+        (a plain file copy of a WAL store misses whatever is not yet checkpointed)."""
+        with closing(sqlite3.connect(self._backup_path)) as target:
+            self._db.backup(target)
 
     def close(self) -> None:
         """Close connection and create backup."""

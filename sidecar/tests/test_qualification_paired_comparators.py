@@ -147,6 +147,36 @@ def test_generated_family_plans_record_eager_tool_loading_and_need_an_image_that
         assert key not in frozen['pairs'][0]['arms']['base_hermes']['case']['inputs']
 
 
+def test_generated_family_plans_pin_the_clock_start_in_every_arm_and_need_an_image_that_does(fixture, monkeypatch, tmp_path):
+    from protagine.qualification import paired_body, paired_cases, paired_container
+    monkeypatch.setattr(paired_cases, 'cases', real_cases)
+    directory, _ = generated_family(tmp_path)
+    manifest = paired.plan(fixture.output, native_binding='candidate', evidence_mode='controlled',
+                           arms=['base-heartbeat', 'protagine'], dataset_dir=directory, **fixture.resources)
+    assert manifest['comparison']['clock_start'] == {'protocol': 'paired-clock-start-1', 'utc': '12:00'}
+    assert paired_body.CLOCK_START_PROTOCOL == 'paired-clock-start-1'
+    for pair in manifest['pairs']:
+        for arm in ('base-heartbeat', 'protagine'):
+            assert pair['arms'][arm]['case']['inputs']['clock_start'] == '12:00'
+    original = paired_container.configuration
+
+    def older_image(*args, **kwargs):
+        supplied, recipe = original(*args, **kwargs)
+        recipe['container_payload'] = {k: v for k, v in recipe['container_payload'].items() if k != 'clock_start'}
+        return supplied, recipe
+    monkeypatch.setattr(paired_container, 'configuration', older_image)
+    with pytest.raises(ValueError, match='clock start'):
+        paired.plan(tmp_path / 'again', native_binding='candidate', evidence_mode='controlled',
+                    arms=['base-heartbeat', 'protagine'], dataset_dir=directory, **fixture.resources)
+    # Frozen datasets declare no pinned start, so the older image still plans them.
+    frozen = paired.plan(tmp_path / 'frozen', native_binding='candidate', evidence_mode='controlled',
+                         dataset_version=paired_cases.BASELINE_VERSION,
+                         case_ids=[paired_cases.cases('base_hermes', dataset_version=paired_cases.BASELINE_VERSION)[0].id],
+                         **fixture.resources)
+    assert 'clock_start' not in frozen['comparison']
+    assert 'clock_start' not in frozen['pairs'][0]['arms']['base_hermes']['case']['inputs']
+
+
 def test_generated_family_needs_a_body_capable_image_and_one_dataset_selector(fixture, monkeypatch, tmp_path):
     from protagine.qualification import paired_cases, paired_container
     monkeypatch.setattr(paired_cases, 'cases', real_cases)

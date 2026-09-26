@@ -222,11 +222,12 @@ def test_reschedule_later_reopens_an_overdue_row_so_nothing_is_due_at_the_old_ti
     row = cstore.create(person_id=PERSON, description="Send Sam the build recap", due_at=_iso(hours=-1),
                         allow_overdue=True)
     assert row["status"] == "overdue"
-    later = _item("Send Sam the build recap", action="reschedule", target=1, due_at=_iso(days=1))
+    moved = _iso(days=1)                       # read once: a second boundary may fall between two reads
+    later = _item("Send Sam the build recap", action="reschedule", target=1, due_at=moved)
     result = record_items([later], person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     assert result["updated"] == [row["id"]]
     after = cstore.get(row["id"])
-    assert after["status"] == "pending" and after["due_at"] == _iso(days=1)
+    assert after["status"] == "pending" and after["due_at"] == moved
     # What the mind's overdue flip and the duty drive would see at the old deadline: nothing.
     now = _now()
     assert [r for r in cstore.list(status=["pending"])["commitments"]
@@ -293,9 +294,10 @@ def test_actions_with_a_bad_target_or_wording_are_ignored(tmp_path):
     assert result["ignored_actions"] == 5 and result["updated"] == [] and result["resolved"] == []
     assert cstore.get(row["id"])["status"] == "pending" and len(_open(cstore)) == 2
     # A number written as a string still points at the listed item; the wording must still be its own.
-    result = record_items([_item("Send Sam the build recap.", action="reschedule", target="1", due_at=_iso(days=3))],
+    moved = _iso(days=3)                       # read once: a second boundary may fall between two reads
+    result = record_items([_item("Send Sam the build recap.", action="reschedule", target="1", due_at=moved)],
                           person_id=PERSON, commitment_store=cstore, existing=existing, rejections=[])
-    assert result["updated"] == [row["id"]] and cstore.get(row["id"])["due_at"] == _iso(days=3)
+    assert result["updated"] == [row["id"]] and cstore.get(row["id"])["due_at"] == moved
 
 
 def test_hold_clears_the_deadline_and_yields_no_duty_candidate(tmp_path):
@@ -319,10 +321,11 @@ def test_reinstated_hold_reschedules_the_same_row(tmp_path):
     record_items([_item("Chase Sam for the signed form", action="reschedule", target=1, due_at=None)],
                  person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     assert cstore.get(row["id"])["due_at"] is None
-    result = record_items([_item("Chase Sam for the signed form", action="reschedule", target=1, due_at=_iso(days=1))],
+    moved = _iso(days=1)                       # read once: a second boundary may fall between two reads
+    result = record_items([_item("Chase Sam for the signed form", action="reschedule", target=1, due_at=moved)],
                           person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     assert result["updated"] == [row["id"]] and result["created"] == []
-    assert cstore.get(row["id"])["due_at"] == _iso(days=1)
+    assert cstore.get(row["id"])["due_at"] == moved
     assert [r["id"] for r in _open(cstore)] == [row["id"]]
     assert len(_duty_candidates(cstore, _now() + timedelta(days=2))) == 1
 
@@ -344,12 +347,13 @@ async def test_extraction_applies_an_action_end_to_end(tmp_path):
     cstore, ledger, extractor = _setup(tmp_path)
     row = cstore.create(person_id=PERSON, description="Send Sam the build recap", due_at=_iso(days=2))
     _turn(ledger, "t-2", "Sam needs the recap by tomorrow noon now, not the day after.")
-    router = _Router(_reply(_item("Send Sam the build recap", action="reschedule", target=1, due_at=_iso(days=1))))
+    moved = _iso(days=1)                       # read once: a second boundary may fall between two reads
+    router = _Router(_reply(_item("Send Sam the build recap", action="reschedule", target=1, due_at=moved)))
     assert await extractor.process_one(router) is True
     assert f"[1] Send Sam the build recap (due {row['due_at']})" in router.prompt()
     assert _job(ledger, "t-2")["disposition"] == "recorded"
     assert [r["id"] for r in _open(cstore)] == [row["id"]]
-    assert cstore.get(row["id"])["due_at"] == _iso(days=1)
+    assert cstore.get(row["id"])["due_at"] == moved
 
 
 # --- F3d: the previous turns travel with the audited turn -------------------------------------
@@ -397,7 +401,7 @@ async def test_a_heads_up_asked_for_travels_as_metadata_on_the_one_item(tmp_path
     router = _Router(_reply({**_item("Send Kim the invoice", due_at=due), "metadata": {"heads_up_at": warn}}))
     assert await extractor.process_one(router) is True
     row, = _open(cstore)
-    assert row["due_at"] == due and row["metadata"] == {"heads_up_at": warn}
+    assert row["due_at"] == due and row["metadata"] == {"heads_up_at": warn, "source_turn": "t-h"}
     assert heads_up_at(row) == datetime.fromisoformat(warn)
     # The other spelling the drive reads: minutes before the deadline.
     other = record_items([{**_item("Call the bank", due_at=due), "metadata": {"lead_minutes": 15}}],
@@ -495,6 +499,64 @@ async def test_drain_does_not_retake_a_job_it_already_failed_in_this_drain(tmp_p
     assert summary["processed"] == 1 and len(router.calls) == 1 and summary["waited_seconds"] < 1
     job = _job(ledger, "t-1")
     assert job["status"] == "pending" and job["attempts"] == 1 and summary["pending_left"] == 1
+
+
+async def test_back_to_back_drains_do_not_spend_a_backed_off_jobs_attempts(tmp_path):
+    """Forced ticks come in bursts, and the router refuses a failed endpoint for its cooldown. A drain
+    may try a backed-off job before its retry time, but that try is uncharged like any early retry:
+    only the scheduled attempts spend MAX_ATTEMPTS, so a blip across three ticks never fails a capture."""
+    cstore, ledger, extractor = _setup(tmp_path)
+    _turn(ledger, "t-1", "I'll send Sam the recap by five.")
+    down = _Router(ConnectionError("refused"))
+    for _ in range(3):
+        await extractor.drain(down, budget_seconds=2)
+    job = _job(ledger, "t-1")
+    assert (job["status"], job["attempts"]) == ("pending", 1) and job["next_attempt"] >= time.time() + 50
+    summary = await extractor.drain(_Router(_reply(_item("Send Sam the recap", due_at=_iso(hours=1)))),
+                                    budget_seconds=2)
+    assert summary["recorded"] == 1 and len(_open(cstore)) == 1
+
+
+async def test_a_drain_retries_an_unusable_answer_within_its_budget(tmp_path):
+    """An unusable answer is retried at once (charged, capped at three) inside the same drain, so the
+    tick decides over the landed row rather than over a store one retry short."""
+    cstore, ledger, extractor = _setup(tmp_path)
+    _turn(ledger, "t-1", "I'll send Sam the recap by five.")
+    router = _Router(SimpleNamespace(content="Nothing worth recording, I think."),
+                     _reply(_item("Send Sam the recap", due_at=_iso(hours=1))))
+    summary = await extractor.drain(router, budget_seconds=2)
+    assert summary["recorded"] == 1 and len(router.calls) == 2 and _job(ledger, "t-1")["attempts"] == 2
+
+
+async def test_the_prompt_carries_the_speaker_and_the_turns_local_time(tmp_path, monkeypatch):
+    """Who spoke decides obligor and counterpart, and the zone of the turn decides what "3pm" is: the
+    job keeps the zone the turn was recorded with, and the prompt shows both."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", PERSON)
+    cstore = CommitmentStore(db_path=tmp_path / "c.db")
+    ledger = TurnIdempotencyLedger(tmp_path / "ledger.db")
+    extractor = CommitmentExtractor(ledger, lambda: cstore, aliases=lambda contact: ["Sam Iqbal"])
+    for turn_id, person in (("t-1", "p-07"), ("t-2", PERSON)):
+        ledger.record_source(turn_id, contact_id=person, session_id=f"s-{person}", messages=[
+            {"role": "user", "content": "I'll have the signed form to you by 3pm."},
+            {"role": "assistant", "content": "Thanks."}],
+            occurred_at="2026-09-24T09:28:41+00:00", timezone_name="America/New_York")
+    router = _Router(_reply())
+    assert await extractor.process_one(router) and await extractor.process_one(router)
+    contact, owner = router.prompt(0), router.prompt(1)
+    assert "Speaker: contact p-07 (Sam Iqbal), not the owner" in contact
+    assert "Speaker: the owner" in owner and "p-07" not in owner
+    for prompt in (contact, owner):
+        assert "Turn time: 2026-09-24T09:28:41+00:00 (local: Thu 2026-09-24 05:28 EDT, America/New_York)" in prompt
+
+
+def test_the_examples_resolve_every_clock_time_in_one_zone():
+    """The few-shot examples state one zone and keep to it: 9am, 4pm, half three, noon and five all
+    map with the same offset, so the model never learns two conventions for "3pm"."""
+    system = extract.SYSTEM
+    assert "UTC-4" in system
+    for due in ("T13:00:00", "T20:00:00", "T19:30:00", "T16:00:00", "T21:00:00"):
+        assert due in system, due
+    assert "T12:00:00" not in system and "T17:00:00" not in system
 
 
 async def test_drain_without_a_usable_router_only_polls_leased_rows(tmp_path):

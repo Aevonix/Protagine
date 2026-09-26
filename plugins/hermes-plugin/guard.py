@@ -3,7 +3,18 @@
 A mind-originated run is a kanban worker spawned on the ``protagine-act``
 profile. A non-owner run is a session whose sender is not the owner. The
 guard fails closed for effectful tools: its own errors and a silent sidecar
-both block. Read-only tools never wait on the sidecar.
+both block. Read-only tools never wait on the sidecar. In a mind run an
+effectful call that names an owner-authored file (``protagine.yaml``,
+``identity.yaml``, ``api.key``) is blocked (architecture 4.2, 7.5). What keeps
+the constitution the owner's is the worker's tool surface: its default
+toolsets have no shell or code tool, and ``write_file``/``patch`` are confined
+to the task workspace. The name rule is a tripwire on top: a shell or code
+tool an owner adds can spell a file name in ways no text rule sees (a glob, an
+escape, a computed string). In a non-owner session every refusal is ``final_answer``: final for the turn
+and worded for a reply the contact reads, never "blocked". There a message to the session's own chat is
+the reply itself (the final response is delivered there, and only there), a target no contact is known at
+is refused as such, and nothing ever raises Hermes' approval gate: the gateway posts that prompt to the
+session's own chat, where the contact could answer it.
 """
 
 from __future__ import annotations
@@ -16,8 +27,9 @@ import re
 import time
 from typing import Any, Mapping
 
+from .body import DM_CHAT_TYPES
 from .capture import SessionMap
-from .client import MIND_STATE_ROUTE, ProtagineClient, Settings, SidecarUnavailable
+from .client import MIND_STATE_ROUTE, ProtagineClient, Settings, SidecarUnavailable, final_answer
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +44,9 @@ MESSAGING_TOOLS = frozenset({
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
 })
 WRITE_TOOLS = frozenset({"write_file", "patch"})
+# The owner-authored files of an instance. A mind run may read them and never change them, by any tool:
+# a write target, a patch header, a shell command or code that names one is blocked before anything else.
+PROTECTED_BASENAMES = ("protagine.yaml", "identity.yaml", "api.key")
 GUARD_ROUTE = "/v1/mind/guard"
 GUARD_TIMEOUT = 2.0
 # The V4A headers stock ``patch`` writes to (tools/file_tools.py checks the same two shapes).
@@ -57,6 +72,15 @@ FLOOR_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:message|text|email|sms|dm)\b.{0,40}\b(?:bulk|mass|broadcast|"
         r"blast|everyone|all\s+contacts)\b", re.IGNORECASE),
 }
+
+
+# In a contact's session the final response is delivered to the session's own chat, and only there: a send to
+# that chat repeats it, and anything meant for another recipient does not reach them through it.
+REPLY = "your final response is delivered to this conversation as your reply; there is nothing to send"
+UNKNOWN_RECIPIENT = ("nothing was sent: no contact is known at that target; your final response goes to this "
+                     "conversation only")
+NOT_SENT = ("nothing was sent: that recipient cannot be messaged from this conversation; your final response goes to "
+            "this conversation only")
 
 
 def block(message: str) -> dict[str, str]:
@@ -105,6 +129,27 @@ def write_targets(tool: str, args: Mapping[str, Any]) -> list[Any]:
     return targets
 
 
+# What a shell or code spelling can put between the letters of a name without changing the file it
+# reaches: quotes, escapes, whitespace, backticks and string concatenation.
+SPELLING = re.compile(r"[\s'\"\\`+]")
+
+
+def names_protected_file(tool: str, args: Mapping[str, Any]) -> str | None:
+    """The protected basename an effectful call names: in its write targets (``write_file``, ``patch``,
+    including V4A headers), else anywhere in its serialized arguments (a command, code, a message).
+    The comparison ignores case (a case-insensitive file system writes ``IDENTITY.YAML`` to the same
+    file) and the quotes, backslashes, whitespace, backticks and ``+`` a shell or code can split a
+    literal name with. It does not see a name a shell or code builds another way (``ident?ty.yaml``,
+    ``$'\\x69dentity.yaml'``, ``'%s.yaml' % 'identity'``): the worker's default toolsets have no such
+    tool, and that, not this rule, is the guarantee."""
+    if tool in WRITE_TOOLS:
+        haystack = [str(target) for target in write_targets(tool, args)]
+    else:
+        haystack = [json.dumps(args, ensure_ascii=False, sort_keys=True)]
+    spelled = [SPELLING.sub("", text).casefold() for text in haystack]
+    return next((name for name in PROTECTED_BASENAMES for text in spelled if name in text), None)
+
+
 def floor_match(text: str) -> str | None:
     return next((name for name, pattern in FLOOR_PATTERNS.items() if pattern.search(text)), None)
 
@@ -149,14 +194,36 @@ class Guard:
         guest = not mind and self.sessions.is_owner(session_id) is False
         if not mind and not guest:
             return None
+        if guest and tool in MESSAGING_TOOLS:
+            answer = self._guest_message(args, session_id)
+            if answer is not None:
+                return final_answer(answer, block=True)
+        try:
+            verdict = self._rules(tool, args, session_id, mind)
+        except Exception as error:  # fails closed, and still answers a contact's turn finally
+            if not guest:
+                raise
+            verdict = block(f"guard error ({type(error).__name__})")
+        if guest and verdict is not None and verdict.get("action") == "block":
+            # Final for the turn, so a contact's turn does not spend its iterations on other arguments, and
+            # worded for the reply: the model repeats a "blocked" to the contact.
+            return final_answer("session_search is unavailable to non-owner sessions; answer from the message and "
+                                "the recalled context" if tool == "session_search" else NOT_SENT
+                                if tool in MESSAGING_TOOLS else
+                                f"{tool} is not available in this conversation; answer in your final response",
+                                block=True)
+        return verdict
+
+    def _rules(self, tool: str, args: Mapping[str, Any], session_id: str, mind: bool) -> dict[str, str] | None:
         if tool in READ_ONLY_TOOLS:
-            if guest and tool == "session_search":
-                return block("session_search is unavailable to non-owner sessions")
-            return None
+            return block("session_search") if not mind and tool == "session_search" else None
         text = json.dumps(args, ensure_ascii=False, sort_keys=True)
         if mind:
             if not self.mind_enabled():
                 return block("the mind is off; no effects until it is turned on")
+            protected = names_protected_file(tool, args)
+            if protected:
+                return block(f"{protected} is owner-authored; a mind task cannot change it")
             verdict = self._deny(tool, text)
             if verdict is not None:
                 return verdict
@@ -259,7 +326,7 @@ class Guard:
                 contact = self.client.resolve_contact(platform, chat_id, timeout=GUARD_TIMEOUT)
             if not contact:
                 return block("cron delivery to an unknown recipient")
-            if contact.get("interaction_allowed") is False:
+            if contact.get("may_contact") == "never":
                 return block("cron delivery to a contact who may not be contacted")
             if recipients is not None and contact.get("contact_id") and contact["contact_id"] not in recipients:
                 recipients.append(str(contact["contact_id"]))
@@ -277,9 +344,29 @@ class Guard:
             return {}
         return dict(job) if isinstance(job, Mapping) else {}
 
+    def _guest_message(self, args: Mapping[str, Any], session_id: str) -> str | None:
+        """A contact's session messaging ``platform:address``: the session's own chat (in a direct chat the
+        sender's handle too) is the reply, a target no contact is known at is refused as the verdict would;
+        anything else, including a call with no address or a sidecar that cannot answer, is the verdict's."""
+        target = str(args.get("target") or args.get("chat_id") or args.get("to") or "")
+        platform, address = (parse_deliver(f"{args['platform']}:{target}" if args.get("platform") else target)
+                             or [("", "")])[0]
+        info = self.sessions.get(session_id)
+        if args.get("contact_id") or info is None or not address or platform == "*":
+            return None
+        chat, chat_type = self.sessions.chat(session_id)
+        if platform.lower() == info.platform.lower() and (
+                address == chat or ((not chat_type or chat_type in DM_CHAT_TYPES) and address == info.sender_id)):
+            return REPLY
+        try:
+            contact = self.client.resolve_contact(platform, address, timeout=GUARD_TIMEOUT)
+        except Exception:
+            return None
+        return UNKNOWN_RECIPIENT if contact is None else None
+
     def _session_contact(self, session_id: str) -> dict[str, Any] | None:
         if self.sessions.is_owner(session_id):
-            return {"contact_id": self.settings.owner_contact_id() or "owner", "interaction_allowed": True}
+            return {"contact_id": self.settings.owner_contact_id() or "owner", "may_contact": "auto"}
         info = self.sessions.get(session_id)
         if info is None or not info.sender_id:
             return None
@@ -310,7 +397,9 @@ class Guard:
             return block("the sidecar answered the guard check with no verdict")
         reason = str(verdict.get("reason") or verdict.get("message") or "")
         if verdict.get("ask") is True or verdict.get("action") == "ask":
-            return ask(reason or f"{tool} needs the owner's approval", f"protagine.ask.{tool}")
+            # Hermes' gate would post the prompt to this session's chat, and a contact could answer it there.
+            return block(reason) if run == "guest" else ask(reason or f"{tool} needs the owner's approval",
+                                                             f"protagine.ask.{tool}")
         if "allow" in verdict:
             return None if verdict["allow"] is True else block(reason or f"{tool} was refused by the mind")
         if verdict.get("action") == "block":
@@ -318,5 +407,6 @@ class Guard:
         return None
 
 
-__all__ = ["FLOOR_PATTERNS", "Guard", "MESSAGING_TOOLS", "READ_ONLY_TOOLS", "WRITE_TOOLS", "ask",
-           "block", "floor_match", "mind_run", "parse_deliver", "path_inside", "workspace", "write_targets"]
+__all__ = ["FLOOR_PATTERNS", "Guard", "MESSAGING_TOOLS", "PROTECTED_BASENAMES", "READ_ONLY_TOOLS", "WRITE_TOOLS",
+           "ask", "block", "floor_match", "mind_run", "names_protected_file", "parse_deliver", "path_inside",
+           "workspace", "write_targets"]

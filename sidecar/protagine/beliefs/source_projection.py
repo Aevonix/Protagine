@@ -23,14 +23,32 @@ _QUOTED_SQL = """(json_extract(c.data_json,'$.representation') IN ('preference',
     OR json_extract(c.data_json,'$.memory_quality.memory_kind')='procedure')"""
 
 
+def owner_signal_writer(mind_provider):
+    """The appraisal's owner net for the running mind (owner outreach, architecture 4.10): the owner's
+    opt-out it saw pauses outreach when the phrase match missed it. No mind, or one without the hook: nothing."""
+    def write(signal):
+        mind = mind_provider()
+        hook = getattr(mind, "owner_signal", None)
+        return hook(signal) if callable(hook) else None
+    return write
+
+
 def initialize(conn):
     conn.execute('''CREATE TABLE IF NOT EXISTS source_claim_jobs (
         turn_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
         timezone TEXT NOT NULL DEFAULT 'UTC', attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt REAL NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0,
-        error TEXT, model TEXT, extraction_version TEXT, lease_token TEXT NOT NULL DEFAULT '')''')
-    if 'diagnostics_json' not in {row[1] for row in conn.execute('PRAGMA table_info(source_claim_jobs)')}:
+        error TEXT, model TEXT, extraction_version TEXT, lease_token TEXT NOT NULL DEFAULT '',
+        diagnostics_json TEXT, enqueued_at REAL NOT NULL DEFAULT 0)''')
+    columns = {row[1] for row in conn.execute('PRAGMA table_info(source_claim_jobs)')}
+    if 'diagnostics_json' not in columns:
         conn.execute('ALTER TABLE source_claim_jobs ADD COLUMN diagnostics_json TEXT')
+    if 'enqueued_at' not in columns:
+        # A queue from before the column: a job was enqueued when its source was recorded.
+        from protagine.turns.projection_backlog import EPOCH_SQL
+        conn.execute('ALTER TABLE source_claim_jobs ADD COLUMN enqueued_at REAL NOT NULL DEFAULT 0')
+        conn.execute('UPDATE source_claim_jobs SET enqueued_at=coalesce((SELECT ' + EPOCH_SQL.format('s.ingested_at')
+                     + ' FROM turn_sources s WHERE s.turn_id=source_claim_jobs.turn_id),0)')
     conn.execute('''CREATE TABLE IF NOT EXISTS source_claims (
         id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, message_hash TEXT NOT NULL,
         subject_key TEXT NOT NULL, predicate TEXT NOT NULL, value_key TEXT NOT NULL, data_json TEXT NOT NULL,
@@ -44,8 +62,8 @@ def initialize(conn):
 def enqueue(conn, turn_id, messages, *, scope, timezone_name=None):
     # Checkpoint history has no per-message verified speaker attribution/time.
     if scope == "person" and any(m.get("role") == "user" for m in messages):
-        conn.execute('INSERT OR IGNORE INTO source_claim_jobs(turn_id,timezone) VALUES (?,?)',
-                     (turn_id, timezone_name or "UTC"))
+        conn.execute('INSERT OR IGNORE INTO source_claim_jobs(turn_id,timezone,enqueued_at) VALUES (?,?,?)',
+                     (turn_id, timezone_name or "UTC", time.time()))
 
 
 def erase_removed(conn, turn_id, session_id, retained):
@@ -138,6 +156,26 @@ def subject_basis(conn, claim, *, contact_id):
             event_at=data.get('event_at'), event_time=data.get('event_time', {
                 'status': 'legacy_precision_unknown' if data.get('event_at') else 'unknown'}))
     return result
+
+
+def one_witness_per_value(rows):
+    """Claim dedupe at read time: of the scalar claims repeating one ``(subject_key, predicate, value)``
+    over one period (the same validity and event time), only the newest witness, the rule
+    ``_rows(..., distinct_values=True)`` applies per key to the claims valid at one time. The same value
+    over two periods is two claims (a correction may name either). A quoted preference is a source
+    statement, never folded. The stored claims are never rewritten."""
+    kept, seen = [], set()
+    rows = {row['id']: row for row in rows}.values()
+    for row in sorted(rows, key=lambda row: (row.get('recorded_at') or '', row['id']), reverse=True):
+        if row.get('representation') != 'preference':
+            event = row.get('event_at') or (row.get('event_time') or {}).get('start')
+            value = (row['subject_key'], row['predicate'], norm_value(row.get('value')),
+                     row.get('valid_from'), row.get('valid_to'), event)
+            if value in seen:
+                continue
+            seen.add(value)
+        kept.append(row)
+    return kept
 
 
 class SourceClaimProjection:
@@ -399,8 +437,7 @@ class SourceClaimProjection:
             for key in keys:
                 rows.extend(self._rows(conn, source['contact_id'], source['session_id'],
                     key=key, limit=limit))
-        rows = list({row['id']: row for row in rows
-                     if not row['superseded_by'] and not row['retracted_by']}.values())
+        rows = one_witness_per_value(row for row in rows if not row['superseded_by'] and not row['retracted_by'])
         rows.sort(key=relevance, reverse=True)
         return rows[:limit]
 
@@ -517,14 +554,23 @@ class SourceClaimProjection:
                 written += 1
             return written
 
-    def claim_job(self):
+    def claim_job(self, *, backlog=True):
+        """Lease the next due job: a new one first; a backlog job (``turns.projection_backlog``) only
+        when none is due, ``backlog`` is set and the hourly budget has room."""
+        from protagine.turns import projection_backlog
         now = time.time()
         with closing(self.ledger._connect()) as conn, conn:
             conn.execute('BEGIN IMMEDIATE')
-            job = conn.execute('''SELECT j.*,s.contact_id,s.session_id,s.scope,s.messages_json,s.occurred_at,s.ingested_at
+            before = projection_backlog.watermark(conn)
+            query = '''SELECT j.*,s.contact_id,s.session_id,s.scope,s.messages_json,s.occurred_at,s.ingested_at
                 FROM source_claim_jobs j JOIN turn_sources s ON s.turn_id=j.turn_id
-                WHERE (j.status='pending' AND j.next_attempt<=?) OR (j.status='running' AND j.lease_until<=?)
-                ORDER BY s.ingested_at LIMIT 1''', (now, now)).fetchone()
+                WHERE ((j.status='pending' AND j.next_attempt<=?) OR (j.status='running' AND j.lease_until<=?))
+                AND j.enqueued_at {} ? ORDER BY s.ingested_at LIMIT 1'''
+            job = conn.execute(query.format('>='), (now, now, before)).fetchone()
+            if job is None and backlog:
+                job = conn.execute(query.format('<'), (now, now, before)).fetchone()
+                if job is not None and not projection_backlog.admit(conn, now=now):
+                    job = None
             if job is None:
                 return None
             token = uuid.uuid4().hex
@@ -554,8 +600,8 @@ class SourceClaimProjection:
                 (time.time() + request_timeout + 30, job['turn_id'], job['lease_token']))
             return updated.rowcount == 1
 
-    async def process_one(self, router):
-        job = self.claim_job()
+    async def process_one(self, router, *, backlog=True):
+        job = self.claim_job(backlog=backlog)
         if job is None:
             return False
         model = None
@@ -1063,74 +1109,103 @@ class SourceClaimProjection:
                 bundles + pair_conversation_candidates(quotations, input_pairs, sources))
 
 
-async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=True, commitments_provider=None):
-    """One consumer, durable jobs and leases; process loss resumes from SQLite."""
+IDENTITY_SECONDS = 30.0     # pending identity reconciliation, at most this often
+BUSY_PAUSE, IDLE_PAUSE = .05, 2.0
+
+
+async def _lane(step, deferred, *, idle=IDLE_PAUSE):
+    """Run ``step`` for as long as the worker runs: again at once after it did work, after ``idle``
+    seconds when it found none or failed. A failure is logged as ``deferred`` and never ends the lane."""
+    while True:
+        try:
+            worked = await step()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(deferred, type(exc).__name__)
+            worked = False
+        await asyncio.sleep(BUSY_PAUSE if worked else idle)
+
+
+async def run_source_claim_worker(ledger, router_provider, *, claims_enabled=True, commitments_provider=None,
+                                  vectors=True):
+    """One consumer per job family, durable jobs and leases; process loss resumes from SQLite.
+
+    Each family runs on its own lane (``_lane``): identity reconciliation, source-vector indexing,
+    media descriptions, and the judgment, appraisal, claim and commitment (capture) projections.
+    No lane waits for another. A source-vector job commits to a table that can take minutes per
+    commit before its first compaction, with tens of thousands of sources queued after an upgrade;
+    capture and the other model projections go on meanwhile, and a model call that hangs holds no
+    indexing back. Each lane leases its own jobs, so running them side by side changes no job's
+    outcome, only when it lands.
+
+    ``vectors=False`` leaves the source-vector jobs to a task on the loop that owns the vector store (the
+    paired harness runs this worker on its own thread).
+
+    The model-backed lanes (media, appraisal, claim, commitment) take new jobs first; a job queued
+    before this release started is backlog and starts only in a slot of its hourly budget
+    (``turns.projection_backlog``), so an upgraded store's history never runs through the model at
+    the lanes' full rate."""
     projection = SourceClaimProjection(ledger)
     from protagine.identity import get_owner_contact_id
     from protagine.self_model.judgments import SelfJudgments
     judgments = SelfJudgments(ledger, owner_id=get_owner_contact_id())
     from protagine.self_model.appraisals import AppraisalStore
-    appraisals = AppraisalStore(ledger, owner_id=get_owner_contact_id())
-    from protagine.commitments.extract import CommitmentExtractor, contact_aliases
+    from protagine.contacts.affect_writer import contact_signal_writer
     from protagine.api.routers import host as _host
+    appraisals = AppraisalStore(ledger, owner_id=get_owner_contact_id(), on_contact=contact_signal_writer(
+        lambda: _host._affect_store, lambda: _host._contacts_store, owner_id_provider=get_owner_contact_id),
+        on_owner=owner_signal_writer(_host._mind))
+    from protagine.commitments.extract import CommitmentExtractor, contact_aliases
     if commitments_provider is None:
         commitments_provider = lambda: _host._commitment_store  # noqa: E731
+    # The running mind keeps the owner's interests: this pass lists them and settles one the owner says is answered.
     commitment_extractor = CommitmentExtractor(ledger, commitments_provider,
-                                               aliases=contact_aliases(lambda: _host._contacts_store))
+                                               aliases=contact_aliases(lambda: _host._contacts_store),
+                                               interests=_host._mind)
     from protagine.turns.media import SourceMedia
     media = SourceMedia(ledger)
     from protagine.turns.source_vectors import SourceVectors
     from protagine.vector import get_store, get_pipeline
-    vectors = SourceVectors(ledger, get_store(), get_pipeline())
-    vectors.backfill()
+    source_vectors = SourceVectors(ledger, get_store(), get_pipeline()) if vectors else None
+    if source_vectors is not None:
+        source_vectors.backfill()
     try:
         media.recover_unowned_files()
     except OSError:
         logger.warning("source media orphan recovery deferred")
-    reflections = {'judgment': judgments, 'appraisal': appraisals, 'claim': projection,
-                   'commitment': commitment_extractor}
-    reflection_tasks = {name: None for name in reflections}
-    next_identity_check = 0.0
     try:
-        while True:
-            worked = False
-            if time.monotonic() >= next_identity_check:
-                next_identity_check = time.monotonic() + 30
-                try:
-                    from protagine.api.routers.social_state import reconcile_pending_identities
-                    worked = await reconcile_pending_identities(ledger)
-                except Exception as exc:
-                    logger.warning('identity source reconciliation deferred (%s)', type(exc).__name__)
-            # Durable model projections share this worker's lifecycle. Their
-            # requests must not stall source indexing or media processing.
-            if claims_enabled:
-                for name, projection_worker in reflections.items():
-                    task = reflection_tasks[name]
-                    if task is None or task.done():
-                        if task is not None:
-                            try:
-                                worked = task.result() or worked
-                            except Exception as exc:
-                                logger.warning("source %s deferred (%s)", name, type(exc).__name__)
-                        reflection_tasks[name] = asyncio.create_task(
-                            projection_worker.process_one(router_provider()))
-            try:
-                worked = await vectors.process_one() or worked
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("source semantic projection deferred (%s)", type(exc).__name__)
-            try:
-                if claims_enabled:
-                    media_worked = await media.process_one(router_provider())
-                    worked = worked or media_worked
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("source claim worker deferred (%s)", type(exc).__name__)
-            await asyncio.sleep(.05 if worked else 2)
+        from protagine.turns import projection_backlog
+        with closing(ledger._connect()) as conn:
+            backlog = projection_backlog.status(conn)
+        waiting = sum((backlog.get('waiting') or {}).values())
+        if waiting:
+            logger.info("%d model projection jobs queued before %s are backlog: new turns go first, and at most "
+                        "%g backlog jobs start an hour (projections.backlog_per_hour)", waiting,
+                        time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(backlog['backlog_before'])),
+                        projection_backlog.configured_per_hour())
+    except Exception as exc:
+        logger.debug("projection backlog not read (%s)", type(exc).__name__)
+
+    async def reconcile_identities():
+        from protagine.api.routers.social_state import reconcile_pending_identities
+        await reconcile_pending_identities(ledger)
+        return False
+
+    lanes = {'identity': _lane(reconcile_identities, 'identity source reconciliation deferred (%s)',
+                               idle=IDENTITY_SECONDS)}
+    if source_vectors is not None:
+        lanes['semantic'] = _lane(source_vectors.process_one, 'source semantic projection deferred (%s)')
+    if claims_enabled:
+        lanes['media'] = _lane(lambda: media.process_one(router_provider()), 'source claim worker deferred (%s)')
+        for name, reflection in (('judgment', judgments), ('appraisal', appraisals), ('claim', projection),
+                                 ('commitment', commitment_extractor)):
+            lanes[name] = _lane(lambda reflection=reflection: reflection.process_one(router_provider()),
+                                'source ' + name + ' deferred (%s)')
+    tasks = [asyncio.create_task(lane, name='protagine-source-' + name) for name, lane in lanes.items()]
+    try:
+        await asyncio.gather(*tasks)
     finally:
-        tasks = [task for task in reflection_tasks.values() if task is not None]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

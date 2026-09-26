@@ -7,18 +7,22 @@ contacts so history accrues from first contact; machines resolve to the
 reserved ``system`` sentinel and never touch relationship stores.
 
 Resolution ladder (first hit wins):
-  1. exact / cross-gateway messaging handle (phones unify across sms/rcs/
-     whatsapp/signal/imessage via phone_key; emails normalize)
-  2. scoped display-name: propose a candidate association, without attributing
-     the sender to that person's identity or private history
-  3. shadow contact (tier unknown, interaction_allowed=false, provenance
-     recorded), when PROTAGINE_IDENTITY_SHADOW_CONTACTS (default true)
+  1. exact / cross-gateway messaging handle (an E.164 number is one identity on
+     any gateway, emails normalize; C1)
+  2. scoped display-name: propose a candidate association for the owner to
+     confirm, without attributing the sender to that person's identity or
+     private history
+  3. shadow contact (tier ``unknown``, ``may_contact='ask'``, provenance
+     recorded). Meeting people is the design, not an option (architecture 4.7
+     item 1): the social drive ignores a shadow until the owner sets a cadence
+     or a tier, so a group chat never becomes a stream of check-in asks.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -28,10 +32,22 @@ logger = logging.getLogger(__name__)
 #: visibility; ToM/interactions/relationship surfaces must always exclude it.
 SYSTEM_CONTACT_ID = "system"
 
+# Markers that a source turn is system / skill / non-conversational, i.e. not
+# genuine conversation: such a senderless turn is a machine's, never a person's.
+_SYSTEM_ORIGIN = re.compile(
+    r"\binvoked\b.{0,60}?\bskill\b"          # "... invoked the <name> skill ..."
+    r"|previous turn was interrupted"
+    r"|\bsystem note\b"
+    r"|\bsystem[- ]?generated\b"
+    r"|conversation (?:was )?(?:interrupted|truncated|reset)"
+    r"|<\s*/?\s*system[\s>]",                 # <system> ... </system> style tags
+    re.IGNORECASE | re.DOTALL,
+)
 
-def shadow_contacts_enabled() -> bool:
-    return os.environ.get(
-        "PROTAGINE_IDENTITY_SHADOW_CONTACTS", "true").strip().lower() != "false"
+
+def is_system_origin(text: Optional[str]) -> bool:
+    """True if the raw source text is a system/skill/non-conversational turn."""
+    return bool(text) and bool(_SYSTEM_ORIGIN.search(str(text)))
 
 
 def machine_channel_prefixes() -> tuple:
@@ -50,19 +66,13 @@ def is_machine_turn(channel_id: str, user_text: str, has_sender: bool) -> bool:
     for prefix in machine_channel_prefixes():
         if ch == prefix or ch.startswith(prefix + ":"):
             return True
-    try:
-        from protagine.delivery.reachout_policy import is_system_origin
-        if is_system_origin(user_text):
-            return True
-    except ImportError:
-        pass
-    return False
+    return is_system_origin(user_text)
 
 
 @dataclass
 class Resolution:
     contact_id: Optional[str]
-    method: str          # handle | scoped_name | shadow | none
+    method: str          # contact_id | handle | shadow | none
     created: bool = False
     proposal_filed: bool = False
     candidate_contact_id: Optional[str] = None
@@ -92,7 +102,7 @@ class ParticipantResolver:
             except Exception:
                 pass
 
-        # 1. Handle match (exact + cross-gateway phone + email normalization).
+        # 1. Handle match (exact, then the canonical phone or email identity).
         try:
             c = await self._store.resolve_messaging_handle(platform, user_id)
         except Exception:
@@ -101,7 +111,9 @@ class ParticipantResolver:
         if c is not None:
             return Resolution(c.contact_id, "handle")
 
-        # 2. A name can suggest a link; it cannot establish attribution.
+        # 2. A name can suggest a link; it cannot establish attribution. The
+        # candidate becomes an owner ask (link_proposal) and is confirmed or
+        # rejected through the store, never by the resolver.
         candidate, proposal = None, None
         if display_name and group_id:
             match = await self._scoped_name_match(platform, group_id, display_name)
@@ -110,15 +122,16 @@ class ParticipantResolver:
                     match, platform, user_id, display_name)
                 candidate = match
 
-        # 3. Shadow contact.
-        if not shadow_contacts_enabled():
-            return Resolution(None, "none", proposal_filed=bool(proposal),
-                              candidate_contact_id=candidate, proposal_id=proposal)
+        # 3. Shadow contact: remembered, permission 'ask', no standing. A shadow
+        # without its handle would be an orphan minted on every turn, so one
+        # whose handle cannot be attached (a number the owner split between two
+        # people) is discarded and the sender stays unresolved.
+        contact = None
         try:
             contact = await self._store.create(
                 display_name=display_name or user_id,
                 trust_tier="unknown",
-                interaction_allowed=False,
+                may_contact="ask",
                 import_source="auto:sender",
                 notes=(f"Auto-created from first contact on {channel_id or platform}"
                        + (f" (group {group_id})" if group_id else "")),
@@ -135,6 +148,11 @@ class ParticipantResolver:
         except Exception:
             logger.warning("shadow contact creation failed for %s:%s",
                            platform, user_id, exc_info=True)
+            if contact is not None:
+                try:
+                    await self._store.hard_delete(contact.contact_id, performed_by="auto:sender")
+                except Exception:
+                    logger.warning("could not discard the handle-less shadow %s", contact.contact_id)
             return Resolution(None, "none")
 
     # -- rung 2 helpers ----------------------------------------------------

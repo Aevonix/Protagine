@@ -21,6 +21,7 @@ from .models import (
     BriefingType,
     ScheduleEntry,
 )
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def _validate_timezone(tz_name: str) -> str:
 def local_now(timezone_name: str) -> datetime:
     """Return the current time in the user's configured timezone."""
     tz = zoneinfo.ZoneInfo(timezone_name)
-    return datetime.now(tz)
+    return now_utc().astimezone(tz)
 
 
 def briefing_is_due(
@@ -111,7 +112,7 @@ class BriefingRateLimits:
     _day_reset_at: Optional[datetime] = field(default=None, init=False, repr=False)
 
     def _refresh(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         if self._hour_reset_at is None:
             # Initialize sentinel without resetting any externally-set counter
             self._hour_reset_at = now
@@ -141,7 +142,7 @@ class BriefingRateLimits:
                 return False
             if source and source in self.last_tactical_by_source:
                 elapsed = (
-                    datetime.now(timezone.utc) - self.last_tactical_by_source[source]
+                    now_utc() - self.last_tactical_by_source[source]
                 ).total_seconds()
                 if elapsed < config.cooldown_seconds:
                     return False
@@ -157,7 +158,7 @@ class BriefingRateLimits:
             self.delivered_this_hour += 1
             self.delivered_today += 1
             if source:
-                self.last_tactical_by_source[source] = datetime.now(timezone.utc)
+                self.last_tactical_by_source[source] = now_utc()
 
 
 # ---------------------------------------------------------------------------

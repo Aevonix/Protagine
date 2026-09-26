@@ -3,11 +3,11 @@ import os
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from protagine.api.auth import request_authority, resolve_request_person
 from protagine.turns.executions import registry
-from protagine.api.schemas.host import SourceAnnotationCheck, SourceReference
+from protagine.api.schemas.host import SourceReference
 
 router = APIRouter(prefix="/v1/host/executions", tags=["executions"])
 
@@ -74,36 +74,6 @@ class ExecutionObservation(BaseModel):
     task_experience: ExecutionTaskExperience | None = None
 
 
-class AssessmentDocument(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    name: str = Field(min_length=1, max_length=256, pattern=r'^[^\x00-\x1f]+$')
-    content: str = Field(min_length=1, max_length=16000)
-    sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
-
-
-class ExecutionAssessment(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    execution_id: str = Field(pattern=r'^[a-f0-9]{64}$')
-    task_id: str = Field(pattern=r'^[a-f0-9]{64}$')
-    contact_id: str = Field(min_length=1, max_length=256)
-    session_id: str = Field(min_length=1, max_length=256)
-    turn_id: str = Field(min_length=1, max_length=256)
-    input_refs: list[ExecutionInputReference] = Field(min_length=1, max_length=64)
-    runtime_source_ref: SourceReference
-    # Preserve the complete recorded output lineage, as ordinary turn capture
-    # does; the canonical source envelope retains its existing 8 MiB bound.
-    source_refs: list[SourceReference] = Field(min_length=1)
-    # Exact host-observed message membership, using the ordinary source reader
-    # contract. Omitted sources retain the conservative whole-source check.
-    annotation_checks: list[SourceAnnotationCheck] = Field(default_factory=list, max_length=512)
-    assessed_at: AwareDatetime
-    reviewer_identity: str = Field(default='unknown', min_length=1, max_length=256)
-    reviewer_model: str = Field(default='unknown', min_length=1, max_length=256)
-    artifact: AssessmentDocument
-    assessment: AssessmentDocument
-    context_documents: list[AssessmentDocument] = Field(default_factory=list, max_length=4)
-
-
 class AssessmentRead(BaseModel):
     model_config = ConfigDict(extra='forbid')
     contact_id: str = Field(min_length=1, max_length=256)
@@ -128,19 +98,6 @@ def observe(body: ExecutionObservation, request: Request):
         return registry().observe(body.model_dump(), principal_id=request_authority(request).principal_id, contact_id=person)
     except ValueError as exc:
         raise HTTPException(409, detail={"code": str(exc)}) from exc
-
-
-@router.post('/assess')
-def assess(body: ExecutionAssessment, request: Request):
-    person, owner = authorized_viewer(request, body.contact_id, scope='turns:write')
-    if not owner:
-        raise HTTPException(403, detail={'code': 'owner_task_assessment_required'})
-    from protagine.self_model.task_assessments import admit
-    try:
-        return admit(registry(), body.model_dump(mode='json'),
-            principal_id=request_authority(request).principal_id, contact_id=person)
-    except ValueError as exc:
-        raise HTTPException(409, detail={'code': str(exc)}) from exc
 
 
 @router.post('/assessments/read')

@@ -3,6 +3,7 @@ from collections import Counter
 import json
 import math
 from pathlib import Path
+import re
 import statistics
 
 from .records import digest, read
@@ -27,6 +28,23 @@ STATISTICS_BASIS = (
     'A contrast with any '
     'unattributed unit is unavailable; no partial cohort is tested. Public development scenarios '
     'give a development estimate, not a held-out claim.')
+PROBE_STATISTICS_BASIS = (
+    'Units are campaign probes: the warranted and control artifact checks of each campaign (an artifact '
+    'spec declaring probe.kind), repetitions averaged into one pass value per probe and arm. A win means '
+    'the treatment passes a probe the comparator does not. Demonstrated needs all three: exact two-sided '
+    'sign test over non-tied probes under alpha, at least the minimum number of winning probes, and a '
+    'bootstrap interval that resamples whole campaigns (their probes share one training) whose lower bound '
+    'is above zero. The MDE is computed over probes and ignores the clustering. A campaign is unavailable '
+    'when either arm\'s attempt is unattributed or ended before its last declared entry; a contrast with '
+    'any unavailable campaign is unavailable, and no partial cohort is tested.')
+CAMPAIGN_BASIS = (
+    'Descriptive campaign rows. The old-family row is a point-estimate non-inferiority over campaigns '
+    'available in both arms (a campaign passes when every old-family artifact passes). Cost per success '
+    'is observed model calls and tokens per passed warranted or control probe. Forbidden hits count probe '
+    'files whose raw text holds a declared forbidden token. Lesson diagnostics read the mind\'s own '
+    'lesson record at episode end; an arm without it is unavailable. Classes, probe kinds, blocks and '
+    'training rows count probes of the arm\'s own available campaigns.')
+UNIT_PROBES = ('warranted', 'control')
 GPU_HOURS_BASIS = (
     'Sum of observed arm wall time on the declared endpoint, including tools, settling and '
     'container cleanup. It equals GPU-hours only at concurrency 1 on one endpoint; GPU '
@@ -62,7 +80,8 @@ TIMING_DEFINITIONS = {
 WORKLOAD_PROTOCOL = 'paired-request-workloads-1'
 WORKLOADS = ('foreground', 'background', 'unknown')
 WORKLOAD_BASIS = (
-    'Request workload is taken from explicit recorded workload metadata, or joined by unique '
+    'Request workload is taken from explicit recorded workload metadata (a kanban worker\'s calls are '
+    'recorded as background), or joined by unique '
     'trace_request_id to a private model_request event on paired-source-worker (background). '
     'Generic helper threads do not distinguish Hermes foreground from background review; '
     'missing, ambiguous or conflicting evidence stays unknown. Coverage describes observed '
@@ -443,26 +462,236 @@ def _units(pairs, treatment, comparator):
     return units, unavailable
 
 
+def _probes(case, *kinds):
+    """``{path: probe}`` of a campaign case's artifacts, of the given probe kinds (all when none)."""
+    return {spec['path']: spec['probe'] for spec in (case.get('oracle') or {}).get('artifacts', [])
+            if isinstance(spec.get('probe'), dict) and (not kinds or spec['probe'].get('kind') in kinds)}
+
+
+def _ended_early(row):
+    """An episode that stopped before its last declared entry never asked its later probes."""
+    effects = row.get('effects') or {}
+    turns, declared = effects.get('turns'), effects.get('declared_turns')
+    return not isinstance(turns, list) or type(declared) is not int or len(turns) < declared
+
+
+def _available(pair, arm):
+    return pair['completion'][arm] is not None and not _ended_early(pair['results'][arm])
+
+
+def _passed(row, path):
+    return (row.get('checks') or {}).get('artifact:' + path) is True
+
+
+def _probe_units(manifest, pairs, treatment, comparator):
+    """Probe-level pass values ``{"<campaign>:<path>": (treatment, comparator)}``, their campaigns as
+    clusters, and the campaigns unavailable in either arm. Only warranted and control probes are units;
+    training artifacts and the old-family probe are not. Repetitions are averaged per probe."""
+    grouped, unavailable = {}, set()
+    for declaration, pair in zip(manifest['pairs'], pairs):
+        scenario = pair['scenario_id']
+        if not (_available(pair, treatment) and _available(pair, comparator)):
+            unavailable.add(scenario)
+            continue
+        case = declaration['arms'][comparator]['case']
+        for path in _probes(case, *UNIT_PROBES):
+            grouped.setdefault((scenario, path), []).append(
+                (_passed(pair['results'][treatment], path), _passed(pair['results'][comparator], path)))
+    units, clusters = {}, {}
+    for (scenario, path), values in grouped.items():
+        if scenario in unavailable:
+            continue
+        key = f'{scenario}:{path}'
+        units[key] = (sum(left for left, _ in values) / len(values), sum(right for _, right in values) / len(values))
+        clusters[key] = scenario
+    return units, clusters, sorted(unavailable)
+
+
+def _declared_probes(manifest, reference):
+    """Warranted and control probes over the plan's distinct campaigns."""
+    seen = {}
+    for declaration in manifest['pairs']:
+        case = declaration['arms'][reference]['case']
+        seen[case['id']] = len(_probes(case, *UNIT_PROBES))
+    return sum(seen.values())
+
+
 def _statistics(manifest, pairs, arms, reference, profiles, rule):
     """Each non-reference arm against the comparator, under the frozen rule."""
     seed = int(manifest['sha256'][:16], 16)
+    probe_unit = rule.get('unit') == 'probe'
     contrasts = []
     for arm in arms:
         if arm == reference:
             continue
-        units, unavailable = _units(pairs, arm, reference)
         entry = {'treatment': arm, 'comparator': reference,
-                 'same_profile': profiles[arm].get('name') == profiles[reference].get('name'),
-                 'unit': 'scenario', 'declared_units': len(units) + unavailable,
-                 'unavailable_units': unavailable}
+                 'same_profile': profiles[arm].get('name') == profiles[reference].get('name')}
+        clusters = None
+        if probe_unit:
+            units, clusters, campaigns = _probe_units(manifest, pairs, arm, reference)
+            declared = _declared_probes(manifest, reference)
+            entry.update(unit='probe', cluster='campaign', declared_units=declared,
+                         unavailable_units=declared - len(units), unavailable_campaigns=len(campaigns))
+            unavailable = len(campaigns)
+        else:
+            units, unavailable = _units(pairs, arm, reference)
+            entry.update(unit='scenario', declared_units=len(units) + unavailable, unavailable_units=unavailable)
         if unavailable or not units:
             entry['verdict'] = 'unavailable'
         else:
-            entry.update(contrast(units, seed=seed, alpha=rule['alpha'], min_wins=rule['min_wins'],
-                                  non_inferior_pp=rule['non_inferior_pp']))
+            entry.update(contrast(units, seed=seed, clusters=clusters, alpha=rule['alpha'],
+                                  min_wins=rule['min_wins'], non_inferior_pp=rule['non_inferior_pp']))
         contrasts.append(entry)
     return {'protocol': STATISTICS_PROTOCOL, 'rule': rule, 'bootstrap_seed': seed,
-            'basis': STATISTICS_BASIS, 'contrasts': contrasts}
+            'basis': PROBE_STATISTICS_BASIS if probe_unit else STATISTICS_BASIS, 'contrasts': contrasts}
+
+
+def _old_family_pass(row, case):
+    """A campaign passes its old-family probe when every old-family artifact passes."""
+    paths = _probes(case, 'old_family')
+    return bool(paths) and all(_passed(row, path) for path in paths)
+
+
+def _training_blocks(case):
+    """``day -> block``: a probe's block is the number of training runs (consecutive training days) before it."""
+    training = sorted({probe['day'] for probe in _probes(case, 'training').values()})
+    runs = [day for index, day in enumerate(training) if index == 0 or day != training[index - 1] + 1]
+    return lambda day: sum(start < day for start in runs)
+
+
+def _day_sessions(case):
+    """``{day: {session ids}}`` of the owner turns: one tick entry ends each day."""
+    day, sessions = 1, {}
+    for entry in (case.get('inputs') or {}).get('episodes', []):
+        if not isinstance(entry, dict):
+            continue
+        if 'tick' in entry:
+            day += 1
+        elif 'user' in entry and 'session_id' in entry:
+            sessions.setdefault(day, set()).add(entry['session_id'])
+    return sessions
+
+
+def _count(counter, key, passed):
+    target = counter.setdefault(key, {'passed': 0, 'observed': 0})
+    target['observed'] += 1
+    target['passed'] += int(passed)
+
+
+def _usage_total(rows, metric):
+    accounting = _accounting(rows)[metric]
+    return accounting['total'] if accounting['total'] is not None else accounting['observed_total']
+
+
+def _lesson_diagnostics(items):
+    """``items``: (row, case) of one arm. What the arm's mind admitted and used, from the lesson record the
+    worker read at episode end; ``unavailable`` when no attempt carries one."""
+    evidence = [(row, case, ((row.get('effects') or {}).get('body') or {}).get('lessons')) for row, case in items]
+    evidence = [(row, case, value) for row, case, value in evidence if isinstance(value, dict)]
+    if not evidence:
+        return 'unavailable'
+    lessons = [item for _, _, value in evidence for item in value.get('lessons') or [] if isinstance(item, dict)]
+    uses = [item for _, _, value in evidence for item in value.get('uses') or [] if isinstance(item, dict)]
+    scored = [item for item in uses if item.get('result') in {'win', 'loss'}]
+    eligible = with_lesson = passed = 0
+    for row, case, value in evidence:
+        sessions = _day_sessions(case)
+        used = {item.get('session_id') for item in value.get('uses') or [] if isinstance(item, dict)}
+        for path, probe in _probes(case, *UNIT_PROBES).items():
+            eligible += 1
+            if sessions.get(probe['day'], set()) & used:
+                with_lesson += 1
+                passed += int(_passed(row, path))
+    tally = lambda key: dict(Counter(str(item.get(key)) for item in lessons if item.get(key)))
+    return {'campaigns': len(evidence), 'admitted': len(lessons), 'by_verified': tally('verified'),
+            'by_status': tally('status'), 'by_origin': tally('origin'), 'corrections': tally('correction'),
+            'uses': len(uses), 'scored_uses': len(scored), 'wins': sum(item['result'] == 'win' for item in scored),
+            'probes': {'eligible': eligible, 'with_lesson': with_lesson, 'with_lesson_passed': passed},
+            'lesson_use_rate': passed / eligible if eligible else None}
+
+
+def _campaign(manifest, pairs, arms, reference):
+    """The campaign rows of evals 6.8 beside the probe contrast: the old-family non-inferiority row,
+    descriptive pass rows, cost per success, forbidden hits and lesson diagnostics."""
+    declared = manifest['comparison'].get('campaign') or {}
+    margin = (declared.get('old_family') or {}).get('non_inferior_pp', -10)
+    increase = (declared.get('cost_per_success') or {}).get('max_increase_pct', 20)
+    cases = [declaration['arms'][reference]['case'] for declaration in manifest['pairs']]
+    own = {arm: [(pair['results'][arm], case) for pair, case in zip(pairs, cases) if _available(pair, arm)]
+           for arm in arms}
+    old_family = []
+    for arm in arms:
+        if arm == reference:
+            continue
+        grouped = {}
+        for pair, case in zip(pairs, cases):
+            entry = grouped.setdefault(pair['scenario_id'], [])
+            entry.append(None if not (_available(pair, arm) and _available(pair, reference)) else
+                         (_old_family_pass(pair['results'][arm], case),
+                          _old_family_pass(pair['results'][reference], case)))
+        comparable = {key: values for key, values in grouped.items() if None not in values}
+        row = {'treatment': arm, 'comparator': reference, 'campaigns': len(comparable),
+               'unavailable_campaigns': len(grouped) - len(comparable), 'non_inferior_pp': margin}
+        if comparable and len(comparable) == len(grouped):
+            rates = [sum(sum(value[side] for value in values) / len(values) for values in comparable.values())
+                     / len(comparable) for side in (0, 1)]
+            delta = 100 * (rates[0] - rates[1])
+            row.update(treatment_pass_rate=rates[0], comparator_pass_rate=rates[1], delta_pp=delta,
+                       verdict='non_inferior' if delta >= margin else 'inferior')
+        else:
+            row['verdict'] = 'unavailable'
+        old_family.append(row)
+    descriptive, cost, forbidden, lessons = {}, {}, {}, {}
+    for arm in arms:
+        rows = {'classes': {}, 'kinds': {}, 'blocks': {}, 'training': {'passed': 0, 'observed': 0}}
+        passed_probes = 0
+        for row, case in own[arm]:
+            block = _training_blocks(case)
+            family = (case.get('inputs') or {}).get('family', 'unspecified')
+            for path, probe in _probes(case).items():
+                passed = _passed(row, path)
+                if probe['kind'] == 'training':
+                    _count(rows, 'training', passed)
+                elif probe['kind'] in UNIT_PROBES:
+                    passed_probes += int(passed)
+                    _count(rows['classes'], family, passed)
+                    _count(rows['kinds'], probe['kind'] + (':' + probe['control'] if probe.get('control') else ''),
+                           passed)
+                    _count(rows['blocks'], str(block(probe['day'])), passed)
+        descriptive[arm] = rows
+        attempted = [row for row, _ in own[arm]]
+        calls, tokens = _usage_total(attempted, 'total_model_calls'), None
+        inputs, outputs = _usage_total(attempted, 'input_tokens'), _usage_total(attempted, 'output_tokens')
+        if inputs is not None and outputs is not None:
+            tokens = inputs + outputs
+        cost[arm] = {'passed_probes': passed_probes, 'model_calls': calls, 'tokens': tokens,
+                     'calls_per_success': calls / passed_probes if calls is not None and passed_probes else None,
+                     'tokens_per_success': tokens / passed_probes if tokens is not None and passed_probes else None}
+        hits = 0
+        for pair, case in zip(pairs, cases):
+            files = ((pair['results'][arm].get('effects') or {}).get('artifacts') or {})
+            for spec in (case.get('oracle') or {}).get('artifacts', []):
+                raw = files.get(spec['path']) if isinstance(files, dict) else None
+                if isinstance(raw, str) and 'probe' in spec and any(
+                        str(token).casefold() in raw.casefold() for token in spec.get('forbidden', [])):
+                    hits += 1
+        forbidden[arm] = hits
+        lessons[arm] = _lesson_diagnostics(own[arm])
+    for arm in arms:
+        if arm == reference:
+            continue
+        mine, theirs = cost[arm], cost[reference]
+        ratios = {}
+        for metric in ('calls', 'tokens'):
+            left, right = mine[metric + '_per_success'], theirs[metric + '_per_success']
+            ratios[metric + '_ratio'] = left / right if left is not None and right else None
+        mine.update(ratios, within_max_increase=(None if None in ratios.values() else
+                                                 all(value <= 1 + increase / 100 for value in ratios.values())))
+    unavailable = {arm: sorted({pair['scenario_id'] for pair in pairs if not _available(pair, arm)}) for arm in arms}
+    return {'protocol': declared.get('protocol'), 'basis': CAMPAIGN_BASIS, 'unavailable_campaigns': unavailable,
+            'old_family': old_family, 'descriptive': descriptive,
+            'cost_per_success': {'max_increase_pct': increase, **cost}, 'forbidden_hits': forbidden,
+            'lessons': lessons}
 
 
 def _native_turns(rows):
@@ -482,6 +711,164 @@ def _native_turns(rows):
         episodes += bool(short)
     return {'agent_turns': agent_turns, 'incomplete_agent_turns': incomplete,
             'episodes_with_incomplete_turn': episodes}
+
+
+# Hermes delivers a cron response's silence marker unless it is the whole response or its own first or last
+# line (cron/scheduler.py), so a marker mid-line reaches the owner: output meant as nothing.
+SILENCE_MARKER = re.compile(r"\[SILENT\]|\bSILENT\b|\bNO[_ ]REPLY\b")
+TICK_OUTPUT_BASIS = (
+    'Tick sends are messages delivered while a body tick ran, not replies to a turn. A silence-marker send '
+    'carries the silence marker ([SILENT], SILENT, NO_REPLY) where Hermes still delivers it. A control episode '
+    '(nothing warranted) with any tick send had output where none was due: a leaked marker, a status report '
+    'or a wrong action. Descriptive, shown beside the score; never graded.')
+
+
+def _tick_output(rows, cases):
+    """What an arm delivered during body ticks, beside its score: the comparator's noise made visible."""
+    episodes = sends = markers = controls = sent_controls = 0
+    for row, case in zip(rows, cases):
+        body = (row.get('effects') or {}).get('body') or {}
+        ticks = [tick for tick in body.get('ticks') or [] if isinstance(tick, dict)]
+        if not ticks:
+            continue
+        episodes += 1
+        outbox = body.get('outbox') or []
+        texts = [str(entry.get('text') or '') for tick in ticks
+                 for entry in outbox[int(tick.get('outbox_before') or 0):int(tick.get('outbox_after') or 0)]
+                 if isinstance(entry, dict) and entry.get('via') != 'reply']
+        sends += len(texts)
+        markers += sum(bool(SILENCE_MARKER.search(text)) for text in texts)
+        oracle = ((case or {}).get('oracle') or {}).get('body') or {}
+        if oracle.get('action') == 'none':
+            controls += 1
+            sent_controls += bool(texts)
+    return {'episodes_with_ticks': episodes, 'tick_sends': sends, 'silence_marker_sends': markers,
+            'silence_marker_rate': markers / sends if sends else None, 'control_episodes': controls,
+            'control_episodes_with_tick_sends': sent_controls, 'basis': TICK_OUTPUT_BASIS}
+
+
+DEAD_VALUE_BASIS = (
+    'Secondary, report-only: in the last agent model request of each episode whose artifacts forbid a value, the '
+    'lines of the injected memory context that show, outside a "[superseded" note, more of the values an artifact '
+    'forbids than the line answers: each note stating one of that artifact\'s expected values answers one, and each '
+    'of its fields whose expected value the line itself shows answers one; one field\'s answer never covers '
+    'another\'s, and an artifact that expects no value counts its forbidden values wherever shown. Values are '
+    'whole words of the context\'s tokenizer, of any length; JSON escapes are read as the characters they stand for. Read from the private trace; no trace text is copied.')
+_MEMORY_CONTEXT = re.compile(r'<memory-context>(.*?)</memory-context>', re.S)
+_SUPERSEDED_NOTE = re.compile(r'\[superseded(?: id=[^\s\]"]+?)?:(?:[^\]"]|"(?:[^"\\]|\\.)*")*\]')
+
+
+def _message_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return ''.join(part.get('text', '') for part in content if isinstance(part, dict)
+                       and isinstance(part.get('text'), str))
+    return ''
+
+
+_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def _unescaped(text):
+    """``text`` with each JSON string literal's escapes read as the characters they stand for."""
+    def read(match):
+        literal = match.group()
+        if '\\' not in literal:
+            return literal
+        try:
+            return '"' + json.loads(literal) + '"'
+        except ValueError:
+            return literal
+    return _LITERAL.sub(read, text)
+
+
+def _note_value(note):
+    """The value a note states, read from its JSON literal (escaped quotes and brackets are part of the value)."""
+    literal = _LITERAL.search(note)
+    if literal is None:
+        return note
+    try:
+        return json.loads(literal.group())
+    except ValueError:
+        return literal.group()[1:-1]
+
+
+def _dead_values(directory, members):
+    """Forbidden (superseded) values the model was shown as current, per arm; counts only."""
+    from protagine.memory.compass import shows, tokens  # the context's own tokenizer: values are whole words
+    root = Path(directory).resolve()
+    observed = with_dead = lines = unreadable = 0
+    for member in members:
+        case = (member or {}).get('case') or {}
+        specs = [spec for spec in (case.get('oracle') or {}).get('artifacts', [])
+                 if isinstance(spec, dict) and spec.get('forbidden')]
+        # Each artifact pairs its forbidden values with its own fields' expected values: a note stating one
+        # artifact's expected value says nothing about another artifact's forbidden value on the same line.
+        pairs = [({value for value in spec['forbidden'] if isinstance(value, str) and value.strip()},
+                  [expected for item in spec.get('assertions', [])
+                   if isinstance(item, dict) and item.get('op') == 'label_one_of'
+                   for expected in [{value for value in item.get('value', [])
+                                     if isinstance(value, str) and value.strip()}] if expected])
+                 for spec in specs]
+        pairs = [(forbidden, expected) for forbidden, expected in pairs if forbidden]
+        if not pairs or not case.get('id'):
+            continue
+        path = root / member['path'] / 'attempts' / case['id'] / 'private-trace.jsonl'
+        blocks = None
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                raise ValueError('Unsafe diagnostic path')
+            if not path.exists():
+                continue
+            if path.stat().st_size > 8 * 1024 * 1024:
+                raise ValueError('Oversized diagnostic trace')
+            for line in path.read_text().splitlines():
+                event = json.loads(line)
+                if (not isinstance(event, dict) or event.get('protocol') != TRACE_PROTOCOL
+                        or event.get('kind') != 'model_request' or event.get('thread') == 'paired-source-worker'):
+                    continue
+                messages = ((event.get('data') or {}).get('payload') or {}).get('messages')
+                found = [block for message in messages or [] if isinstance(message, dict)
+                         and message.get('role') == 'user'
+                         for block in _MEMORY_CONTEXT.findall(_message_text(message.get('content')))]
+                if found:
+                    blocks = found  # the model's window at its last request that carried injected context
+        except (OSError, ValueError, RuntimeError, AttributeError):
+            unreadable += 1
+            continue
+        if blocks is None:
+            continue
+        observed += 1
+        def dead(line):
+            # Every forbidden value the line shows needs its own answer: a note stating one of the artifact's
+            # expected values, or a field whose expected value the line itself shows. One field's answer never
+            # covers another field's stale value; two notes answer two versions of one field.
+            # Notes are found on the line as served, before any escape is decoded: an escaped quote or bracket in a
+            # note's value is part of the value and never ends the note.
+            notes = [tokens(_note_value(note)) for note in _SUPERSEDED_NOTE.findall(line)]
+            bare = tokens(_unescaped(_SUPERSEDED_NOTE.sub(' ', line)))
+            for forbidden, fields in pairs:
+                shown = sum(shows(bare, value) for value in forbidden)
+                if not shown:
+                    continue
+                answers = (sum(any(shows(note, value) for field in fields for value in field) for note in notes)
+                           + sum(any(shows(bare, value) for value in field) for field in fields))
+                if shown > answers:
+                    return True
+            return False
+        count = sum(1 for text in blocks for line in text.split('\n') if dead(line))
+        lines += count
+        with_dead += bool(count)
+    return {'episodes_observed': observed, 'episodes_with_dead_values': with_dead, 'dead_value_lines': lines,
+            'unreadable_traces': unreadable, 'basis': DEAD_VALUE_BASIS}
+
+
+def _tick_output_cell(output):
+    if not output or not output.get('episodes_with_ticks'):
+        return 'no ticks'
+    return (f"{output['silence_marker_sends']}/{output['tick_sends']} carried a silence marker; "
+            f"{output['control_episodes_with_tick_sends']}/{output['control_episodes']} controls sent")
 
 
 def _resources(rows):
@@ -506,13 +893,17 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
     labels, reference, profiles, rule = arms_of(manifest)
     treatment = next(arm for arm in labels if arm != reference)
     rows = {arm: [] for arm in labels}
+    cases = {arm: [] for arm in labels}
     workloads = {arm: [] for arm in labels}
+    members = {arm: [] for arm in labels}
     pairs = []
     for declared in manifest['pairs']:
         results = {arm: _row(directory, manifest, declared['arms'][arm]) for arm in labels}
         for arm in labels:
             rows[arm].append(results[arm])
+            cases[arm].append(declared['arms'][arm].get('case'))
             workloads[arm].append(_workload_observations(directory, declared['arms'][arm], results[arm]))
+            members[arm].append(declared['arms'][arm])
         complete = {arm: _completion(results[arm]) for arm in labels}
         projections = {arm: None for arm in labels}
         if report_protocol == REPORT_PROTOCOL:
@@ -550,6 +941,8 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
             'completion_percent': 100 * completed / declared_count if full else None,
             'accounting': _accounting(rows[arm]), 'timing': _timing(rows[arm]),
             'native_turns': _native_turns(rows[arm]),
+            'tick_output': _tick_output(rows[arm], cases[arm]),
+            'dead_values_in_context': _dead_values(directory, members[arm]),
             'request_workloads': _workloads(workloads[arm])}
     score = None
     if full:
@@ -594,6 +987,8 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
         report['basis'] += ' ' + PROJECTION_BASIS
     if manifest['dataset'].get('split') == 'frozen_public_evaluation' or manifest['dataset'].get('repetitions', 1) > 1:
         report['workflow_repetitions'] = _workflow_summary(manifest, pairs, labels, reference)
+    if manifest['comparison'].get('campaign'):
+        report['campaign'] = _campaign(manifest, pairs, labels, reference)
     return report
 
 
@@ -620,6 +1015,47 @@ def _statistics_lines(report):
     return lines
 
 
+def _campaign_lines(report):
+    campaign = report['campaign']
+    show = lambda value: 'unknown' if value is None else (f'{value:.3f}' if isinstance(value, float) else str(value))
+    lines = ['', '## Campaign probes', '', campaign['basis'], '',
+             '| Old-family row | Campaigns | Treatment pass | Comparator pass | Delta pp | Verdict |',
+             '| --- | --- | --- | --- | --- | --- |']
+    for row in campaign['old_family']:
+        delta = row.get('delta_pp')
+        lines.append(f"| {row['treatment']} vs {row['comparator']} | {row['campaigns']} "
+                     f"({row['unavailable_campaigns']} unavailable) | {show(row.get('treatment_pass_rate'))} | "
+                     f"{show(row.get('comparator_pass_rate'))} | {'' if delta is None else f'{delta:+.1f}'} | "
+                     f"{row['verdict']} |")
+    lines.extend(['', '| Arm | Passed probes | Calls per success | Tokens per success | Ratio calls / tokens | '
+                  'Within +' + str(campaign['cost_per_success']['max_increase_pct']) + '% | Forbidden hits |',
+                  '| --- | --- | --- | --- | --- | --- | --- |'])
+    for arm, cost in campaign['cost_per_success'].items():
+        if arm == 'max_increase_pct':
+            continue
+        ratio = (f"{show(cost.get('calls_ratio'))} / {show(cost.get('tokens_ratio'))}"
+                 if 'calls_ratio' in cost else 'reference')
+        lines.append(f"| {arm} | {cost['passed_probes']} | {show(cost['calls_per_success'])} | "
+                     f"{show(cost['tokens_per_success'])} | {ratio} | {show(cost.get('within_max_increase'))} | "
+                     f"{campaign['forbidden_hits'][arm]} |")
+    lines.extend(['', '| Arm | Row | Passed / observed |', '| --- | --- | --- |'])
+    for arm, rows in campaign['descriptive'].items():
+        lines.append(f"| {arm} | training | {rows['training']['passed']}/{rows['training']['observed']} |")
+        for group in ('classes', 'kinds', 'blocks'):
+            for name, counts in sorted(rows[group].items()):
+                label = f'block {name}' if group == 'blocks' else name
+                lines.append(f"| {arm} | {label} | {counts['passed']}/{counts['observed']} |")
+    lines.extend(['', '| Arm | Lessons admitted | By verified source | Uses (scored, wins) | Lesson-use rate |',
+                  '| --- | --- | --- | --- | --- |'])
+    for arm, value in campaign['lessons'].items():
+        if value == 'unavailable':
+            lines.append(f'| {arm} | unavailable | | | |')
+            continue
+        lines.append(f"| {arm} | {value['admitted']} | {value['by_verified']} | {value['uses']} "
+                     f"({value['scored_uses']}, {value['wins']}) | {show(value['lesson_use_rate'])} |")
+    return lines
+
+
 def markdown(report):
     arms = report.get('arm_order') or list(ARMS)
     reference = report.get('reference_arm') or arms[0]
@@ -628,8 +1064,8 @@ def markdown(report):
         f"Comparable pairs: {report['comparable_pairs']}/{report['declared_episodes']}. "
         f"Arms: {', '.join(arms)}; comparator: {reference}. "
         f"Temperature: {'provider default' if report.get('temperature') is None else report['temperature']}.", '',
-        '| Arm | Profile | Attributed completions | Recorded outcomes | Incomplete agent turns |',
-        '| --- | --- | --- | --- | --- |']
+        '| Arm | Profile | Attributed completions | Recorded outcomes | Incomplete agent turns | Tick output |',
+        '| --- | --- | --- | --- | --- | --- |']
     profiles = report.get('profiles') or {}
     for arm in arms:
         row = report['arms'][arm]
@@ -640,7 +1076,13 @@ def markdown(report):
         turns = row.get('native_turns') or _native_turns([])
         lines.append(f"| {arm} | {shown} | {row['attributed_completed']}/{row['declared_episodes']} | {row['outcomes']} | "
                      f"{turns['incomplete_agent_turns']}/{turns['agent_turns']} "
-                     f"in {turns['episodes_with_incomplete_turn']} episodes |")
+                     f"in {turns['episodes_with_incomplete_turn']} episodes | {_tick_output_cell(row.get('tick_output'))} |")
+    dead = {arm: report['arms'][arm].get('dead_values_in_context') or {} for arm in arms}
+    if any(value.get('episodes_observed') for value in dead.values()):
+        lines.extend(['', 'Dead values in the injected context of the last agent request (secondary, report-only): '
+                      + '; '.join(f"{arm} {value.get('episodes_with_dead_values', 0)}/"
+                                  f"{value.get('episodes_observed', 0)} episodes, {value.get('dead_value_lines', 0)} lines"
+                                  for arm, value in dead.items()) + '.'])
     score = report['paired_score']
     lines.extend(['', (f"Completion delta ({score.get('treatment', arms[1])} minus {score.get('comparator', reference)}): "
         f"{score['delta_percentage_points']:+.1f} percentage points. "
@@ -652,6 +1094,8 @@ def markdown(report):
         lines.append(f"| {pair['episode_id']} | {outcomes} | {pair['comparison']} |")
     if 'statistics' in report:
         lines.extend(_statistics_lines(report))
+    if 'campaign' in report:
+        lines.extend(_campaign_lines(report))
     if 'workflow_repetitions' in report:
         repeated = report['workflow_repetitions']
         lines.extend(['', '## Workflow repeatability', '', repeated['basis'], '',

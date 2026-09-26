@@ -104,9 +104,24 @@ class OpenAIAPIEmbeddingProvider(EmbeddingProvider):
                         raise ValueError('Embedding response indexes do not match its inputs')
                     rows = sorted(rows, key=lambda row: row['index'])
                 vectors = [row['embedding'] for row in rows]
-                if any(len(vector) != self.dimensions or not all(math.isfinite(value) for value in vector)
-                       or not any(vector) for vector in vectors):
-                    raise ValueError('Embedding response contains an invalid vector or dimension')
+                if not any(isinstance(vector, list) and vector for vector in vectors):
+                    raise ValueError('Embedding response contains an empty vector')
+                if self._config.dimensions <= 0:
+                    # No width was declared (router.embed_dims / PROTAGINE_EMBED_DIMS unset):
+                    # the endpoint's first answer defines it, and every later vector is
+                    # validated against that width exactly as against a declared one.
+                    widths = {len(vector) for vector in vectors}
+                    if len(widths) != 1:
+                        raise ValueError('Embedding response vectors disagree on their dimension')
+                    self._config.dimensions = widths.pop()
+                    logger.info("Embedding dimension learned from the endpoint: %d", self._config.dimensions)
+                for vector in vectors:
+                    if len(vector) != self.dimensions:
+                        raise ValueError(
+                            f'Embedding response dimension {len(vector)} differs from the configured '
+                            f'{self.dimensions} (router.embed_dims / PROTAGINE_EMBED_DIMS)')
+                    if not all(math.isfinite(value) for value in vector) or not any(vector):
+                        raise ValueError('Embedding response contains an invalid vector')
                 served = str(data.get('model') or 'unknown')
                 if self._served_model and self._served_model != served:
                     raise ValueError('Embedding endpoint changed its reported model; rebuild with a new provider snapshot')

@@ -78,15 +78,6 @@ def test_full_cycle():
     })
     check("Create fact", r.status_code in (200, 201), f"status={r.status_code}")
 
-    # Create world model entity for the project
-    r = post("/v1/host/world/entities", {
-        "name": "Protagine v0.6.0",
-        "entity_type": "project",
-        "confidence": 0.95,
-        "properties": {"status": "in_progress", "milestone": "SuperProtagine Network"},
-    })
-    check("Create world entity", r.status_code == 200, f"status={r.status_code}")
-
     # ═══════════════════════════════════════════════════════════════════
     # PHASE 2: LEARN — Simulate conversations about the commitment
     # ═══════════════════════════════════════════════════════════════════
@@ -195,15 +186,6 @@ def test_full_cycle():
             check("Autonomy tick count", ticks > 0, f"ticks={ticks}")
     else:
         check("Autonomy status", False, f"status={r.status_code}")
-
-    # Check world model stats
-    r = get("/v1/host/world/stats")
-    if r.status_code == 200:
-        stats = r.json()
-        check("World model has data", stats.get("total_entities", 0) > 0,
-              f"entities={stats.get('total_entities', 0)}")
-    else:
-        check("World model stats", False, f"status={r.status_code}")
 
     # ═══════════════════════════════════════════════════════════════════
     # PHASE 5: CLEANUP — Fulfill and delete commitment

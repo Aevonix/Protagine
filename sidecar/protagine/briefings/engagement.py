@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from protagine.briefings.models import SectionEngagementRecord
+from protagine.util.temporal import now_utc
 
 # Signal weights for EMA scoring
 _SIGNAL_WEIGHTS: Dict[str, float] = {
@@ -69,7 +70,7 @@ class SectionEngagementTracker:
 
     def record_briefing_read(self, briefing_id: str, section_names: List[str]) -> None:
         from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         for name in section_names:
             self.record(SectionEngagementRecord(
                 section_name=name,
@@ -84,7 +85,7 @@ class SectionEngagementTracker:
             section_name=section_name,
             briefing_id=briefing_id,
             signal="dismissed",
-            recorded_at=datetime.now(timezone.utc),
+            recorded_at=now_utc(),
         ))
 
     def record_action(self, briefing_id: str, section_name: str) -> None:
@@ -93,5 +94,5 @@ class SectionEngagementTracker:
             section_name=section_name,
             briefing_id=briefing_id,
             signal="acted",
-            recorded_at=datetime.now(timezone.utc),
+            recorded_at=now_utc(),
         ))

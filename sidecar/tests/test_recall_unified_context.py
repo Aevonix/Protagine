@@ -1,5 +1,4 @@
 """Beliefs and source quotations share authorization, selection and budget."""
-import asyncio
 from unittest.mock import AsyncMock
 
 from httpx import ASGITransport, AsyncClient
@@ -11,7 +10,6 @@ from protagine.memory.recall import (
     source_candidates,
 )
 from protagine.memory.selection import RecallSelector
-from test_recall_ranking import RecallFixture, _Hit, _node
 from test_turn_source_evidence import source_app, envelope, recalled
 
 
@@ -79,21 +77,6 @@ def calibrate(monkeypatch, reranker):
         provider_calibration_metadata(reranker)))
 
 
-class Graph:
-    def __init__(self, rows):
-        self.rows, self.calls, self.used = rows, [], []
-
-    async def recall_candidates(self, **kwargs):
-        self.calls.append(kwargs)
-        return self.rows
-
-    async def recall(self, **kwargs):
-        raise AssertionError("mixed context must not rerank graph separately")
-
-    def record_recall_use(self, rows):
-        self.used.extend(row["id"] for row in rows if row["kind"] == "belief")
-
-
 def belief(content="A hydrofoil departure was reported."):
     return {"id": "belief-a", "content": content, "source_uri": "turn:earlier",
             "epistemic_state": "inferred", "effective_confidence": .9, "relevance": .8}
@@ -104,15 +87,11 @@ async def test_irrelevant_quotations_cannot_bypass_combined_abstention(source_ap
     reranker = Reranker(score=.02)
     calibrate(monkeypatch, reranker)
     monkeypatch.setattr(host, "_reranker", reranker)
-    graph = Graph([belief()])
-    monkeypatch.setattr(host, "_graph", graph)
     async with AsyncClient(transport=ASGITransport(app=source_app), base_url="http://test") as client:
         assert (await client.put("/v2/host/turns/quote", json=envelope("quote"))).status_code == 201
         assert await recalled(client, query="hydrofoil hull insurance") == ""
     assert len(reranker.calls) == 1
     assert len(reranker.calls[0]) == 1
-    assert graph.calls == []
-    assert graph.used == []
 
 
 @pytest.mark.asyncio
@@ -121,8 +100,6 @@ async def test_one_context_section_uses_canonical_evidence_and_one_budget(source
     calibrate(monkeypatch, reranker)
     monkeypatch.setattr(host, "_reranker", reranker)
     monkeypatch.setenv("PROTAGINE_RECALL_CONTEXT_MAX_CHARS", "1400")
-    graph = Graph([belief()])
-    monkeypatch.setattr(host, "_graph", graph)
     async with AsyncClient(transport=ASGITransport(app=source_app), base_url="http://test") as client:
         body = envelope("quote")
         body["user_message"]["content"] = "The hydrofoil departure is Friday at nine."
@@ -140,12 +117,11 @@ async def test_one_context_section_uses_canonical_evidence_and_one_budget(source
     assert len(text) <= 1400
     assert '"kind": "belief"' not in text and '"kind": "source_quote"' in text
     assert '"source": "turn:quote"' in text and '"role": "user"' in text
-    assert graph.used == [] and graph.calls == []
     assert len(reranker.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_graph_unavailable_does_not_bypass_source_abstention(source_app, monkeypatch):
+async def test_low_scores_do_not_bypass_source_abstention(source_app, monkeypatch):
     reranker = Reranker(score=.01)
     calibrate(monkeypatch, reranker)
     monkeypatch.setattr(host, "_reranker", reranker)
@@ -156,54 +132,14 @@ async def test_graph_unavailable_does_not_bypass_source_abstention(source_app, m
 
 
 @pytest.mark.asyncio
-async def test_visibility_filter_runs_before_combined_model_call(source_app, monkeypatch):
+async def test_scoped_sources_reach_the_reranker_once(source_app, monkeypatch):
     reranker = Reranker()
     calibrate(monkeypatch, reranker)
     monkeypatch.setattr(host, "_reranker", reranker)
-    private = {**belief("Private unrelated fact"), "id": "private"}
-    graph = Graph([private, belief()])
-    monkeypatch.setattr(host, "_graph", graph)
-    graph._filter_erased_source_memories = AsyncMock(side_effect=lambda rows: rows)
     async with AsyncClient(transport=ASGITransport(app=source_app), base_url="http://test") as client:
         await client.put('/v2/host/turns/quote', json=envelope('quote'))
         assert "hydrofoil" in await recalled(client)
-    assert len(reranker.calls) == 1 and 'Private unrelated fact' not in repr(reranker.calls)
-    assert graph.calls == []
-    graph._filter_erased_source_memories.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_candidate_retrieval_does_not_reinforce_or_rerank(monkeypatch):
-    fixture = RecallFixture([_Hit("a", .9)], [_node("a")])
-    fixture.graph._maybe_rerank = AsyncMock(side_effect=AssertionError("premature ranking"))
-    fixture.graph._touch_memory_safe = AsyncMock()
-    rows = await fixture.graph.recall_candidates(query="q", limit=25)
-    assert [row["id"] for row in rows] == ["a"]
-    fixture.graph._touch_memory_safe.assert_not_awaited()
-    fixture.graph.record_recall_use([{**rows[0], "kind": "belief"}, {"id": "source", "kind": "source_quote"}])
-    await asyncio.gather(*fixture.graph._bg_tasks)
-    fixture.graph._touch_memory_safe.assert_awaited_once_with("a")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("candidates_only", [False, True])
-@pytest.mark.parametrize("hybrid", [False, True])
-async def test_erased_projection_is_excluded_before_selection(monkeypatch, candidates_only, hybrid):
-    monkeypatch.setenv("PROTAGINE_RECALL_HYBRID", "on" if hybrid else "off")
-    fixture = RecallFixture([_Hit("erased", .99), _Hit("retained", .8)], [
-        _node("erased", source_uri="turn:erased"),
-        _node("retained", source_uri="turn:retained"),
-    ])
-    fixture.graph._source_projection_erased = lambda uri: uri == "turn:erased"
-    fixture.graph._recall_lexical = AsyncMock(return_value=[_node("erased", source_uri="turn:erased")])
-    observed = []
-    async def rank(query, memories, limit, **kwargs):
-        observed.extend(row["id"] for row in memories)
-        return memories
-    fixture.graph._maybe_rerank = rank
-    rows = await fixture.recall("q", limit=5, candidates_only=candidates_only)
-    assert [row["id"] for row in rows] == ["retained"]
-    assert "erased" not in observed
+    assert len(reranker.calls) == 1
 
 
 def quotes():

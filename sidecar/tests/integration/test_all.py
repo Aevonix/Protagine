@@ -114,14 +114,14 @@ class TestHealth:
         assert len(data["capabilities"]) >= 20
 
     def test_capabilities_count(self, client):
-        """All 22 expected capabilities are wired."""
+        """The expected capabilities are wired."""
         data = _get(client, "/health")
         caps = set(data["capabilities"])
         expected = {
-            "memory", "consolidate", "signals", "embed",
+            "memory", "embed",
             "goals", "contacts", "briefings",
-            "world_model", "cognition", "research", "delivery", "synthesis",
-            "learning", "skills", "identity", "secrets", "autonomy",
+            "research", "delivery",
+            "secrets", "autonomy",
             "sessions",
         }
         missing = expected - caps
@@ -277,36 +277,6 @@ class TestGoals:
 
 
 # ===========================================================================
-# 5. IDENTITY & CHAIN
-# ===========================================================================
-
-
-class TestIdentity:
-    """Cryptographic identity and chain integrity."""
-
-    def test_identity_status(self, client):
-        """Identity status returns with protagine_id."""
-        data = _get(client, "/identity/status")
-        assert "protagine_id" in data
-        assert "initialized" in data
-        assert "keys_configured" in data
-
-    def test_identity_info_alias(self, client):
-        """/identity/info returns same data as /identity/status."""
-        data = _get(client, "/identity/info")
-        assert "protagine_id" in data
-
-    def test_chain_verify(self, client):
-        """Chain verification returns a valid/invalid result."""
-        data = _post(client, "/chain/verify", {
-            "identity": {"host_id": "test"},
-            "data": "test data",
-        })
-        assert "valid" in data
-        assert isinstance(data["valid"], bool)
-
-
-# ===========================================================================
 # 6. SECRETS VAULT
 # ===========================================================================
 
@@ -401,41 +371,6 @@ class TestContacts:
 
 
 # ===========================================================================
-# 8. WORLD MODEL
-# ===========================================================================
-
-
-class TestWorldModel:
-    """Entity graph for people, places, organizations, concepts."""
-
-    def test_list_entities(self, client):
-        """List entities returns a list."""
-        data = _get(client, "/world/entities")
-        assert "entities" in data
-        assert isinstance(data["entities"], list)
-
-    def test_query_entities(self, client):
-        """Query entities returns matching results."""
-        data = _post(client, "/world/entities/query", {
-            "identity": {"host_id": "test"},
-            "context": {"session_id": "s1", "contact_id": "c1"},
-            "query": "Protagine",
-            "limit": 5,
-        })
-        assert "entities" in data
-
-    def test_world_model_alias(self, client):
-        """/world-model/entities alias route works."""
-        data = _post(client, "/world-model/entities", {
-            "identity": {"host_id": "test"},
-            "context": {"session_id": "s1", "contact_id": "c1"},
-            "query": "Protagine",
-            "limit": 5,
-        })
-        assert "entities" in data
-
-
-# ===========================================================================
 # 9. CONTEXT ASSEMBLY
 # ===========================================================================
 
@@ -495,60 +430,6 @@ class TestContextAssembly:
 
 
 # ===========================================================================
-# 10. SKILLS REGISTRY
-# ===========================================================================
-
-
-class TestSkills:
-    """Tool registry and skill metadata."""
-
-    def test_list_skills(self, client):
-        """Skills registry returns a list of skills."""
-        data = _get(client, "/skills/registry")
-        assert "skills" in data
-        skills = data["skills"]
-        assert isinstance(skills, list)
-        if skills:
-            assert "name" in skills[0], "Skill missing name"
-
-    def test_get_skill_not_found(self, client):
-        """Getting nonexistent skill returns 404."""
-        resp = client.get("/v1/host/skills/registry/nonexistent_skill")
-        assert resp.status_code == 404
-
-
-# ===========================================================================
-# 11. SIGNALS
-# ===========================================================================
-
-
-class TestSignals:
-    """Behavioral signal ingestion."""
-
-    def test_signal_ingest_from_messages(self, client):
-        """Signal ingestion from message pairs."""
-        data = _post(client, "/signals/ingest", {
-            "identity": {"host_id": "test"},
-            "context": {"session_id": "s1", "contact_id": "c1"},
-            "incoming_message": {"content": "Hello there", "role": "user"},
-            "outgoing_message": {"content": "Hi! How can I help?", "role": "assistant"},
-        })
-        assert data.get("accepted") is True
-
-    def test_signal_ingest_raw(self, client):
-        """Raw signal ingestion from external sources."""
-        data = _post(client, "/signals/ingest", {
-            "identity": {"host_id": "test"},
-            "context": {"session_id": "s1", "contact_id": "c1"},
-            "signals": [
-                {"type": "engagement_depth", "source": "integration_test", "value": 0.8},
-            ],
-        })
-        assert data.get("accepted") is True
-        assert data.get("signals_recorded", 0) >= 1, "Raw signals should be recorded"
-
-
-# ===========================================================================
 # 12. BRIEFINGS
 # ===========================================================================
 
@@ -589,34 +470,6 @@ class TestAutonomy:
             "identity": {"host_id": "test"},
         })
         assert data.get("completed") is True or data.get("error") is not None
-
-
-# ===========================================================================
-# 15. COGNITION & LEARNING
-# ===========================================================================
-
-
-class TestCognition:
-    """MetaLearner and cognitive performance tracking."""
-
-    def test_cognition_cycle(self, client):
-        """Cognition cycle endpoint responds."""
-        data = _post(client, "/cognition/cycle", {
-            "identity": {"host_id": "test"},
-        })
-        assert "cpi" in data
-
-    def test_cpi(self, client):
-        """Deprecated CPI endpoint returns the canonical benchmark payload."""
-        data = _get(client, "/cognition/cpi")
-        assert data["deprecated"] is True
-        assert data["canonical_endpoint"] == "/v1/host/self/benchmark"
-        assert "memory" not in data
-
-    def test_learning_weights(self, client):
-        """Learning weights endpoint returns a dict."""
-        data = _get(client, "/learning/weights")
-        assert "weights" in data
 
 
 # ===========================================================================
@@ -680,11 +533,6 @@ class TestPersistence:
         data = _post(client, '/memory/search', _memory_search_payload(query))
         assert data['count'] > 0 and data['source_refs'], 'Known source evidence was not recalled'
 
-    def test_identity_persisted(self, client):
-        """Identity/chain state survives a restart."""
-        data = _get(client, "/identity/status")
-        assert data.get("protagine_id") is not None, "Protagine ID lost after restart"
-        assert data.get("initialized") is True, "Identity not initialized after restart"
 
 
 # ===========================================================================
@@ -781,13 +629,6 @@ class TestSystemHealthCheck:
         except Exception:
             results["goals"] = False
 
-        # Identity
-        try:
-            data = _get(client, "/identity/status")
-            results["identity"] = data.get("initialized", False)
-        except Exception:
-            results["identity"] = False
-
         # Secrets
         try:
             data = _post(client, "/secrets/set", {
@@ -816,13 +657,6 @@ class TestSystemHealthCheck:
             results["context"] = len(data.get("sections", [])) > 0
         except Exception:
             results["context"] = False
-
-        # Skills
-        try:
-            data = _get(client, "/skills/registry")
-            results["skills"] = len(data.get("skills", [])) > 0
-        except Exception:
-            results["skills"] = False
 
         # Autonomy
         try:

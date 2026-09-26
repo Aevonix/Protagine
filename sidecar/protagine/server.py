@@ -15,6 +15,7 @@ from pathlib import Path
 
 # CLI and direct service starts use the same selected private instance.
 from protagine.util.instance import load_environment
+from protagine.util.temporal import now_utc
 load_environment()
 
 from fastapi import FastAPI
@@ -23,36 +24,22 @@ from protagine.api.routers.host import (
     router as host_router,
     v2_router as host_v2_router,
     set_llm_router,
-    set_chain_manager,
-    set_graph,
-    set_consolidator,
-    set_signal_collector,
     set_embedder,
     set_reranker,
     set_goals_store,
     set_contacts_store,
     set_briefings_engine,
-    set_world_store,
-    set_extraction_pipeline,
-    set_metalearner,
     set_research_pipeline,
     set_search_orchestrator,
-    set_connection_discoverer,
     set_insight_store,
-    set_learner,
-    set_skills_registry,
-    set_skill_executor,
     set_secrets_manager,
     set_session_store,
     set_commitment_store,
     set_affect_store,
     set_facts_store,
-    set_p8_runtime,
-    set_engagement_store,
     set_comms_log,
     set_preference_learner,
     set_pattern_store,
-    set_tom_extractor,
     # Multi-Agent v0.7.0
     set_agent_store,
     set_invite_store,
@@ -73,93 +60,6 @@ logger = logging.getLogger(__name__)
 def _state_dir() -> Path:
     """Resolve the Protagine state directory (wrapper for get_state_dir)."""
     return get_state_dir()
-
-
-def _attach_p8_runtime(*, state_dir: Path, facts_store, graph=None):
-    """Atomically attach the reviewed P8 stores in explicit shadow mode.
-
-    Unset, off, unknown, and live all stay dark and create no P8 artifacts.
-    Live is intentionally excluded from this integration slice: recipient
-    simulation remains an ignored non-real-time shadow observation.
-    """
-
-    from protagine.tom.integration import P8Runtime, p8_integration_mode
-
-    set_p8_runtime(None)
-    graph_policy = getattr(graph, "set_recall_source_exclusions", None)
-    if callable(graph_policy):
-        # Clear any policy left on a reused graph before resolving this mode.
-        graph_policy(())
-    if p8_integration_mode() != "shadow":
-        return None
-    if facts_store is None:
-        raise RuntimeError("P8 shadow requires the canonical SharedFactsStore")
-
-    visibility = None
-    arcs = None
-    audit = None
-    try:
-        from protagine.tom.arcs import ArcStore
-        from protagine.tom.recipient_audit import (
-            open_recipient_simulation_audit_store,
-        )
-        from protagine.tom.visibility_store import (
-            open_visibility_envelope_store,
-        )
-
-        visibility = open_visibility_envelope_store(
-            state_dir / "protagine-p8-visibility.db", enabled=True)
-        arcs = ArcStore(str(state_dir / "protagine-p8-arcs.db"))
-        audit = open_recipient_simulation_audit_store(
-            state_dir / "protagine-p8-recipient-audit.db", mode="shadow")
-        if visibility is None or audit is None:
-            raise RuntimeError("P8 shadow stores failed to open")
-        runtime = P8Runtime(
-            visibility_store=visibility,
-            arc_store=arcs,
-            audit_store=audit,
-            facts_store=facts_store,
-            mode="shadow",
-        )
-        if graph is not None:
-            if not callable(graph_policy):
-                raise RuntimeError(
-                    "P8 shadow requires graph-wide recall source exclusions")
-            # SharedFacts graph rows are compatibility mirrors, not an
-            # authorized content path. Typed projection is their only reader.
-            graph_policy(
-                ("tom:shared_fact",),
-                legacy_metadata_markers=("shared_fact",),
-            )
-        set_p8_runtime(runtime)
-        return runtime
-    except Exception:
-        if callable(graph_policy):
-            try:
-                graph_policy(())
-            except Exception:
-                pass
-        for store in (audit, arcs, visibility):
-            if store is not None:
-                try:
-                    store.close()
-                except Exception:
-                    pass
-        set_p8_runtime(None)
-        raise
-
-
-def _build_research_pipeline(*, graph, p8_runtime):
-    """Preserve legacy research ownership unless P8 needs the governed graph."""
-
-    from protagine.research.pipeline import ResearchPipeline
-
-    if p8_runtime is None:
-        return ResearchPipeline()
-    return ResearchPipeline(
-        graph=graph,
-        allow_fallback_graph=False,
-    )
 
 
 def _attach_situation_spine(*, state_dir: Path):
@@ -209,44 +109,22 @@ def _attach_situation_spine(*, state_dir: Path):
     }
 
 
-def _initialize_controlled_learning(
-    *,
-    state_dir: Path,
-    adaptive_params,
-    journal=None,
-) -> dict:
-    """Build the one P4 evidence/experiment graph for this process.
+def _initialize_learning_feedback(state_dir: Path) -> dict:
+    """The owner's corrections ledger (``/v1/host/learning/correction``) and the selfhood benchmark that
+    reads it (deleted in M10). Setters are cleared before construction so a second lifespan in the same
+    interpreter cannot keep a stale store."""
 
-    The migration flags retain their historical meanings: P4 mode defaults to
-    ``off`` (legacy weekly evaluation), while the independent benchmark and
-    experiment feature flags control whether their databases are opened at
-    all.  Setters are cleared before construction so a second lifespan in the
-    same interpreter cannot retain stale authority or a stale writer.
-    """
-
-    from protagine.api.routers.host import (
-        set_benchmark,
-        set_experiments,
-        set_learning_feedback_store,
-    )
-    from protagine.intelligence.learning.feedback_store import (
-        FeedbackStore,
-    )
+    from protagine.api.routers.host import set_benchmark, set_learning_feedback_store
+    from protagine.intelligence.learning.feedback_store import FeedbackStore
     from protagine.self_model.benchmark import (
         BenchmarkStore,
         SelfhoodBenchmark,
         benchmark_enabled,
-    )
-    from protagine.self_model.experiments import (
-        ExperimentEngine,
-        ExperimentStore,
-        experiment_pregrants_from_env,
-        experiments_enabled,
+        canonical_probe_recall,
     )
 
     set_learning_feedback_store(None)
     set_benchmark(None)
-    set_experiments(None)
 
     correction_store = FeedbackStore(
         db_path=str(state_dir / "protagine-learning-feedback.db"))
@@ -256,70 +134,30 @@ def _initialize_controlled_learning(
         benchmark = SelfhoodBenchmark(
             BenchmarkStore(db_path=str(state_dir / "protagine-benchmark.db")),
             corrections=correction_store,
+            recall=canonical_probe_recall(state_dir),
         )
 
-    experiments = None
-    approval_authority = None
-    if experiments_enabled():
-        if adaptive_params is None:
-            raise RuntimeError(
-                "P4 experiments require the adaptive parameter store")
-        if benchmark is None:
-            raise RuntimeError(
-                "P4 experiments require the canonical SelfhoodBenchmark")
-        # There is no approval ledger any more: live mutations outside a
-        # pregranted range have no approval path and never start.
-        approval_authority = None
-        experiments = ExperimentEngine(
-            ExperimentStore(
-                db_path=str(state_dir / "protagine-experiments.db")),
-            params=adaptive_params,
-            benchmark=benchmark,
-            journal=journal,
-            approval_authority=approval_authority,
-            pregranted_ranges=experiment_pregrants_from_env(),
-        )
-
-    # Publish only after the complete configured graph constructed.  A bad
-    # pregrant or missing dependency must not expose a partially wired P4.
     set_learning_feedback_store(correction_store)
     set_benchmark(benchmark)
-    set_experiments(experiments)
-
-    return {
-        "corrections": correction_store,
-        "benchmark": benchmark,
-        "experiments": experiments,
-        "approval_authority": approval_authority,
-    }
-
-
-def _wire_controlled_learning_pipeline(
-    cognition_pipeline,
-    controlled_learning: dict,
-) -> None:
-    """Attach P4's detector adapter and correction reader to shared objects."""
-
-    if cognition_pipeline is None:
-        return
-    correction_store = controlled_learning.get("corrections")
-    if correction_store is not None:
-        cognition_pipeline.meta_learner.set_feedback_store(correction_store)
-    experiments = controlled_learning.get("experiments")
-    if experiments is not None:
-        # StrategyAdjuster is proposal-only; ExperimentEngine remains the sole
-        # adaptive-parameter writer and the only component that can start.
-        cognition_pipeline.strategy_adjuster.set_experiment_proposer(
-            experiments)
+    return {"corrections": correction_store, "benchmark": benchmark}
 
 
 async def _initialize_contacts_store():
-    """Open the canonical contact store without graph backfill or pruning."""
+    """Open the canonical contact store without graph backfill or pruning.
+
+    A merge moves the person's ledger sources, comms and affect with their
+    handles whoever starts it: the people router passes these itself; the
+    owner confirming a link (which folds the shadow contact that held the
+    handle) goes through the store's defaults, set here. The comms log and
+    affect store are opened before the contacts.
+    """
+    from protagine.api.routers import people as people_router
     from protagine.contacts.config import ContactsConfig
     from protagine.contacts.store import SQLiteContactStore
 
     config = ContactsConfig.from_env()
-    store = SQLiteContactStore(config=config)
+    store = SQLiteContactStore(config=config, sources_of=people_router.person_sources,
+                               reattribute=people_router.reattribute_hooks())
     await store.connect()
     set_contacts_store(store)
     logger.info("ContactsStore initialized (path=%s)", config.sqlite_path)
@@ -329,30 +167,11 @@ async def _initialize_contacts_store():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize subsystems on startup, tear down on shutdown."""
+    # Before any store opens: the vector store needs more open files than a user
+    # process starts with on macOS, whether or not a service unit asked for them.
+    from protagine.resources import raise_open_file_limit
+    raise_open_file_limit()
     state_dir = _state_dir()
-    _p8_wiring = None
-
-    # --- 0. Adaptive parameters (meta-learning read-back path) ---
-    # Created first so downstream consumers (consolidator, graph recall,
-    # cognition pipeline) can take a handle; the ActionJournal is attached
-    # in the self-model section once it exists.
-    _adaptive_params = None
-    try:
-        from protagine.self_model.params import (
-            AdaptiveParamStore, register_core_params,
-        )
-        _adaptive_params = AdaptiveParamStore(
-            db_path=str(state_dir / "protagine-params.db"))
-        register_core_params(_adaptive_params)
-        try:
-            from protagine.api.routers.host import set_adaptive_params
-            set_adaptive_params(_adaptive_params)
-        except ImportError:
-            pass
-        logger.info("AdaptiveParamStore initialized (db=%s)",
-                    state_dir / "protagine-params.db")
-    except Exception as exc:
-        logger.warning("AdaptiveParamStore init failed: %s", exc)
 
     # --- 1. LLM Router ---
     llm_router = None
@@ -384,74 +203,6 @@ async def lifespan(app: FastAPI):
 
     if llm_router is not None:
         set_llm_router(llm_router)
-
-    # --- 3. Neo4j Graph memory ---
-    graph = None
-    if os.environ.get("PROTAGINE_GRAPH_ENABLED", "true").lower() not in {"0", "false", "off"}:
-        try:
-            from protagine.intelligence.graph.client import ProtagineGraph, GraphConfig
-            from pydantic import SecretStr
-            neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-            neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
-            neo4j_pass = os.environ.get("NEO4J_PASSWORD", "")
-            # Neo4j Community Edition only has the "neo4j" database.
-            # Enterprise users can override via NEO4J_DATABASE.
-            neo4j_db = os.environ.get("NEO4J_DATABASE", "neo4j")
-            graph_config = GraphConfig(
-                uri=neo4j_uri,
-                auth=(neo4j_user, SecretStr(neo4j_pass)) if neo4j_pass else None,
-                database=neo4j_db,
-            )
-            graph = ProtagineGraph(graph_config)
-            # Apply graph schema constraints/indexes before any queries run
-            try:
-                from protagine.intelligence.graph.migrations import run_migrations
-                await run_migrations(graph.driver, database=neo4j_db)
-            except Exception as exc:
-                logger.warning("Graph migrations failed (queries may be degraded): %s", exc)
-            set_graph(graph)
-            logger.info("ProtagineGraph initialized (uri=%s db=%s)", neo4j_uri, neo4j_db)
-
-            # Ensure Protagine self-representation in graph (v0.11.0)
-            try:
-                await graph.ensure_protagine_self()
-            except Exception as self_exc:
-                logger.warning("Protagine self-representation setup skipped: %s", self_exc)
-
-            # Wire consolidator (adaptive merge threshold when params wired)
-            try:
-                from protagine.intelligence.graph.consolidator import MemoryConsolidator
-                consolidator = MemoryConsolidator(graph, params=_adaptive_params)
-                set_consolidator(consolidator)
-                logger.info("MemoryConsolidator initialized")
-            except Exception as cexc:
-                logger.warning("MemoryConsolidator init skipped: %s", cexc)
-            if _adaptive_params is not None:
-                try:
-                    graph.set_adaptive_params(_adaptive_params)
-                except Exception:
-                    logger.debug("graph adaptive-params wiring failed", exc_info=True)
-        except Exception as exc:
-            logger.warning("ProtagineGraph init failed — memory endpoints will be degraded: %s", exc)
-
-    else:
-        set_graph(None)
-        logger.info("Graph disabled; canonical source memory and SQLite state remain available")
-
-    # --- 5. Signal Collector ---
-    signal_collector = None
-    if graph is not None:
-        try:
-            from protagine.intelligence.mind_model.graph_baseline import GraphBaselineStore
-            from protagine.intelligence.mind_model.signal_collector import SignalCollector
-            baseline_store = GraphBaselineStore(graph)
-            signal_collector = SignalCollector(baseline_store=baseline_store, graph=graph)
-            set_signal_collector(signal_collector)
-            logger.info("SignalCollector initialized (GraphBaselineStore backed by Neo4j)")
-        except Exception as exc:
-            logger.warning("SignalCollector init failed: %s", exc)
-    else:
-        logger.warning("SignalCollector skipped — ProtagineGraph not available")
 
     # --- 6. Embedding pipeline ---
     embed_provider = os.environ.get("PROTAGINE_EMBED_PROVIDER", "")
@@ -492,16 +243,27 @@ async def lifespan(app: FastAPI):
             embed_model = embed_model or "sentence-transformers/all-MiniLM-L6-v2"
             embed_dims = embed_dims or "384"
 
+    from protagine.api.routers.host import set_embed_failure
+    set_embed_failure(None)
     try:
         from protagine.vector.embedder import EmbeddingPipeline
         from protagine.vector.config import EmbeddingConfig
+        request_dims = (int(os.environ["PROTAGINE_EMBED_REQUEST_DIMS"])
+                        if os.environ.get("PROTAGINE_EMBED_REQUEST_DIMS") else None)
+        if embed_dims:
+            declared_dims = int(embed_dims)
+        elif request_dims:
+            declared_dims = request_dims
+        elif embed_provider == "openai_api":
+            declared_dims = 0   # learned from the endpoint's first embedding
+        else:
+            declared_dims = 384
         embed_config = EmbeddingConfig(
             provider=embed_provider,
             model_id=embed_model,
-            dimensions=int(embed_dims) if embed_dims else 384,
+            dimensions=declared_dims,
             revision=os.environ.get("PROTAGINE_EMBED_REVISION") or None,
-            request_dimensions=(int(os.environ["PROTAGINE_EMBED_REQUEST_DIMS"])
-                if os.environ.get("PROTAGINE_EMBED_REQUEST_DIMS") else None),
+            request_dimensions=request_dims,
         )
         from protagine.vector.embedder import make_provider
         provider = make_provider(embed_config)
@@ -551,7 +313,7 @@ async def lifespan(app: FastAPI):
             set_embedder(pipeline)
             logger.info("EmbeddingPipeline initialized (provider=%s model=%s)", embed_provider, embed_model)
 
-            # Wire embedding pipeline into ProtagineGraph for vector-backed recall
+            # Open the vector store the source projections and semantic recall share
             try:
                 from protagine.vector.store import VectorStore
                 from protagine.vector.indexes import IndexCatalog
@@ -560,22 +322,17 @@ async def lifespan(app: FastAPI):
                 vector_db_path = os.path.join(state_dir, "lancedb")
                 vs = VectorStore(data_dir=vector_db_path, identity=pipeline.index_identity,
                     catalog=IndexCatalog(get_turn_idempotency_ledger(state_dir)))
-                embed_dims = int(os.environ.get("PROTAGINE_EMBED_DIMS", pipeline.dimensions or 384))
+                embed_dims = int(os.environ.get("PROTAGINE_EMBED_DIMS") or pipeline.dimensions or 384)
                 await vs.connect(dimensions=embed_dims)
                 await vs.ensure_collections(dimensions=embed_dims)
                 set_store(vs)
                 set_pipeline(pipeline)
-                if graph is not None:
-                    graph.set_embed_fn(pipeline.embed)
-                    graph.set_vector_store(vs)
-                logger.info("ProtagineGraph wired to vector store (path=%s)", vector_db_path)
-
-                if graph is not None and graph._embed_fn and graph._vector_store:
-                    logger.info("ProtagineGraph fully operational (Neo4j + embeddings + vector store)")
-                else:
-                    logger.warning("ProtagineGraph partially wired — memory may be degraded")
+                # Old versions go past a threshold and each night, never inside a request.
+                vs.compaction.start()
+                logger.info("Vector store wired for semantic recall (path=%s)", vector_db_path)
             except Exception as vexc:
                 logger.warning("Vector store wiring failed (recall will use keyword fallback): %s", vexc)
+                set_embed_failure(f"the vector store did not open: {type(vexc).__name__}: {vexc}")
 
             # Pass LLM config to pipeline for auto-captioning
             llm_config_path = Path(os.environ.get("PROTAGINE_STATE_DIR", ".")) / ".protagine-llm-config.json"
@@ -598,6 +355,10 @@ async def lifespan(app: FastAPI):
                 logger.warning("Embedder health check exception: %s", exc)
     except Exception as exc:
         logger.warning("EmbeddingPipeline init failed: %s", exc)
+        # The sidecar still serves, so nothing else would say it: health carries the
+        # reason in words and stays degraded until the embedder comes up.
+        set_embed_failure(f"the embedder (provider={embed_provider}, model={embed_model or 'unset'}) "
+                          f"did not initialise: {type(exc).__name__}: {exc}")
 
     # --- 6b. Reranker pipeline ---
     reranker_provider_name = os.environ.get("PROTAGINE_RERANKER_PROVIDER", "")
@@ -644,19 +405,6 @@ async def lifespan(app: FastAPI):
                 "Reranker initialized (provider=%s model=%s)",
                 reranker_provider_name or "local", reranker_model,
             )
-            # Wire the reranker into ProtagineGraph recall (mirrors the
-            # set_embed_fn wiring above). Registration alone changes
-            # nothing: use is gated by PROTAGINE_RECALL_RERANK (default off).
-            if graph is not None and hasattr(graph, "set_rerank_fn"):
-                from protagine.memory.recall import provider_calibration_metadata
-                def recall_calibration_metadata():
-                    return provider_calibration_metadata(reranker_provider)
-                graph.set_rerank_fn(
-                    reranker_provider.rerank,
-                    calibration_metadata=recall_calibration_metadata)
-                logger.info(
-                    "ProtagineGraph wired to reranker for recall "
-                    "(gated by PROTAGINE_RECALL_RERANK)")
         except Exception as exc:
             logger.warning("Reranker init failed: %s", exc)
     else:
@@ -749,61 +497,6 @@ async def lifespan(app: FastAPI):
         set_facts_store(facts_store)
         logger.info("SharedFactsStore initialized (db=%s)", facts_db)
 
-        try:
-            _p8_wiring = _attach_p8_runtime(
-                state_dir=state_dir, facts_store=facts_store, graph=graph)
-            if _p8_wiring is not None:
-                logger.info(
-                    "P8 visibility/arcs/recipient audit attached (shadow only)")
-        except Exception:
-            # P8 is an advisory shadow integration.  Its persistence must not
-            # take down the canonical SharedFactsStore or the rest of ToM.
-            _p8_wiring = None
-            logger.warning(
-                "P8 shadow attachment failed; continuing with P8 off",
-                exc_info=True,
-            )
-
-        # Second-order theory of mind (tom2): refs-not-content inference
-        # store + daily asymmetry engine. Inert unless PROTAGINE_TOM2 is set
-        # (default off; shadow = counts only).
-        from protagine.tom.tom2 import Tom2Store
-        from protagine.tom.asymmetry import AsymmetryEngine, tom2_mode
-        from protagine.api.routers.host import set_tom2_store, set_tom2_engine
-        tom2_db = state_dir / "protagine-tom2.db"
-        tom2_store = Tom2Store(db_path=str(tom2_db))
-        set_tom2_store(tom2_store)
-        set_tom2_engine(AsymmetryEngine(facts_store, tom2_store))
-        logger.info("Tom2Store + AsymmetryEngine initialized (db=%s, mode=%s)",
-                    tom2_db, tom2_mode())
-
-        # Level-2 exposure ledger (L2.3): refs-only record of any future
-        # level-2 rendering + its budgets. Empty and inert until the leveled
-        # rendering path is wired; the owner endpoint reads it regardless.
-        from protagine.tom.exposure import Tom2ExposureStore
-        from protagine.api.routers.host import set_tom2_exposure_store
-        tom2_exposure_db = state_dir / "protagine-tom2-exposure.db"
-        set_tom2_exposure_store(Tom2ExposureStore(db_path=str(tom2_exposure_db)))
-        logger.info("Tom2ExposureStore initialized (db=%s)", tom2_exposure_db)
-
-        # Conversation presence registry (L1.1): passive census of WHO was
-        # seen in WHICH conversation, fed from the turns/sync attribution
-        # chokepoint. Read by the environment-risk classifier; recording is
-        # gated by PROTAGINE_CONV_PRESENCE (default on).
-        from protagine.channels.presence import ConversationPresenceStore
-        from protagine.api.routers.host import set_presence_store
-        presence_db = state_dir / "protagine-presence.db"
-        presence_store = ConversationPresenceStore(db_path=str(presence_db))
-        set_presence_store(presence_store)
-        logger.info("ConversationPresenceStore initialized (db=%s)", presence_db)
-
-        from protagine.tom.engagement import EngagementStore
-        engagement_db = state_dir / "protagine-engagement.db"
-        engagement_store = EngagementStore(db_path=engagement_db, source_ledger=source_ledger)
-        engagement_store.purge_erased_sources()
-        set_engagement_store(engagement_store)
-        logger.info("EngagementStore initialized (db=%s)", engagement_db)
-
         from protagine.contacts.comms import CommsLog
         comms_log = CommsLog(db_path=state_dir / "protagine-comms.db", source_ledger=source_ledger)
         comms_log.purge_erased_sources()
@@ -812,7 +505,7 @@ async def lifespan(app: FastAPI):
 
         # Owner preference learner — captures the owner's *explicit* directives
         # about how to communicate ("be concise", "use bullets", "no emoji") at
-        # high confidence; complements the inferred per-contact EngagementStore.
+        # high confidence.
         from protagine.intelligence.components.preference_learner import PreferenceLearner
         from protagine.self_model.perspective import SelfPerspective
         from protagine.turns import get_turn_idempotency_ledger
@@ -843,55 +536,34 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("TypeFeedbackStore init failed: %s", exc)
 
-    # --- Self-model / trust engine + action journal (item 4, Amendment 1) ---
-    # Wired before directed action so approval tiering can consult trust.
+    # --- Self-model (competence) + action journal (item 4, Amendment 1) ---
     _sm_for_directed = None
     try:
         from protagine.self_model import (
-            ActionJournal, CompetenceStore, SelfModel, TrustEngine,
-            self_model_enabled,
+            ActionJournal, CompetenceStore, SelfModel, self_model_enabled,
         )
-        from protagine.api.routers.host import (
-            set_self_model, _feedback_store as _fb_for_trust,
-        )
+        from protagine.api.routers.host import set_self_model
         if self_model_enabled():
             _competence = CompetenceStore(
                 db_path=str(state_dir / "protagine-self-model.db"))
             _journal = ActionJournal(
                 db_path=str(state_dir / "protagine-action-journal.db"))
-            _trust = TrustEngine(
-                _competence, db_path=str(state_dir / "protagine-self-model.db"),
-                feedback_store=_fb_for_trust, journal=_journal)
-            _sm_for_directed = SelfModel(_competence, trust=_trust, journal=_journal)
+            _sm_for_directed = SelfModel(_competence, journal=_journal)
             _sm_for_directed.perspective = getattr(locals().get('preference_learner'), 'perspective', None)
             set_self_model(_sm_for_directed)
-            if _adaptive_params is not None:
-                _adaptive_params.set_journal(_journal)
             logger.info(
-                "SelfModel/TrustEngine initialized (db=%s, journal=%s, "
-                "autograduate=%s)",
+                "SelfModel initialized (db=%s, journal=%s)",
                 state_dir / "protagine-self-model.db",
-                state_dir / "protagine-action-journal.db",
-                os.environ.get("PROTAGINE_TRUST_AUTOGRADUATE", "true"))
+                state_dir / "protagine-action-journal.db")
         else:
             logger.info("SelfModel disabled (PROTAGINE_SELF_MODEL_ENABLED=false)")
     except Exception as exc:
         logger.warning("SelfModel init failed: %s", exc)
 
-    # --- P4 controlled learning: one evidence and authority graph ---
-    _controlled_learning = {
-        "corrections": None,
-        "benchmark": None,
-        "experiments": None,
-        "approval_authority": None,
-    }
+    # --- The owner's corrections ledger and the selfhood benchmark ---
     try:
-        _controlled_learning = _initialize_controlled_learning(
-            state_dir=state_dir,
-            adaptive_params=_adaptive_params,
-            journal=locals().get("_journal"),
-        )
-        if _controlled_learning["benchmark"] is not None:
+        _learning = _initialize_learning_feedback(state_dir)
+        if _learning["benchmark"] is not None:
             logger.info(
                 "Selfhood benchmark ready (db=%s, corrections=%s)",
                 state_dir / "protagine-benchmark.db",
@@ -900,37 +572,8 @@ async def lifespan(app: FastAPI):
         else:
             logger.info(
                 "Selfhood benchmark disabled (PROTAGINE_BENCHMARK_ENABLED=false)")
-        if _controlled_learning["experiments"] is not None:
-            logger.info(
-                "Controlled experiment framework ready (db=%s)",
-                state_dir / "protagine-experiments.db",
-            )
-        else:
-            logger.info(
-                "Experiment framework disabled "
-                "(PROTAGINE_EXPERIMENTS_ENABLED=false)")
     except Exception as exc:
-        logger.error("Controlled learning init failed closed: %s", exc)
-
-    # --- Toolsmith (Mind M1): self-built, sandbox-verified tools ---
-    try:
-        from protagine.toolsmith import (
-            Toolsmith, ToolRegistry, toolsmith_enabled,
-        )
-        from protagine.api.routers.host import set_toolsmith
-        if toolsmith_enabled():
-            _tool_registry = ToolRegistry(
-                db_path=str(state_dir / "protagine-toolsmith.db"),
-                library_root=str(state_dir / "toolsmith_library"))
-            _toolsmith = Toolsmith(_tool_registry)
-            set_toolsmith(_toolsmith)
-            logger.info("Toolsmith ready (mode=%s, db=%s)",
-                        os.environ.get("PROTAGINE_TOOLSMITH", "off"),
-                        state_dir / "protagine-toolsmith.db")
-        else:
-            logger.info("Toolsmith disabled (PROTAGINE_TOOLSMITH=off)")
-    except Exception as exc:
-        logger.warning("Toolsmith init failed: %s", exc)
+        logger.error("Learning feedback init failed closed: %s", exc)
 
     # --- Expectation engine (Mind M3a): predictions + surprise + calibration ---
     try:
@@ -952,18 +595,6 @@ async def lifespan(app: FastAPI):
             # autonomy phase links the workspace ref at runtime.
             _expectations = ExpectationEngine(_exp_store, journal=_exp_journal)
             set_expectations(_expectations)
-            # World-model prediction classes (relationship-still-active,
-            # property-unchanged) — registered here, guarded on the engine;
-            # the resolvers fetch the world store lazily so boot order and
-            # a missing world model are both safe (they resolve to None).
-            try:
-                from protagine.world_model.expectation_resolvers import (
-                    register_world_resolvers,
-                )
-                register_world_resolvers(_expectations)
-            except Exception as rexc:
-                logger.warning("World expectation resolvers not registered: "
-                               "%s", rexc)
             logger.info("Expectation engine ready (mode=%s, db=%s)",
                         expectations_mode(),
                         state_dir / "protagine-expectations.db")
@@ -971,49 +602,6 @@ async def lifespan(app: FastAPI):
             logger.info("Expectation engine disabled (PROTAGINE_EXPECTATIONS=off)")
     except Exception as exc:
         logger.warning("Expectation engine init failed: %s", exc)
-
-    # --- Skills memory (procedure memory, item 3) ---
-    _skills_mem_store = None
-    try:
-        from protagine.skills_memory import SkillStore, skills_distill_mode
-        from protagine.api.routers.host import set_skill_store
-        _skills_mem_store = SkillStore(
-            db_path=str(state_dir / "protagine-skills.db"))
-        set_skill_store(_skills_mem_store)
-        logger.info("SkillStore initialized (db=%s, %d skill(s), distill=%s)",
-                    state_dir / "protagine-skills.db",
-                    _skills_mem_store.count(), skills_distill_mode())
-    except Exception as exc:
-        logger.warning("SkillStore init failed: %s", exc)
-
-    # --- Mining: escalation miner + verbatim turn capture (corpus source) ---
-    try:
-        from protagine.mining import EscalationMiner, MiningStore, mining_mode
-        from protagine.api.routers.mining import set_mining
-
-        if mining_mode() != "off":
-            _mining_store_obj = MiningStore(
-                db_path=str(state_dir / "protagine-mining.db"))
-
-            def _mining_router_getter():
-                try:
-                    from protagine.api.routers.host import _llm_router
-                    return _llm_router
-                except Exception:
-                    return None
-
-            _mining_engine_obj = EscalationMiner(
-                _mining_store_obj,
-                skill_store=_skills_mem_store,
-                router_getter=_mining_router_getter,
-            )
-            set_mining(_mining_store_obj, _mining_engine_obj, state_dir)
-            logger.info("EscalationMiner initialized (db=%s, mode=%s)",
-                        state_dir / "protagine-mining.db", mining_mode())
-        else:
-            logger.info("Mining disabled (PROTAGINE_ESCALATION_MINING=off)")
-    except Exception as exc:
-        logger.warning("Mining init failed: %s", exc)
 
     # --- Read-only repo mirrors ---
     try:
@@ -1032,10 +620,6 @@ async def lifespan(app: FastAPI):
                         "Repo mirrors synced: %s",
                         {k: v.get("action") or v.get("reason") for k, v in results.items()},
                     )
-                    from protagine.api.routers.host import _world_store as _ws
-                    n = await _mirrors_mgr.register_entities(_ws)
-                    if n:
-                        logger.info("Registered %d repo(s) as Project entities", n)
                 except Exception:
                     logger.debug("mirror sync failed", exc_info=True)
             asyncio.create_task(_sync_mirrors())
@@ -1054,30 +638,16 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Pattern init failed: %s", exc)
 
-    # --- ToM LLM Extractor ---
-    try:
-        if llm_router is not None:
-            from protagine.tom.extractor import TomExtractor
-            tom_extractor = TomExtractor(llm_router)
-            set_tom_extractor(tom_extractor)
-            logger.info("ToM LLM Extractor initialized (router=%s)", type(llm_router).__name__)
-        else:
-            logger.info("ToM LLM Extractor skipped — no LLM router")
-    except Exception as exc:
-        logger.warning("ToM Extractor init failed: %s", exc)
-
     # --- 7e. Channel Registration Store ---
     channel_store = None
     try:
         from protagine.channels.store import ChannelStore
         from protagine.channels.router import set_channel_store
-        from protagine.channels.phone_gateways import set_channel_store_ref
 
         channels_db = os.path.join(state_dir, "protagine-channels.db")
         channel_store = ChannelStore(db_path=channels_db)
         channel_store.connect()
         set_channel_store(channel_store)
-        set_channel_store_ref(channel_store)
         from protagine.api.routers.host import set_channel_store as _host_set_channel_store
         _host_set_channel_store(channel_store)   # turn traffic auto-registers + touches channels
         logger.info("ChannelStore initialized (db=%s)", channels_db)
@@ -1091,28 +661,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("ContactsStore init failed: %s", exc)
 
-    # --- 8d. Relationship profiler (standing + psyche + approach briefs) ---
-    if contacts_store is not None:
-        try:
-            from protagine.intelligence.relationships.profiler import (
-                RelationshipProfiler,
-            )
-            import protagine.api.routers.host as _host_mod
-            _rel_profiler = RelationshipProfiler(
-                contacts_store=contacts_store,
-                comms_log=_host_mod._comms_log,
-                affect_store=_host_mod._affect_store,
-                facts_store=_host_mod._facts_store,
-                engagement_store=_host_mod._engagement_store,
-                p8_runtime=_p8_wiring,
-                db_path=str(state_dir / "protagine-relationships.db"),
-            )
-            _host_mod.set_relationship_profiler(_rel_profiler)
-            logger.info("RelationshipProfiler initialized (db=%s)",
-                        state_dir / "protagine-relationships.db")
-        except Exception as exc:
-            logger.warning("RelationshipProfiler init failed: %s", exc)
-
     # --- 9. Briefings ---
     try:
         from protagine.briefings.engine import BriefingEngine
@@ -1121,133 +669,6 @@ async def lifespan(app: FastAPI):
         logger.info("BriefingEngine initialized")
     except Exception as exc:
         logger.warning("BriefingEngine init failed: %s", exc)
-
-    # --- 10. World model ---
-    world_store = None
-    try:
-        from protagine.world_model.store import WorldModelStore
-        from protagine.world_model.config import WorldModelConfig
-        world_store = WorldModelStore(WorldModelConfig())
-        await world_store.connect()
-        set_world_store(world_store)
-        logger.info("WorldModelStore connected to SQLite")
-
-        # World-model population from conversation (shadow-first). Boundary-checked
-        # via the directive manager. Mode from PROTAGINE_WORLD_POPULATE_MODE
-        # (off|shadow|live, default shadow).
-        try:
-            from protagine.world_model.populator import WorldModelPopulator, populate_mode
-            from protagine.api.routers.host import set_world_populator
-            _populator = WorldModelPopulator(world_store)
-            set_world_populator(_populator)
-            logger.info("WorldModelPopulator initialized (mode=%s)", populate_mode())
-        except Exception as pexc:
-            logger.warning("WorldModelPopulator init failed: %s", pexc)
-
-        # LLM-assisted world-model extraction (batch, journaled; daily phase).
-        try:
-            from protagine.world_model.llm_extract import (
-                WorldLLMExtractor, llm_extract_mode,
-            )
-            from protagine.api.routers.host import set_world_llm_extractor, get_llm_router
-            _wle = WorldLLMExtractor(
-                world_store, graph=graph,
-                journal=getattr(_sm_for_directed, "journal", None),
-                self_model=_sm_for_directed,
-                source_ledger=get_turn_idempotency_ledger(state_dir), router_provider=get_llm_router)
-            set_world_llm_extractor(_wle)
-            logger.info("WorldLLMExtractor initialized (mode=%s)",
-                        llm_extract_mode())
-        except Exception as wexc:
-            logger.warning("WorldLLMExtractor init failed: %s", wexc)
-
-        # Belief maintenance (item 7): contradiction detection, resolution,
-        # stale decay + the inline property-supersession audit hook.
-        try:
-            from protagine.beliefs import BeliefEngine, BeliefStore, beliefs_mode
-            from protagine.api.routers.host import set_belief_engine
-            from protagine.world_model.store import set_property_audit_hook
-            _belief_store = BeliefStore(
-                db_path=str(state_dir / "protagine-beliefs.db"))
-            _belief_eng = BeliefEngine(
-                _belief_store, world_store=world_store, graph=graph,
-                initiative_store=None,  # attached below once wired
-                journal=getattr(_sm_for_directed, "journal", None),
-                self_model=_sm_for_directed)
-            set_belief_engine(_belief_eng)
-            set_property_audit_hook(_belief_eng.note_property_update)
-            logger.info("BeliefEngine initialized (db=%s, mode=%s)",
-                        state_dir / "protagine-beliefs.db", beliefs_mode())
-        except Exception as bexc:
-            logger.warning("BeliefEngine init failed: %s", bexc)
-
-        # Wire extraction pipeline
-        try:
-            from protagine.world_model.extraction.pipeline import ExtractionPipeline
-            from protagine.world_model.extraction.formats import (
-                TextExtractor, JSONExtractor, CSVExtractor,
-                PDFExtractor, HTMLExtractor,
-            )
-            extractors = [TextExtractor(), JSONExtractor(), CSVExtractor()]
-            if PDFExtractor:
-                extractors.append(PDFExtractor())
-            if HTMLExtractor:
-                extractors.append(HTMLExtractor())
-            llm_extract_fn = None
-            if llm_router is not None:
-                try:
-                    from protagine.world_model.extraction.llm_extractor import (
-                        build_llm_extract_fn,
-                    )
-                    llm_extract_fn = build_llm_extract_fn(llm_router)
-                except Exception as llm_exc:
-                    logger.warning("LLM extraction fallback disabled: %s", llm_exc)
-
-            pipeline = ExtractionPipeline(
-                extractors=extractors,
-                llm_extract_fn=llm_extract_fn,
-            )
-            set_extraction_pipeline(pipeline)
-            logger.info(
-                "Extraction pipeline initialized (%d format extractors, llm_fallback=%s)",
-                len(extractors),
-                "on" if llm_extract_fn is not None else "off",
-            )
-        except Exception as eexc:
-            logger.warning("Extraction pipeline init skipped: %s", eexc)
-    except Exception as exc:
-        logger.warning("WorldModelStore init failed: %s", exc)
-        world_store = None
-        set_world_store(None)
-
-    # --- 11. Cognition (CognitionPipeline) ---
-    cognition_pipeline = None
-    try:
-        from protagine.intelligence.cognition.registry import CognitionPipeline
-        from protagine.events.bus import EventBus
-
-        if graph is not None:
-            # Create EventBus for real-time metrics
-            event_bus = EventBus()
-
-            cognition_pipeline = CognitionPipeline(
-                graph=graph,
-                event_bus=event_bus,
-                params=_adaptive_params,
-            )
-            _wire_controlled_learning_pipeline(
-                cognition_pipeline, _controlled_learning)
-            set_metalearner(cognition_pipeline.meta_learner)
-            logger.info(
-                "CognitionPipeline initialized (controlled proposals=%s, "
-                "durable corrections=%s)",
-                _controlled_learning.get("experiments") is not None,
-                _controlled_learning.get("corrections") is not None,
-            )
-        else:
-            logger.warning("CognitionPipeline skipped — ProtagineGraph not available")
-    except Exception as exc:
-        logger.warning("CognitionPipeline init failed: %s", exc, exc_info=True)
 
     # --- 12. Research pipeline ---
     try:
@@ -1276,8 +697,8 @@ async def lifespan(app: FastAPI):
 
         set_search_orchestrator(search_orchestrator)
 
-        research = _build_research_pipeline(
-            graph=graph, p8_runtime=_p8_wiring)
+        from protagine.research.pipeline import ResearchPipeline
+        research = ResearchPipeline()
         set_research_pipeline(research)
         logger.info("ResearchPipeline initialized")
     except Exception as exc:
@@ -1310,13 +731,6 @@ async def lifespan(app: FastAPI):
         # section of every briefing is empty. Calendar/anomaly/mind/
         # synthesis still lack concrete aggregators (see docs/KNOWN-GAPS.md).
         _aggs = {}
-        try:
-            if graph is not None:
-                from protagine.briefings.aggregators import RelationshipAggregator
-                _aggs["relationship_aggregator"] = RelationshipAggregator(
-                    scorer=None, graph=graph)
-        except Exception:
-            logger.debug("relationship aggregator wiring failed", exc_info=True)
         try:
             if goals_store is not None:
                 from protagine.briefings.aggregators import GoalStoreAggregator
@@ -1354,18 +768,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Briefing delivery wiring failed: %s", exc)
 
-    # --- 14. Synthesis (ConnectionDiscoverer) ---
-    try:
-        from protagine.intelligence.synthesis.connection_discoverer import ConnectionDiscoverer
-        if graph is not None:
-            discoverer = ConnectionDiscoverer(graph_client=graph)
-            set_connection_discoverer(discoverer)
-            logger.info("ConnectionDiscoverer initialized")
-        else:
-            logger.warning("ConnectionDiscoverer skipped — ProtagineGraph not available")
-    except Exception as exc:
-        logger.warning("ConnectionDiscoverer init failed: %s", exc)
-
     # Insight overlay store (tracks dismissed-insight IDs).
     try:
         from protagine.intelligence.synthesis.insight_store import InsightStore
@@ -1374,110 +776,6 @@ async def lifespan(app: FastAPI):
         logger.info("InsightStore initialized")
     except Exception as exc:
         logger.warning("InsightStore init failed: %s", exc)
-
-    # --- 15. Continuous learner ---
-    try:
-        from protagine.intelligence.learning.continuous_learner import ContinuousLearner
-        learner = ContinuousLearner()
-        set_learner(learner)
-        logger.info("ContinuousLearner initialized")
-    except Exception as exc:
-        logger.warning("ContinuousLearner init failed: %s", exc)
-
-    # --- 16. Skills registry + executor ---
-    skills_registry = None
-    try:
-        from protagine.skills.registry import SkillRegistry
-        skills_registry = SkillRegistry()
-        set_skills_registry(skills_registry)
-        logger.info("SkillRegistry initialized (%d skills)", len(skills_registry.list_skills()))
-
-        try:
-            from protagine.skills.executor import SkillExecutor
-            from protagine.skills.security.guards import CapabilityGuard
-            from protagine.skills.security.scanner import ASTScanner
-            skill_executor = SkillExecutor(
-                registry=skills_registry,
-                guard=CapabilityGuard(),
-                scanner=ASTScanner(),
-            )
-            set_skill_executor(skill_executor)
-            logger.info("SkillExecutor initialized")
-        except Exception as sexc:
-            logger.warning("SkillExecutor init failed: %s", sexc)
-    except Exception as exc:
-        logger.warning("SkillRegistry init failed: %s", exc)
-
-    # --- 17. Chain / Identity ---
-    try:
-        from protagine.chain.identity import (
-            get_or_create_protagine_id,
-            load_genesis_manifest,
-            resolve_genesis_manifest_path,
-            set_genesis_manifest,
-        )
-        protagine_id = get_or_create_protagine_id(state_dir)
-
-        # Federation trust is optional and belongs to this private instance.
-        genesis_path = resolve_genesis_manifest_path(state_dir)
-        if genesis_path is None:
-            set_genesis_manifest(None)
-            logger.info("No federation manifest configured; local identity remains available")
-        else:
-            load_genesis_manifest(genesis_path)
-
-        from protagine.chain.manager import ChainManager
-        chain = ChainManager(
-            db_path=state_dir / "chain.db",
-            protagine_id=protagine_id,
-        )
-        set_chain_manager(chain)
-        logger.info("ChainManager initialized (protagine_id=%s)", protagine_id)
-
-        # Wire local key manager
-        try:
-            from protagine.chain.local_keys import LocalKeyManager
-            keys_dir = state_dir / "protagine-keys"
-            key_passphrase = os.environ.get("PROTAGINE_KEY_PASSPHRASE", "")
-            passphrase = key_passphrase.encode() if key_passphrase else None
-
-            if (keys_dir / "private.pem").exists():
-                key_mgr = LocalKeyManager(keys_dir=keys_dir, protagine_id=protagine_id, passphrase=passphrase)
-                logger.info("LocalKeyManager loaded (public_key=%s...)", key_mgr.public_key_hex()[:16])
-            else:
-                key_mgr = LocalKeyManager.generate(keys_dir=keys_dir, protagine_id=protagine_id, passphrase=passphrase)
-                logger.info("LocalKeyManager generated new keypair for protagine %s", protagine_id)
-
-            chain._key_manager = key_mgr  # Attach to chain for access
-        except Exception as kexc:
-            logger.warning("LocalKeyManager init skipped: %s", kexc)
-
-        # Initialize node identity
-        try:
-            from protagine.chain.node import get_or_create_node_id, ensure_node_keypair, create_node_certificate
-            node_id = get_or_create_node_id(state_dir)
-            node_km = ensure_node_keypair(state_dir)
-            logger.info("Node identity: %s (public_key=%s...)", node_id, node_km.public_key_hex()[:16])
-
-            # Create node certificate if missing
-            cert_path = Path(state_dir) / "node-cert.json"
-            if not cert_path.exists():
-                create_node_certificate(state_dir, protagine_key_manager=key_mgr)
-                logger.info("Node certificate created and signed by Protagine key")
-            else:
-                logger.info("Node certificate exists")
-        except Exception as nexc:
-            logger.warning("Node identity init skipped: %s", nexc)
-
-        # The LOCAL identity anchor (protagine_id, node keypair, signed node
-        # cert) is supported. The REMOTE multi-agent surface (agent connect,
-        # cert-chain verification, block/consensus) is EXPERIMENTAL: no
-        # consensus loop runs and the remote handshake is not production
-        # verified. See docs/MULTI_AGENT.md.
-        logger.info("Chain: local identity anchor ready; remote multi-agent "
-                    "+ consensus are EXPERIMENTAL (no consensus loop started)")
-    except Exception as exc:
-        logger.warning("ChainManager init failed: %s", exc)
 
     # --- 18. Secrets ---
     try:
@@ -1540,13 +838,23 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Multi-Agent System init failed: %s", exc)
 
+    # Temporal telemetry: the mind's tick beats into it, turns/sync and context/assemble
+    # touch it, and /v1/host/health reads it. Built before the mind so the tick can report.
+    from protagine.telemetry import TelemetryStore
+    telemetry = TelemetryStore()
+    telemetry.load()  # restore last_*_at across restart (v0.21.0)
+    telemetry.started_at = now_utc()
+    app.state.telemetry = telemetry
+    set_telemetry(telemetry)
+    logger.info("TelemetryStore initialized")
+
     # --- 21. The mind tick (architecture 3.2) ---
     # Replaces the autonomy loop and its scheduler: health_check became the
     # tick's upkeep probes, digest_flush became the outbox digest, and the
     # other scheduled jobs went with their modules.
     mind = None
     try:
-        from protagine.mind import Mind
+        from protagine.mind.factory import build_mind
         from protagine.api.routers.mind import set_mind
         from protagine.api.routers import host as _host_for_mind
         from protagine.config import load_config, load_identity, update_config
@@ -1557,18 +865,6 @@ async def lifespan(app: FastAPI):
         if _mind_store is None:
             raise RuntimeError("the initiative store is not wired")
         _mind_cfg = load_config()
-        _mind_followups = None
-        if _host_for_mind._commitment_store is not None:
-            from protagine.initiatives.temporal_followup import TemporalFollowups
-            _mind_followups = TemporalFollowups(_host_for_mind._commitment_store)
-        _mind_owner = get_owner_contact_id()
-        _mind_appraisals = None
-        if _mind_owner:
-            try:
-                from protagine.self_model.appraisals import AppraisalStore
-                _mind_appraisals = AppraisalStore(get_turn_idempotency_ledger(state_dir), owner_id=_mind_owner)
-            except Exception:
-                logger.debug("appraisal store unavailable to the mind", exc_info=True)
         _mind_identity = load_identity(_mind_cfg.home) if _mind_cfg.exists else {}
         _mind_interests = [str(item) for item in (_mind_identity.get("agent") or {}).get("interests") or []]
 
@@ -1578,36 +874,20 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.warning("mind setting not written to protagine.yaml", exc_info=True)
 
-        # The tick drains pending capture jobs before it decides; the extractor shares the
-        # projection worker's ledger, so a job the worker holds is waited for, never run twice.
-        from protagine.commitments.extract import CommitmentExtractor, contact_aliases
-        _mind_capture = CommitmentExtractor(get_turn_idempotency_ledger(state_dir),
-                                            lambda: _host_for_mind._commitment_store,
-                                            aliases=contact_aliases(lambda: contacts_store))
-        mind = Mind(
-            config=_mind_cfg.get("mind") or {}, store=_mind_store, state_dir=state_dir,
-            owner_id=_mind_owner, commitments=_host_for_mind._commitment_store,
-            followups=_mind_followups, feedback=_host_for_mind._feedback_store,
-            expectations=_host_for_mind._expectations, contacts=contacts_store,
-            ledger=get_turn_idempotency_ledger(state_dir), router=llm_router, appraisals=_mind_appraisals,
-            interests=_mind_interests, capture=_mind_capture,
-            timezone_name=os.environ.get("PROTAGINE_AGENT_TIMEZONE") or os.environ.get("PROTAGINE_TIMEZONE"),
-            persist=_persist_mind_setting)
+        # One factory for this Mind and the benchmark arm's (protagine.mind.factory): every store the
+        # faculties read is taken from the host router module the stores above were set on.
+        mind = build_mind(
+            _host_for_mind, config=_mind_cfg.get("mind") or {}, store=_mind_store, state_dir=state_dir,
+            ledger=get_turn_idempotency_ledger(state_dir), owner_id=get_owner_contact_id(),
+            feedback=_host_for_mind._feedback_store, expectations=_host_for_mind._expectations,
+            interests=_mind_interests, persist=_persist_mind_setting,
+            heartbeat=lambda: telemetry.touch("last_tick_at"))
         set_mind(mind)
         mind.start()
         logger.info("Mind tick started (autonomy=%s, enabled=%s, owner=%s)",
                     mind.level, mind.enabled, "set" if mind.owner_id else "unset")
     except Exception as exc:
         logger.warning("Mind init failed: %s", exc)
-
-    # The belief engine was built in the world-model section, before the
-    # initiative store existed; hand it the store now.
-    try:
-        from protagine.api.routers.host import _belief_engine as _be
-        if _be is not None:
-            _be._initiatives = locals().get("initiative_store")
-    except Exception:
-        pass
 
     # --- 22b. Situation spine (P6, migration-gated) ---
     _situation_wiring = None
@@ -1623,28 +903,14 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Situation spine attachment failed closed: %s", exc)
 
-    # --- 22d. Exploration sandbox (gated isolated execution, item 6) ---
-    try:
-        from protagine.sandbox import SandboxManager, sandbox_mode
-        from protagine.api.routers.host import set_sandbox
-        _sandbox_mgr = SandboxManager(self_model=_sm_for_directed)
-        set_sandbox(_sandbox_mgr)
-        logger.info("SandboxManager initialized (mode=%s, backend=%s)",
-                    sandbox_mode(), _sandbox_mgr.backend_name())
-    except Exception as exc:
-        logger.warning("SandboxManager init failed: %s", exc)
-
     # --- 22e. Connector framework (read-only pull senses, item 2) ---
     try:
         from protagine.connectors import (
             ConnectorManager, connectors_mode,
         )
-        from protagine.api.routers.host import (
-            set_connector_manager, _world_populator as _pop_for_conn,
-        )
+        from protagine.api.routers.host import set_connector_manager
         _conn_mgr = ConnectorManager(
             observation_store=locals().get("observation_store"),
-            populator=_pop_for_conn,
             self_model=_sm_for_directed,
         )
         n_conn = _conn_mgr.register_default_connectors()
@@ -1653,14 +919,6 @@ async def lifespan(app: FastAPI):
                     connectors_mode(), n_conn)
     except Exception as exc:
         logger.warning("ConnectorManager init failed: %s", exc)
-
-    from protagine.telemetry import TelemetryStore
-    telemetry = TelemetryStore()
-    telemetry.load()  # restore last_*_at across restart (v0.21.0)
-    telemetry.started_at = datetime.now(timezone.utc)
-    app.state.telemetry = telemetry
-    set_telemetry(telemetry)
-    logger.info("TelemetryStore initialized")
 
     # Session report store (cross-session context bridge)
     from protagine.sessions.reports import SessionReportStore
@@ -1689,6 +947,9 @@ async def lifespan(app: FastAPI):
             await source_claim_task
         except asyncio.CancelledError:
             pass
+    open_vector_store = source_vector_store()
+    if open_vector_store is not None and getattr(open_vector_store, 'compaction', None) is not None:
+        await open_vector_store.compaction.close()
 
     # Shutdown — close connections
     # Stop the mind tick before any store it uses is closed: its in-flight
@@ -1701,24 +962,7 @@ async def lifespan(app: FastAPI):
         _set_mind(None)
     except Exception:
         logger.warning("Mind shutdown failed")
-    if graph is not None:
-        try:
-            await graph.close()
-        except Exception:
-            logger.debug("Graph close failed", exc_info=True)
-    if world_store is not None:
-        try:
-            await world_store.close()
-        except Exception:
-            logger.debug("WorldStore close failed", exc_info=True)
-    if skills_registry is not None:
-        try:
-            skills_registry.close()
-        except Exception:
-            logger.debug("SkillRegistry close failed", exc_info=True)
     set_llm_router(None)
-    set_graph(None)
-    set_signal_collector(None)
     set_embedder(None)
     set_goals_store(None)
     if contacts_store is not None:
@@ -1728,48 +972,20 @@ async def lifespan(app: FastAPI):
             logger.debug("ContactStore close failed", exc_info=True)
     set_contacts_store(None)
     set_briefings_engine(None)
-    set_world_store(None)
-    set_metalearner(None)
     try:
         from protagine.api.routers.host import (
-            set_adaptive_params as _set_adaptive_params,
             set_benchmark as _set_benchmark,
-            set_experiments as _set_experiments,
             set_learning_feedback_store as _set_learning_feedback_store,
         )
-        _set_experiments(None)
         _set_benchmark(None)
         _set_learning_feedback_store(None)
-        _set_adaptive_params(None)
-        if _adaptive_params is not None:
-            _adaptive_params.close()
     except Exception:
-        logger.debug("controlled learning shutdown failed", exc_info=True)
+        logger.debug("learning feedback shutdown failed", exc_info=True)
     set_research_pipeline(None)
-    set_connection_discoverer(None)
-    set_learner(None)
-    set_skills_registry(None)
     set_commitment_store(None)
     set_affect_store(None)
-    try:
-        if _p8_wiring is not None:
-            _p8_wiring.close()
-    except Exception:
-        logger.debug("P8 runtime shutdown failed", exc_info=True)
-    set_p8_runtime(None)
     set_facts_store(None)
-    try:
-        from protagine.api.routers.host import (
-            set_presence_store as _set_presence_store,
-            _presence_store as _presence_ref,
-        )
-        if _presence_ref is not None:
-            _presence_ref.close()
-        _set_presence_store(None)
-    except Exception:
-        logger.debug("presence store shutdown failed", exc_info=True)
     set_pattern_store(None)
-    set_tom_extractor(None)
     if channel_store is not None:
         try:
             channel_store.close()
@@ -1780,7 +996,6 @@ async def lifespan(app: FastAPI):
         _set_ch_store(None)
     except Exception:
         pass
-    set_chain_manager(None)
     set_secrets_manager(None)
     set_session_store(None)
     set_session_report_store(None)
@@ -1836,10 +1051,13 @@ def create_app() -> FastAPI:
     else:
         logger.warning("No API key configured; serving loopback clients only (dev mode)")
 
+    from protagine.api.errors import install_exception_handlers
+    install_exception_handlers(app)
     app.include_router(host_router)
     app.include_router(host_v2_router)
-    from protagine.api.routers import mind as mind_router
-    app.include_router(mind_router.router)
+    from protagine.mind.factory import mind_routers
+    for mind_route in mind_routers():   # the same list the benchmark's mind arm mounts
+        app.include_router(mind_route)
     from protagine.api.routers import executions as executions_router
     app.include_router(executions_router.router)
     from protagine.api.routers import commitment_work as commitment_work_router
@@ -1860,8 +1078,6 @@ def create_app() -> FastAPI:
     # Observations router (v0.16.0) — agent-as-sensor ingestion
     from protagine.api.routers import observations as observations_router
     app.include_router(observations_router.router)
-    from protagine.api.routers import mining as mining_router
-    app.include_router(mining_router.router)
 
     # MCP streamable HTTP endpoint
     try:

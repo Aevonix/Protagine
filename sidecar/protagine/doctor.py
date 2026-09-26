@@ -1,13 +1,17 @@
 """``protagine doctor``: install checks.
 
-Six things can be wrong with an install, and each has one remedy:
+These things can be wrong with an install, and each has one remedy:
 
 - the Hermes version is outside the supported range
 - ``protagine.yaml``, ``api.key`` or the Hermes keys ``init`` writes are missing
 - the adapter version in Hermes' environment does not match the sidecar
 - ``pip check`` in Hermes' environment is not clean
 - the sidecar is not reachable with the key
+- no user service keeps the sidecar up (a sidecar started by hand is not restarted
+  after a crash or started at login), or the service unit is an earlier release's
 - the plugin is not loaded (not enabled, or not installed where Hermes runs)
+- semantic recall is configured (``router.embed_url``) but the embedder is not serving
+- the vector store library is missing from the sidecar's own environment
 
 Local checks read files and run Hermes' Python; the sidecar check talks HTTP
 and degrades to a failure with the start command when the sidecar is down.
@@ -88,10 +92,14 @@ def check_config() -> CheckResult:
         return CheckResult("config", FAIL, detail=f"{path} is missing",
                            remedy="run 'protagine init'")
     try:
-        load_config(required=True)
+        config = load_config(required=True)
     except ConfigError as exc:
         return CheckResult("config", FAIL, detail=str(exc), remedy=f"fix {path} and re-run 'protagine doctor'")
-    return CheckResult("config", PASS, detail=f"{path} valid")
+    environment = config.get("environment") or {}
+    detail = f"{path} valid"
+    if environment:
+        detail += f" (environment: {len(environment)} entr{'y' if len(environment) == 1 else 'ies'})"
+    return CheckResult("config", PASS, detail=detail)
 
 
 def check_api_key() -> CheckResult:
@@ -111,7 +119,9 @@ def check_api_key() -> CheckResult:
 
 
 def check_identity() -> CheckResult:
-    from protagine.config import identity_path, load_identity
+    """``identity.yaml`` names the owner and the agent; the constitution (name, values, boundaries) fits
+    its 1,500-character budget, and the report says whether boundaries are declared."""
+    from protagine.config import CONSTITUTION_CHARS, constitution_length, constitution_list, identity_path, load_identity
     path = identity_path()
     if not path.is_file():
         return CheckResult("identity", WARN, detail=f"{path} is missing", remedy="run 'protagine init'")
@@ -119,7 +129,15 @@ def check_identity() -> CheckResult:
     if not identity.get("owner", {}).get("name") or not identity.get("agent", {}).get("name"):
         return CheckResult("identity", WARN, detail=f"{path} lacks the owner or agent name",
                            remedy="run 'protagine init'")
-    return CheckResult("identity", PASS, detail=f"{path} names the owner and the agent")
+    length = constitution_length(identity)
+    boundaries = constitution_list(identity.get("agent", {}).get("boundaries"))
+    summary = (f"constitution {length}/{CONSTITUTION_CHARS} characters, "
+               f"{len(boundaries)} boundar{'y' if len(boundaries) == 1 else 'ies'}")
+    if length > CONSTITUTION_CHARS:
+        return CheckResult("identity", WARN, detail=f"{path}: {summary}; the prompt clips it",
+                           remedy="shorten agent.values or agent.boundaries (protagine init --agent-values/--agent-boundaries)")
+    return CheckResult("identity", PASS, detail=f"{path} names the owner and the agent; {summary}"
+                       + ("" if boundaries else " (none declared: protagine init --agent-boundaries)"))
 
 
 def check_llm_config() -> CheckResult:
@@ -227,14 +245,34 @@ def check_hermes_keys() -> CheckResult:
 
 
 def check_worker_profile() -> CheckResult:
-    from protagine.config import load_config
-    from protagine.init import WORKER_PROFILE, profiles_root
+    """The worker profile matches the main model, and stock Hermes gives a dispatched worker that model
+    and no toolset beyond the mind's."""
+    from protagine.config import KEY_FILE, load_config
+    from protagine.init import (PLUGIN_NAME, WORKER_PROFILE, profiles_root, read_hermes_config,
+                                resolve_worker_profile, worker_profile_config, worker_profile_pending)
     config = load_config()
     path = profiles_root(config.hermes_home) / WORKER_PROFILE / "config.yaml"
     if not path.is_file():
         return CheckResult("worker-profile", FAIL, detail=f"{path} is missing",
                            remedy="run 'protagine upgrade'")
-    return CheckResult("worker-profile", PASS, detail=f"profile {WORKER_PROFILE} present")
+    expected = worker_profile_config(read_hermes_config(config.hermes_home / "config.yaml"), config,
+                                     sidecar_url=config.sidecar_url, key_file=config.home / KEY_FILE)
+    if worker_profile_pending(profiles_root(config.hermes_home), expected):
+        return CheckResult("worker-profile", FAIL, detail=f"profile {WORKER_PROFILE} differs from the main "
+                           "model or the mind settings", remedy="run 'protagine upgrade'")
+    python = _hermes_python()
+    if python is None:
+        return CheckResult("worker-profile", SKIP, detail="no Hermes interpreter found")
+    worker = resolve_worker_profile(python, config.hermes_home)
+    if worker.get("error"):
+        return CheckResult("worker-profile", FAIL, detail=f"a mind task cannot resolve its model: {worker['error']}",
+                           remedy="fix the main model in Hermes, then 'protagine upgrade'")
+    extra = sorted(set(worker["toolsets"]) - set(config.get("mind.worker_toolsets") or []) - {PLUGIN_NAME})
+    if extra:
+        return CheckResult("worker-profile", FAIL, detail=f"a mind task would get {', '.join(extra)}",
+                           remedy="run 'protagine upgrade'")
+    return CheckResult("worker-profile", PASS, detail=f"profile {WORKER_PROFILE}: {worker.get('provider')} "
+                       f"at {worker.get('base_url')}, toolsets {', '.join(worker['toolsets'])}")
 
 
 def check_plugin_loaded() -> CheckResult:
@@ -272,8 +310,66 @@ def check_plugin_loaded() -> CheckResult:
     return CheckResult("plugin-loaded", PASS, detail="plugin enabled and its entry points registered")
 
 
+def check_vector_store() -> CheckResult:
+    """The vector store library imports in the sidecar's own interpreter."""
+    import sys
+    from protagine.init import VECTOR_STORE_MODULE, VECTOR_STORE_REMEDY, vector_store_available
+    if not vector_store_available():
+        return CheckResult("vector-store", FAIL, detail=f"{VECTOR_STORE_MODULE} is not importable in {sys.executable}",
+                           remedy=VECTOR_STORE_REMEDY)
+    return CheckResult("vector-store", PASS, detail=f"{VECTOR_STORE_MODULE} importable in {sys.executable}")
+
+
+def check_service() -> CheckResult:
+    """This instance's user service (launchd, systemd --user) is installed, running and current.
+
+    A sidecar started by hand (``protagine start --detach``) passes every HTTP check while
+    nothing restarts it after a crash or starts it at login; this check says so.
+    """
+    from protagine import init
+    from protagine.config import load_config
+    from protagine.services.instance import ServiceError
+    try:
+        service = init._service(load_config())
+    except ServiceError as exc:
+        return CheckResult("service", SKIP, detail=str(exc))
+    manager = "launchd" if service.platform == "darwin" else "systemd --user"
+    try:
+        installed = service._owned()
+    except ServiceError as exc:
+        return CheckResult("service", FAIL, detail=str(exc),
+                           remedy="remove or move the file named, then 'protagine service install'")
+    if not installed:
+        return CheckResult("service", WARN,
+                           detail=f"no user service is installed for this instance ({manager}): a sidecar started "
+                                  "by hand is not restarted after a crash or started at login",
+                           remedy="'protagine service install', then 'protagine service start' (stop a sidecar "
+                                  "started by hand first)")
+    try:
+        status = service.status()
+    except ServiceError as exc:
+        return CheckResult("service", WARN, detail=f"{service.label} is installed but {manager} did not answer: {exc}")
+    if not status["running"]:
+        state = "loaded" if status["loaded"] else "not loaded"
+        return CheckResult("service", FAIL, detail=f"{manager} {service.label} is installed but not running ({state})",
+                           remedy="'protagine service start' (stop a sidecar started by hand first); "
+                                  f"the logs are {service.log} and {service.manager_log}")
+    stale = service.outdated()
+    if stale:
+        return CheckResult("service", WARN,
+                           detail=f"{service.label} runs from a unit an earlier release wrote: {'; '.join(stale)}",
+                           remedy="'protagine service stop', 'protagine service install', 'protagine service start'")
+    autostart = status.get("enabled", True) is not False
+    detail = f"{manager} {service.label} running (pid {status['pid']})"
+    if not autostart:
+        return CheckResult("service", WARN, detail=detail + ", but not enabled: it does not start at login",
+                           remedy="'protagine service install' enables it")
+    return CheckResult("service", PASS, detail=detail + ", restarted after a crash and started at login")
+
+
 def run_local_checks() -> List[CheckResult]:
     results: List[CheckResult] = []
+    results += _run("vector-store", check_vector_store)
     results += _run("config", check_config)
     results += _run("api-key", check_api_key)
     results += _run("identity", check_identity)
@@ -284,6 +380,7 @@ def run_local_checks() -> List[CheckResult]:
     results += _run("hermes-keys", check_hermes_keys)
     results += _run("worker-profile", check_worker_profile)
     results += _run("plugin-loaded", check_plugin_loaded)
+    results += _run("service", check_service)
     return results
 
 
@@ -300,8 +397,12 @@ def check_sidecar(base_url: str, api_key: str, timeout: float) -> List[CheckResu
                             remedy="start it with 'protagine service start' (or 'protagine start')")]
     if status != 200 or not isinstance(body, dict):
         return [CheckResult("sidecar", FAIL, detail=f"/v1/host/health returned HTTP {status}")]
-    results = [CheckResult("sidecar", PASS if body.get("status") == "ok" else WARN,
-                           detail=f"sidecar at {base_url} reports status={body.get('status', 'unknown')}")]
+    detail = f"sidecar at {base_url} reports status={body.get('status', 'unknown')}"
+    problems = [str(item) for item in body.get("problems") or []]
+    if problems:
+        detail += ": " + "; ".join(problems)
+    results = [CheckResult("sidecar", PASS if body.get("status") == "ok" else WARN, detail=detail)]
+    results.append(_check_open_files((body.get("notes") or {}).get("fd_limit")))
     try:
         status, _ = _http_get(f"{base_url}/v1/mind/state", api_key, timeout)
     except Exception as exc:  # noqa: BLE001
@@ -319,6 +420,63 @@ def check_sidecar(base_url: str, api_key: str, timeout: float) -> List[CheckResu
     return results
 
 
+def _check_open_files(reported: Any) -> CheckResult:
+    """The running sidecar's open-file limit, as its health reports it."""
+    from protagine.resources import OPEN_FILES
+    text = str(reported or "").strip()
+    if not text:
+        return CheckResult("open-files", SKIP, detail="the sidecar did not report its open file limit")
+    if text == "unlimited":
+        return CheckResult("open-files", PASS, detail="open file limit unlimited")
+    try:
+        limit = int(text)
+    except ValueError:
+        return CheckResult("open-files", SKIP, detail=f"unreadable open file limit {text!r}")
+    if limit < OPEN_FILES:
+        return CheckResult("open-files", WARN,
+                           detail=f"the sidecar runs with {limit} open files; the vector store wants {OPEN_FILES} "
+                                  "under load",
+                           remedy="raise the hard limit of the session the sidecar starts from (the generated "
+                                  "service unit asks for it; 'protagine service install' then 'protagine "
+                                  "service restart' apply it)")
+    return CheckResult("open-files", PASS, detail=f"open file limit {limit}")
+
+
+def check_semantic_recall(base_url: str, api_key: str, timeout: float) -> CheckResult:
+    """When ``router.embed_url`` is set, the running sidecar's embedder answers.
+
+    A configured embedder that failed to initialise leaves the sidecar serving
+    with keyword recall only; this check makes that a failure with the reason.
+    """
+    from protagine.config import load_config
+    config = load_config()
+    if not config.get("router.embed_url"):
+        return CheckResult("semantic-recall", SKIP, detail="off: no router.embed_url in protagine.yaml")
+    if config.get("mind.faculties.semantic_recall") is False:
+        # Releases before the switch was live wrote false whenever init found no endpoint.
+        return CheckResult("semantic-recall", WARN,
+                           detail="router.embed_url is set but mind.faculties.semantic_recall is false: recall is "
+                                  "keyword-only",
+                           remedy="set mind.faculties.semantic_recall: true in protagine.yaml (or re-run 'protagine "
+                                  "init --embed-url ...'), then 'protagine service restart'")
+    base_url = base_url.rstrip("/")
+    try:
+        status, body = _http_get(f"{base_url}/v1/host/embed/health", api_key, timeout)
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("semantic-recall", FAIL, detail=f"embed/health not reachable: {exc}")
+    if status != 200 or not isinstance(body, dict):
+        return CheckResult("semantic-recall", FAIL, detail=f"/v1/host/embed/health returned HTTP {status}")
+    if body.get("status") != "ok":
+        return CheckResult(
+            "semantic-recall", FAIL,
+            detail=f"router.embed_url is set but the embedder is not serving: {body.get('error') or 'unknown'}",
+            remedy="check router.embed_url, router.embed_model and router.embed_dims in protagine.yaml against "
+                   "the endpoint (the sidecar log holds the first failure), then 'protagine service restart'")
+    return CheckResult("semantic-recall", PASS,
+                       detail=f"embedder serving (model={body.get('model') or 'unknown'}, dims={body.get('dims')}, "
+                              f"{body.get('latency_ms', 0)} ms)")
+
+
 # ---------------------------------------------------------------------------
 # Engine entry point + reporting
 # ---------------------------------------------------------------------------
@@ -332,7 +490,10 @@ def run_doctor(
     url = protagine_url or default_protagine_url()
     key = api_key if api_key is not None else default_api_key()
     results = run_local_checks()
-    results += _run("sidecar", check_sidecar, url, key, timeout)
+    sidecar = _run("sidecar", check_sidecar, url, key, timeout)
+    results += sidecar
+    if sidecar and sidecar[0].status != FAIL:
+        results += _run("semantic-recall", check_semantic_recall, url, key, timeout)
     return results
 
 

@@ -13,7 +13,6 @@ from httpx import ASGITransport, AsyncClient
 from protagine.api.routers import host as host_mod
 from protagine.contacts.config import ContactsConfig
 from protagine.contacts.store import SQLiteContactStore
-from protagine.world_model.constants import RELATIONSHIP_TYPES
 
 GUEST = "+15550000042"
 
@@ -39,21 +38,16 @@ async def _client(store):
         host_mod._contacts_store = orig
 
 
-def test_introduced_by_relationship_type_exists():
-    # Groundwork for Slice 2's world-model edge.
-    assert "WM_INTRODUCED_BY" in RELATIONSHIP_TYPES
-
-
 @pytest.mark.asyncio
 async def test_capture_creates_inert_provisional_contact(store):
     intro = {"channel": "rcs-group", "scope_id": "ts-1"}
     c = await store.create(
         display_name="Rae", trust_tier="unknown",
-        interaction_allowed=False, import_source="agent_intro",
+        import_source="agent_intro",
         introduced_by="cid-owner", met_via=intro,
     )
     assert c.import_source == "agent_intro"
-    assert c.interaction_allowed is False        # an intro never grants standing
+    assert c.may_contact == "ask"                # an intro never grants permission
     assert c.introduced_by == "cid-owner"
     assert c.met_via == intro
 
@@ -62,7 +56,7 @@ async def test_capture_creates_inert_provisional_contact(store):
 async def test_provenance_survives_reload(store, tmp_path):
     intro = {"channel": "voice", "scope_id": None}
     c = await store.create(display_name="Dana", trust_tier="unknown",
-                           interaction_allowed=False, import_source="agent_intro",
+                           import_source="agent_intro",
                            introduced_by="cid-owner", met_via=intro)
     reloaded = await store.get(c.contact_id)
     assert reloaded.introduced_by == "cid-owner"
@@ -75,14 +69,14 @@ async def test_record_introduction_annotates_existing_only_fills_blanks(store):
     # A pre-existing contact (e.g. resolved by handle) gets provenance recorded
     # without duplicating it and without changing its standing.
     c = await store.create(display_name="Sam", trust_tier="regular",
-                           interaction_allowed=True, import_source="manual")
+                           may_contact="auto", import_source="manual")
     updated = await store.record_introduction(
         c.contact_id, introduced_by="cid-owner",
         met_via={"channel": "rcs-group", "scope_id": "ts-9"})
     assert updated.introduced_by == "cid-owner"
     assert updated.met_via["scope_id"] == "ts-9"
     assert updated.trust_tier == "regular"          # standing untouched
-    assert updated.interaction_allowed is True
+    assert updated.may_contact == "auto"
 
     # First introduction wins — a second call does not overwrite.
     again = await store.record_introduction(
@@ -111,7 +105,8 @@ async def test_intro_endpoint_creates_provisional_with_handle(store):
     assert body["created"] is True
     ct = body["contact"]
     assert ct["import_source"] == "agent_intro"
-    assert ct["interaction_allowed"] is False
+    assert ct["may_contact"] == "ask"
+    assert "interaction_allowed" not in ct
     assert ct["introduced_by"] == owner.contact_id
     assert ct["met_via"]["scope_id"] == "ts-7"
     # The handle resolves back to this provisional contact.
@@ -123,7 +118,7 @@ async def test_intro_endpoint_creates_provisional_with_handle(store):
 async def test_intro_endpoint_annotates_existing_no_duplicate(store):
     # Known person on this handle already.
     sam = await store.create(display_name="Sam", trust_tier="regular",
-                             interaction_allowed=True, import_source="manual")
+                             may_contact="auto", import_source="manual")
     await store.add_handle(sam.contact_id, gateway="sms", address=GUEST)
     async with _client(store) as c:
         r = await c.post("/v1/host/contacts/intro", json={
@@ -137,4 +132,4 @@ async def test_intro_endpoint_annotates_existing_no_duplicate(store):
     assert body["contact"]["contact_id"] == sam.contact_id
     assert body["contact"]["introduced_by"] == "cid-owner"
     assert body["contact"]["trust_tier"] == "regular"     # standing untouched
-    assert body["contact"]["interaction_allowed"] is True
+    assert body["contact"]["may_contact"] == "auto"

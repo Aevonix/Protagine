@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 
 import pytest
@@ -40,6 +41,19 @@ def test_defaults_without_a_file(home):
     assert cfg.get("mind.faculties.skills") is False
     assert cfg.sidecar_url == "http://127.0.0.1:7777"
     assert cfg.hermes_home.name == ".hermes"
+
+
+def test_the_affect_mechanism_switch_ships_off_is_a_binary_faculty_and_has_no_environment_variable(home):
+    """``mind.faculties.affect_rules`` (build plan M6): the stateless-rules arm of the affect family."""
+    assert config.DEFAULTS["mind"]["faculties"]["affect_rules"] is False
+    assert load_config(home, environ={"PROTAGINE_MIND_AFFECT_RULES": "on"}).get("mind.faculties.affect_rules") is False
+    assert not any("AFFECT" in name for name in config.ENV_OVERRIDES)
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"mind": {"faculties": {"affect_rules": "on"}}}))
+    cfg = load_config(home, environ={})
+    assert cfg.get("mind.faculties.affect_rules") is True and cfg.get("mind.faculties.affect") is True
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"mind": {"faculties": {"affect_rules": "maybe"}}}))
+    with pytest.raises(ConfigError, match="mind.faculties.affect_rules"):
+        load_config(home, environ={})
 
 
 def test_required_file_missing_is_an_error(home):
@@ -146,7 +160,8 @@ def test_apply_environment_exports_what_the_sidecar_reads(home):
     assert environ["PROTAGINE_OWNER_CONTACT_ID"] == "cid-owner"
     assert environ["PROTAGINE_OWNER_NAME"] == "Ada"
     assert environ["PROTAGINE_PERSONA_NAME"] == "Sol"
-    assert environ["PROTAGINE_AGENT_VALUES"] == '["care"]'
+    # Values reach the appraisal prompt from identity.yaml itself (chosen_values), not through the environment.
+    assert "PROTAGINE_AGENT_VALUES" not in environ
     assert environ["PROTAGINE_AGENT_QUIET_HOURS"] == "22:00-07:00"
     assert environ["PROTAGINE_EMBED_PROVIDER"] == "openai_api"
     assert environ["PROTAGINE_EMBED_BASE_URL"] == "http://127.0.0.1:9/v1"
@@ -162,6 +177,68 @@ def test_apply_environment_without_embeddings_skips_the_embedder(home):
     apply_environment(load_config(home, environ={}), environ=environ)
     assert environ["PROTAGINE_EMBED_PROVIDER"] == "skip"
     assert "PROTAGINE_API_KEY" not in environ
+    # No reranker configured: nothing rerank-related is exported and recall keeps its default.
+    assert not any(name.startswith("PROTAGINE_RERANKER_") for name in environ)
+    assert "PROTAGINE_RECALL_RERANK" not in environ
+
+
+def test_apply_environment_honours_the_semantic_recall_flag(home):
+    """``mind.faculties.semantic_recall`` is a real binary switch: off, the embedder stays off even with an
+    endpoint recorded (the ``full-semantic_recall`` arm); the endpoint itself is still exported."""
+    save_config({**config.DEFAULTS,
+                 "router": {**config.DEFAULTS["router"], "embed_url": "http://127.0.0.1:9/v1", "embed_model": "e5"},
+                 "mind": {**config.DEFAULTS["mind"],
+                          "faculties": {**config.DEFAULTS["mind"]["faculties"], "semantic_recall": False}}},
+                home)
+    environ: dict[str, str] = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert environ["PROTAGINE_EMBED_PROVIDER"] == "skip"
+    assert environ["PROTAGINE_EMBED_BASE_URL"] == "http://127.0.0.1:9/v1"
+    # A pinned process environment still wins over the derived value.
+    pinned: dict[str, str] = {"PROTAGINE_EMBED_PROVIDER": "openai_api"}
+    apply_environment(load_config(home, environ={}), environ=pinned)
+    assert pinned["PROTAGINE_EMBED_PROVIDER"] == "openai_api"
+
+
+def test_apply_environment_exports_a_configured_reranker(home):
+    save_config({**config.DEFAULTS,
+                 "router": {**config.DEFAULTS["router"],
+                            "rerank_url": "http://127.0.0.1:8/v1", "rerank_model": "r1"}},
+                home)
+    environ: dict[str, str] = {}
+    applied = apply_environment(load_config(home, environ={}), environ=environ)
+    # The same code path the sidecar takes for the embedding endpoint: a remote
+    # provider, the model it serves, and recall switched to use it.
+    assert environ["PROTAGINE_RERANKER_PROVIDER"] == "openai_api"
+    assert environ["PROTAGINE_RERANKER_BASE_URL"] == "http://127.0.0.1:8/v1"
+    assert environ["PROTAGINE_RERANKER_MODEL"] == "r1"
+    assert environ["PROTAGINE_RECALL_RERANK"] == "on"
+    assert applied["PROTAGINE_RECALL_RERANK"] == "on"
+    # A service unit or shell may still pin the recall mode (shadow measures before flipping).
+    pinned: dict[str, str] = {"PROTAGINE_RECALL_RERANK": "shadow"}
+    applied = apply_environment(load_config(home, environ={}), environ=pinned)
+    assert pinned["PROTAGINE_RECALL_RERANK"] == "shadow"
+    assert "PROTAGINE_RECALL_RERANK" not in applied
+    assert pinned["PROTAGINE_RERANKER_BASE_URL"] == "http://127.0.0.1:8/v1"
+
+
+def test_reranker_endpoint_needs_the_model_it_serves(home):
+    # The sidecar cannot choose a reranker by itself, so an endpoint alone is a
+    # configuration error rather than a silent no-op.
+    with pytest.raises(ConfigError, match="router.rerank_model"):
+        save_config({**config.DEFAULTS,
+                     "router": {**config.DEFAULTS["router"], "rerank_url": "http://127.0.0.1:8/v1"}},
+                    home)
+    (home / config.CONFIG_FILE).write_text("router: {rerank_url: http://127.0.0.1:8/v1}\n")
+    with pytest.raises(ConfigError, match="router.rerank_model"):
+        load_config(home, environ={})
+    # A model without an endpoint is kept in the file but exports nothing: the
+    # remote path is the one this configuration describes, like embed_model.
+    save_config({**config.DEFAULTS, "router": {**config.DEFAULTS["router"], "rerank_model": "r1"}}, home)
+    environ: dict[str, str] = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert "PROTAGINE_RERANKER_MODEL" not in environ
+    assert "PROTAGINE_RECALL_RERANK" not in environ
 
 
 def test_env_switches_are_plain(monkeypatch):
@@ -177,3 +254,191 @@ def test_env_switches_are_plain(monkeypatch):
     assert env_bool("PROTAGINE_TEST_FLAG", True) is False
     monkeypatch.delenv("PROTAGINE_TEST_FLAG")
     assert env_bool("PROTAGINE_TEST_FLAG", True) is True
+
+
+def test_embed_dims_is_exported_only_when_declared(home):
+    """Without a declared width the endpoint's first embedding defines it; a declared one is validated."""
+    (home / "protagine.yaml").write_text(yaml.safe_dump({
+        "router": {"embed_url": "http://127.0.0.1:8092", "embed_model": "an-embedding-model"},
+    }))
+    environ = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert "PROTAGINE_EMBED_DIMS" not in environ
+    assert environ["PROTAGINE_EMBED_PROVIDER"] == "openai_api"
+
+    (home / "protagine.yaml").write_text(yaml.safe_dump({
+        "router": {"embed_url": "http://127.0.0.1:8092", "embed_model": "an-embedding-model", "embed_dims": 4096},
+    }))
+    environ = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert environ["PROTAGINE_EMBED_DIMS"] == "4096"
+
+    pinned = {"PROTAGINE_EMBED_DIMS": "1024"}
+    apply_environment(load_config(home, environ={}), environ=pinned)
+    assert pinned["PROTAGINE_EMBED_DIMS"] == "1024"
+
+
+@pytest.mark.parametrize("value, message", [
+    ("many", "router.embed_dims"),
+    (-1, "router.embed_dims"),
+    (True, "router.embed_dims"),
+])
+def test_embed_dims_must_be_a_whole_number(home, value, message):
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"router": {"embed_dims": value}}))
+    with pytest.raises(ConfigError) as info:
+        load_config(home, environ={})
+    assert message in str(info.value)
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"router": {"embed_dims": "2048"}}))
+    assert load_config(home, environ={}).get("router.embed_dims") == 2048
+
+
+def test_environment_mapping_lands_over_derived_values_and_under_the_process_environment(home, caplog):
+    """Any PROTAGINE_* tuning the sidecar reads travels in the file; the process still wins."""
+    import logging
+    (home / "protagine.yaml").write_text(yaml.safe_dump({
+        "router": {"rerank_url": "http://127.0.0.1:8093", "rerank_model": "a-reranker"},
+        "environment": {
+            "PROTAGINE_RERANKER_PROMPT_STYLE": "qwen3",
+            "PROTAGINE_RECALL_RERANK_MIN_SCORE": 0.7362908869981766,
+            "PROTAGINE_RECALL_OVERSAMPLE": 5,
+            "PROTAGINE_RECALL_STRENGTH_RANKING": "on",
+            "PROTAGINE_RECALL_RERANK": "shadow",
+            "PROTAGINE_EMBED_API_KEY": "s3cret-value",
+        },
+    }))
+    cfg = load_config(home, environ={})
+    assert cfg.get("environment.PROTAGINE_RECALL_OVERSAMPLE") == "5"
+    environ = {"PROTAGINE_RECALL_OVERSAMPLE": "2"}
+    with caplog.at_level(logging.INFO, logger="protagine.config"):
+        applied = apply_environment(cfg, environ=environ)
+    assert environ["PROTAGINE_RERANKER_PROMPT_STYLE"] == "qwen3"
+    assert environ["PROTAGINE_RECALL_RERANK_MIN_SCORE"] == "0.7362908869981766"
+    assert environ["PROTAGINE_RECALL_STRENGTH_RANKING"] == "on"
+    assert environ["PROTAGINE_RECALL_RERANK"] == "shadow"          # the mapping over the derived "on"
+    assert environ["PROTAGINE_RERANKER_BASE_URL"] == "http://127.0.0.1:8093"
+    assert environ["PROTAGINE_RECALL_OVERSAMPLE"] == "2"           # the process environment over the mapping
+    assert environ["PROTAGINE_EMBED_API_KEY"] == "s3cret-value"
+    assert "PROTAGINE_RECALL_OVERSAMPLE" not in applied
+    # The log names what was exported and keeps a credential's value and name out of it.
+    assert "PROTAGINE_RERANKER_PROMPT_STYLE" in caplog.text
+    assert "s3cret-value" not in caplog.text and "PROTAGINE_EMBED_API_KEY" not in caplog.text
+    assert "1 credential entry (names withheld)" in caplog.text
+
+
+@pytest.mark.parametrize("entry, message", [
+    ({"OPENAI_API_KEY": "x"}, "PROTAGINE_ followed by"),
+    ({"protagine_recall_oversample": "5"}, "PROTAGINE_ followed by"),
+    ({"PROTAGINE_": "5"}, "PROTAGINE_ followed by"),
+    ({"HERMES_HOME": "/elsewhere"}, "hermes.home"),
+    ({"PROTAGINE_SIDECAR_PORT": "8000"}, "sidecar.port"),
+    ({"PROTAGINE_EMBED_DIMS": "4096"}, "router.embed_dims"),
+    ({"PROTAGINE_API_KEY": "k"}, "api.key"),
+    ({"PROTAGINE_OWNER_NAME": "Ada"}, "identity.yaml"),
+    ({"PROTAGINE_RECALL_STRENGTH_RANKING": True}, 'quote it ("on")'),
+    ({"PROTAGINE_RECALL_STRENGTH_RANKING": False}, 'quote it ("off")'),
+    ({"PROTAGINE_RECALL_OVERSAMPLE": None}, "string or a number"),
+    ({"PROTAGINE_RECALL_OVERSAMPLE": [5]}, "string or a number"),
+    ({"PROTAGINE_RECALL_OVERSAMPLE": ""}, "empty"),
+    ({"PROTAGINE_RECALL_OVERSAMPLE": "5\n"}, "control characters"),
+])
+def test_environment_entries_are_validated(home, entry, message):
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"environment": entry}))
+    with pytest.raises(ConfigError) as info:
+        load_config(home, environ={})
+    assert message in str(info.value)
+    (home / "protagine.yaml").write_text(yaml.safe_dump({"environment": "PROTAGINE_X=1"}))
+    with pytest.raises(ConfigError, match="mapping"):
+        load_config(home, environ={})
+
+
+def test_reserved_names_cover_every_export_the_keys_derive(home):
+    """The refusal list and apply_environment cannot drift apart; PROTAGINE_RECALL_RERANK is the one
+    derived export the mapping may restate (to measure a reranker as ``shadow``)."""
+    save_identity({"owner": {"name": "Ada"}, "agent": {"name": "Sol", "values": ["care"], "timezone": "UTC",
+                                                       "quiet_hours": "22:00-07:00"}}, home)
+    write_api_key("private-secret", home)
+    (home / "protagine.yaml").write_text(yaml.safe_dump({
+        "router": {"embed_url": "http://127.0.0.1:8092", "embed_model": "m", "embed_dims": 8,
+                   "rerank_url": "http://127.0.0.1:8093", "rerank_model": "r"},
+        "owner": {"contact_id": "cid-1"},
+    }))
+    environ = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    derived = set(environ) - {"HERMES_HOME", "PROTAGINE_RECALL_RERANK"}
+    assert derived <= set(config.RESERVED_ENVIRONMENT), derived - set(config.RESERVED_ENVIRONMENT)
+    assert "PROTAGINE_HOME" in derived and "PROTAGINE_EMBED_DIMS" in derived
+
+
+# -- the fast decision layer (protagine.decisions) ------------------------------------------------------------
+
+def test_the_decision_section_is_exported_and_every_point_is_off_without_an_endpoint(home):
+    environ: dict[str, str] = {}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    assert "PROTAGINE_DECISIONS_URL" not in environ and environ["PROTAGINE_DECISIONS_TIMEOUT_MS"] == "250"
+    from protagine.decisions import POINTS, from_environment
+    assert not any(from_environment(environ).enabled(name) for name in POINTS)
+    save_config({**config.DEFAULTS, "decisions": {
+        "url": "http://127.0.0.1:9/", "timeout_ms": 300,
+        "points": {"opt_out": {"enabled": "on", "temperature": 2, "abstain": [0.1, 0.95]}}}}, home)
+    loaded = load_config(home, environ={})
+    assert loaded.get("decisions.points.opt_out") == {"enabled": True, "temperature": 2.0, "abstain": [0.1, 0.95]}
+    environ = {}
+    apply_environment(loaded, environ=environ)
+    assert environ["PROTAGINE_DECISIONS_URL"] == "http://127.0.0.1:9/"
+    assert environ["PROTAGINE_DECISIONS_TIMEOUT_MS"] == "300"
+    assert json.loads(environ["PROTAGINE_DECISIONS_POINTS"]) == {
+        "opt_out": {"enabled": True, "temperature": 2.0, "abstain": [0.1, 0.95]}}
+    decider = from_environment(environ)
+    assert decider.enabled("opt_out") and decider.timeout_s == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize("pinned", [
+    {"PROTAGINE_DECISIONS_URL": "http://10.0.0.9:8080"},                       # the endpoint from a service unit
+    {"PROTAGINE_DECISIONS_URL": "http://10.0.0.9:8080", "PROTAGINE_DECISIONS_TIMEOUT_MS": ""},
+])
+def test_an_endpoint_from_the_environment_keeps_the_files_points_and_time_limit(home, pinned):
+    """The environment may pin one setting (the endpoint); the file's other decision settings still apply: a
+    point the file turns off stays off, and the file's time limit holds."""
+    (home / config.CONFIG_FILE).write_text(yaml.safe_dump({"decisions": {
+        "timeout_ms": 50, "points": {"owner_verdict": {"enabled": False}}}}))
+    environ = dict(pinned)
+    apply_environment(load_config(home, environ={}), environ=environ)
+    from protagine.decisions import from_environment
+    decider = from_environment(environ)
+    assert decider.url == "http://10.0.0.9:8080"
+    assert not decider.enabled("owner_verdict") and decider.timeout_s == pytest.approx(0.05)
+
+
+def test_a_setting_the_environment_pins_wins_over_the_file(home):
+    (home / config.CONFIG_FILE).write_text(yaml.safe_dump({"decisions": {
+        "url": "http://127.0.0.1:9", "timeout_ms": 50, "points": {"owner_verdict": {"enabled": False}}}}))
+    environ = {"PROTAGINE_DECISIONS_TIMEOUT_MS": "120"}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    from protagine.decisions import from_environment
+    decider = from_environment(environ)
+    assert decider.url == "http://127.0.0.1:9" and decider.timeout_s == pytest.approx(0.12)
+    assert not decider.enabled("owner_verdict")
+
+
+@pytest.mark.parametrize("section,message", [
+    ({"url": "ftp://host"}, "decisions.url"),
+    ({"timeout_ms": 0}, "decisions.timeout_ms"),
+    ({"timeout_ms": 60000}, "decisions.timeout_ms"),
+    ({"points": {"anything": {"enabled": True}}}, "decisions.points.anything"),
+    ({"points": {"opt_out": {"temperature": 0}}}, "decisions.points.opt_out.temperature"),
+    ({"points": {"opt_out": {"abstain": [0.9, 0.1]}}}, "decisions.points.opt_out.abstain"),
+    ({"points": {"opt_out": {"abstain": [0.1]}}}, "decisions.points.opt_out.abstain"),
+    ({"points": {"opt_out": {"threshold": 0.5}}}, "decisions.points.opt_out"),
+    ({"points": {"opt_out": {"enabled": "maybe"}}}, "decisions.points.opt_out.enabled"),
+])
+def test_a_malformed_decision_section_is_refused_by_name(home, section, message):
+    (home / config.CONFIG_FILE).write_text(yaml.safe_dump({"decisions": section}))
+    with pytest.raises(ConfigError, match=message.replace(".", r"\.")):
+        load_config(home, environ={})
+
+
+def test_the_decision_environment_has_one_place(home):
+    for name in ("PROTAGINE_DECISIONS_URL", "PROTAGINE_DECISIONS_TIMEOUT_MS", "PROTAGINE_DECISIONS_POINTS"):
+        (home / config.CONFIG_FILE).write_text(yaml.safe_dump({"environment": {name: "x"}}))
+        with pytest.raises(ConfigError, match="decisions"):
+            load_config(home, environ={})

@@ -18,7 +18,6 @@ class ChannelManifest(BaseModel):
     supports_rich_text: bool = False
     max_message_length: int | None = None
 
-    phone_identity_unification: bool = False
     session_isolation: bool = False
     provides_channel_id: bool = False
 

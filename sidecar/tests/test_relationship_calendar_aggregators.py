@@ -1,15 +1,12 @@
-"""Tests for real RelationshipAggregator and CalendarAggregator implementations."""
+"""Tests for the real CalendarAggregator implementation (the Neo4j relationship aggregator went with the graph)."""
 
 from __future__ import annotations
 
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
-
-import pytest
 
 from protagine.briefings.aggregators import (
     CalendarAggregator,
-    RelationshipAggregator,
     StubCalendarAggregator,
     StubRelationshipAggregator,
     _resolve_tz,
@@ -51,147 +48,6 @@ def _fake_event_data(
 
 # ---------------------------------------------------------------------------
 # RelationshipAggregator
-# ---------------------------------------------------------------------------
-
-
-class TestRelationshipAggregator:
-    def _make_agg(self, score_rows=None, neglect_rows=None):
-        """Return a RelationshipAggregator with patched query helpers."""
-        graph = MagicMock()
-        scorer = MagicMock()
-        agg = RelationshipAggregator(scorer, graph)
-        agg._query_score_changes = AsyncMock(return_value=score_rows or [])
-        agg._query_neglected = AsyncMock(return_value=neglect_rows or [])
-        return agg
-
-    # --- get_notable_changes ---
-
-    def test_get_notable_changes_empty(self):
-        agg = self._make_agg(score_rows=[])
-        since = datetime(2026, 3, 1, tzinfo=timezone.utc)
-        result = agg.get_notable_changes(since=since)
-        assert result == []
-
-    def test_get_notable_changes_positive_delta_mapped_as_tier_change(self):
-        rows = [
-            {
-                "name": "Alice",
-                "current_tier": "trusted",
-                "delta": 20.0,
-                "reason": "periodic_refresh",
-                "new_tier": "inner_circle",
-            }
-        ]
-        agg = self._make_agg(score_rows=rows)
-        since = datetime(2026, 3, 1, tzinfo=timezone.utc)
-        result = agg.get_notable_changes(since=since, min_delta=0.15)
-
-        assert len(result) == 1
-        rc = result[0]
-        assert rc.contact_name == "Alice"
-        assert rc.trust_tier == "inner_circle"
-        assert rc.change_type == "tier_change"
-        assert "20.0" in rc.description
-
-    def test_get_notable_changes_negative_delta_mapped_as_dormant(self):
-        rows = [
-            {
-                "name": "Bob",
-                "current_tier": "trusted",
-                "delta": -18.0,
-                "reason": "periodic_refresh",
-                "new_tier": "regular",
-            }
-        ]
-        agg = self._make_agg(score_rows=rows)
-        since = datetime(2026, 3, 1, tzinfo=timezone.utc)
-        result = agg.get_notable_changes(since=since)
-
-        assert len(result) == 1
-        rc = result[0]
-        assert rc.contact_name == "Bob"
-        assert rc.change_type == "dormant"
-        assert "18.0" in rc.description
-
-    def test_get_notable_changes_new_contact(self):
-        rows = [
-            {
-                "name": "Carol",
-                "current_tier": "peripheral",
-                "delta": 50.0,
-                "reason": "new_contact",
-                "new_tier": "regular",
-            }
-        ]
-        agg = self._make_agg(score_rows=rows)
-        since = datetime(2026, 3, 1, tzinfo=timezone.utc)
-        result = agg.get_notable_changes(since=since)
-
-        assert result[0].change_type == "new"
-        assert result[0].trust_tier == "regular"
-
-    def test_get_notable_changes_falls_back_to_current_tier_when_new_tier_missing(self):
-        rows = [
-            {
-                "name": "Dave",
-                "current_tier": "trusted",
-                "delta": 16.0,
-                "reason": "periodic_refresh",
-                "new_tier": None,
-            }
-        ]
-        agg = self._make_agg(score_rows=rows)
-        result = agg.get_notable_changes(since=datetime(2026, 3, 1, tzinfo=timezone.utc))
-        assert result[0].trust_tier == "trusted"
-
-    def test_get_notable_changes_returns_empty_list_on_exception(self):
-        graph = MagicMock()
-        scorer = MagicMock()
-        agg = RelationshipAggregator(scorer, graph)
-        agg._query_score_changes = AsyncMock(side_effect=RuntimeError("db error"))
-        result = agg.get_notable_changes(since=datetime(2026, 3, 1, tzinfo=timezone.utc))
-        assert result == []
-
-    # --- get_neglected_contacts ---
-
-    def test_get_neglected_contacts_empty(self):
-        agg = self._make_agg(neglect_rows=[])
-        result = agg.get_neglected_contacts()
-        assert result == []
-
-    def test_get_neglected_contacts_returns_names(self):
-        rows = [{"name": "Eve"}, {"name": "Frank"}]
-        agg = self._make_agg(neglect_rows=rows)
-        result = agg.get_neglected_contacts(days_since_contact=14, limit=5)
-        assert result == ["Eve", "Frank"]
-
-    def test_get_neglected_contacts_skips_none_names(self):
-        rows = [{"name": "Eve"}, {"name": None}, {"name": "Grace"}]
-        agg = self._make_agg(neglect_rows=rows)
-        result = agg.get_neglected_contacts()
-        assert result == ["Eve", "Grace"]
-
-    def test_get_neglected_contacts_returns_empty_on_exception(self):
-        graph = MagicMock()
-        scorer = MagicMock()
-        agg = RelationshipAggregator(scorer, graph)
-        agg._query_neglected = AsyncMock(side_effect=RuntimeError("neo4j down"))
-        result = agg.get_neglected_contacts()
-        assert result == []
-
-    # --- protocol compliance ---
-
-    def test_satisfies_protocol(self):
-        from protagine.briefings.aggregators import RelationshipAggregatorProtocol
-
-        graph = MagicMock()
-        scorer = MagicMock()
-        agg = RelationshipAggregator(scorer, graph)
-        assert isinstance(agg, RelationshipAggregatorProtocol)
-
-
-# ---------------------------------------------------------------------------
-# CalendarAggregator
 # ---------------------------------------------------------------------------
 
 

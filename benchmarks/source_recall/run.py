@@ -1,20 +1,19 @@
 """Finite neutral comparison, using actual current Protagine retrieval paths.
 
-Canonical SQLite/Lance and model calls are real. Neo4j reads are replaced with
-an explicit scoped fixture adapter, never an expected-answer oracle.
+Canonical SQLite/Lance and model calls are real, and the arms run the production
+path (``collect_sources`` then ``select_memory``) over a disposable state directory.
 """
 import argparse
 import asyncio
 import base64
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
-import re
 import statistics
 import sys
 import time
@@ -25,7 +24,7 @@ sys.path.insert(0, str(ROOT.parents[1] / 'sidecar'))
 from assessment import assess
 from protagine.router.router import LLMRouter
 from protagine.turns import TurnIdempotencyLedger
-from protagine.turns.source_vectors import SourceVectors, merge_source_hits
+from protagine.turns.source_vectors import SourceVectors
 from protagine.turns.media import SourceMedia
 from protagine.vector.config import EmbeddingConfig
 from protagine.vector.embedder import EmbeddingPipeline
@@ -33,21 +32,10 @@ from protagine.vector.openai_provider import OpenAIAPIEmbeddingProvider
 from protagine.vector.reranker import OpenAIAPIRerankerProvider
 from protagine.vector.indexes import IndexCatalog
 from protagine.vector.store import VectorStore
-from protagine.vector.collections import Collection
-from protagine.vector.query import VectorItem
-from protagine.intelligence.graph.client import ProtagineGraph
+from protagine.memory.search import collect_sources, select_memory
 from protagine.memory.selection import RecallSelector
 from protagine.memory.recall import calibration_fingerprint, provider_calibration_metadata
 from protagine.beliefs.source_projection import SourceClaimProjection
-from protagine.beliefs.source_time import interpret_time_query
-from protagine.turns.source_annotations import expand, current_candidates
-
-class Result:
-    def __init__(self, rows): self.rows = iter(rows)
-    def __aiter__(self): return self
-    async def __anext__(self):
-        try: return next(self.rows)
-        except StopIteration: raise StopAsyncIteration
 
 
 def image_message():
@@ -86,7 +74,11 @@ def save(path, data):
 
 
 class SelectionCapture:
-    """Record this sequential benchmark's selector observations, not credentials."""
+    """Record this sequential benchmark's selector observations, not credentials.
+
+    It is the ``selector`` the production ``select_memory`` calls: every request the
+    reranker sees, its returned rows and the selected typed rows are kept for replay.
+    """
 
     ENVIRONMENT_KEYS = ('PROTAGINE_RECALL_RERANK', 'PROTAGINE_RECALL_RERANK_MIN_SCORE',
                         'PROTAGINE_RECALL_RERANK_TIMEOUT_MS', 'PROTAGINE_RECALL_RERANK_CALIBRATION')
@@ -94,9 +86,11 @@ class SelectionCapture:
                         'weights_revision', 'embedding_identity', 'candidate_format',
                         'embedding_model', 'embedding_dimensions', 'index_generation')
 
-    def __init__(self, rerank_fn, calibration, calls):
+    def __init__(self, rerank_fn, calibration, calls, *, ranking_format='grounded-quotation-bundles-v1'):
         self.rerank_fn, self.calibration, self.calls = rerank_fn, calibration, calls
+        self.ranking_format = ranking_format
         self.observed = []
+        self.last_replay = None
         self.selector = RecallSelector(self.rerank, calibration_metadata=lambda: calibration)
 
     async def rerank(self, query, documents, top_k):
@@ -120,9 +114,13 @@ class SelectionCapture:
             elapsed = (time.perf_counter() - start) * 1000
             self.calls.append({'kind': 'rerank', 'ms': elapsed, 'documents': len(documents)})
 
-    async def select(self, query, beliefs, quotations, *, limit=5, max_chars=6000):
+    async def select_context(self, query, beliefs, quotations, *, limit=5, max_chars=6000,
+                             current_work_available=False):
+        """The selector contract ``select_memory`` uses; the replay is kept on ``last_replay``."""
+        if self.ranking_format == 'verbose-claim-json':
+            beliefs = [dict(row, ranking_text=row['content']) for row in beliefs]
         self.observed = []
-        parameters = {'limit': limit, 'max_chars': max_chars, 'current_work_available': False}
+        parameters = {'limit': limit, 'max_chars': max_chars, 'current_work_available': current_work_available}
         replay = {'version': 1, 'query': query, 'beliefs': deepcopy(beliefs),
                   'quotations': deepcopy(quotations), 'parameters': parameters,
                   'environment': {key: os.environ.get(key) for key in self.ENVIRONMENT_KEYS},
@@ -131,35 +129,12 @@ class SelectionCapture:
                   'calibration_fingerprint': calibration_fingerprint(self.calibration)}
         selected, context = await self.selector.select_context(query, beliefs, quotations, **parameters)
         replay.update(rerank_calls=deepcopy(self.observed), selected=deepcopy(selected))
-        return selected, context, replay
+        self.last_replay = replay
+        return selected, context
 
-
-class GraphReadAdapter:
-    def __init__(self, ledger, records):
-        self.ledger, self.records = ledger, records
-    def session(self, database=None): return self
-    async def __aenter__(self): return self
-    async def __aexit__(self, *args): pass
-    async def run(self, query, **params):
-        contact = params.get('person_id') or 'owner'
-        with self.ledger._connect() as conn:
-            sources = {row['turn_id']:dict(row) for row in conn.execute('SELECT * FROM turn_sources WHERE contact_id=?', (contact,))}
-        if 'ids' in params:
-            ids = params['ids']
-        elif 'index_name' in params:
-            # Actual SQLite FTS input, same literal terms, not graph truth logic.
-            words = ' '.join(re.findall(r'"([^"\\]+)"', params['search_text']))
-            ids = [row['turn_id'] for row in self.ledger.search_sources(words, contact_id=contact, session_id='later', limit=10)]
-        else:
-            raise AssertionError('Unexpected graph read shape')
-        rows = []
-        for mid in ids:
-            if mid not in sources or mid not in self.records or not self.records[mid].get('indexed', True): continue
-            record = self.records[mid]
-            rows.append({'memory': {'id':mid, 'content':record['content'], 'source_uri':'turn:'+mid,
-                'person_id':contact, 'strength':1., 'effective_confidence':.95, 'epistemic_state':'inferred',
-                'created_at':record['at'], 'entities':[]}, 'lexical_score':1/(len(rows)+1)})
-        return Result(rows)
+    async def select(self, query, beliefs, quotations, *, limit=5, max_chars=6000):
+        selected, context = await self.select_context(query, beliefs, quotations, limit=limit, max_chars=max_chars)
+        return selected, context, self.last_replay
 
 
 def prepare_sources(ledger, fixture):
@@ -176,6 +151,11 @@ def prepare_sources(ledger, fixture):
         ledger.append_source_annotation(contact_id='owner', session_id='neutral-corpus',
             annotation_id=note['id'], source_id=note['target'], source_version=ref['source_version'],
             excerpt=note['excerpt'], correction=note['correction'], author_principal=note['author_principal'])
+
+
+def lexical_only(collected):
+    """The same collection with semantic recall off: what production selects without an embedder."""
+    return replace(collected, hits=list(collected.lexical_hits), media=[], semantic='unavailable')
 
 
 async def run(config, args):
@@ -206,6 +186,7 @@ async def run(config, args):
         save(manifest_path, resumed)
     os.environ.update(PROTAGINE_STATE_DIR=str(tmp), PROTAGINE_RECALL_HYBRID='on', PROTAGINE_RECALL_RERANK='on',
         PROTAGINE_RECALL_RERANK_TIMEOUT_MS='1200', PROTAGINE_RECALL_RERANK_MIN_SCORE=str(args.threshold),
+        PROTAGINE_RECALL_CONTEXT_MAX_CHARS='6000',
         PROTAGINE_EMBED_QUERY_INSTRUCTION=identity['query_instruction'])
     router = LLMRouter() if not args.source_only else None
     host = {'provider': 'local', 'models': {}, 'modelPool': {'bench': {
@@ -242,7 +223,7 @@ async def run(config, args):
     async def rerank(query, documents, top_k):
         result=await reranker.rerank(query,documents,top_k=top_k)
         return [asdict(row) for row in result]
-    selector=SelectionCapture(rerank,calibration,calls)
+    selector=SelectionCapture(rerank,calibration,calls,ranking_format=args.ranking_format)
     ledger=TurnIdempotencyLedger(tmp/'turn-idempotency.db')
     claims=SourceClaimProjection(ledger)
     store=VectorStore(str(tmp/'lancedb'),identity=pipeline.index_identity,catalog=IndexCatalog(ledger))
@@ -256,7 +237,6 @@ async def run(config, args):
         return response
     if router is not None:
         router.complete=captured
-    records={row['id']:row for row in fixture['records']}
     # Corpus event times are input evidence. No expected labels, supersession,
     # confidence, or contradiction flags enter extraction or retrieval.
     if args.source_only and not resumed['prepared']:
@@ -272,44 +252,29 @@ async def run(config, args):
     # Unlinked derived-summary fixture rows remain independent, intentionally.
     deleted=[row['id'] for row in fixture['records'] if row.get('deleted')]
     if deleted: ledger.erase_sources(contact_id='owner',turn_ids=deleted)
+    # The source projections are the one semantic index; every arm reads them.
     while await projections.process_one(): pass
-    # Disposable benchmark generation only, remove prior attempt's fixture
-    # graph rows before recreating this comparison arm. No source mutation.
-    if not args.source_only:
-        graph_table=await store._table(Collection.MEMORIES,write=True)
-        await graph_table.delete('true')
-    for start in range(0,0 if args.source_only else len(fixture['records']),16):
-        batch=[row for row in fixture['records'][start:start+16] if row.get('indexed',True)]
-        vectors=await pipeline.embed_batch([row['content'] for row in batch])
-        await store.add_batch(Collection.MEMORIES,[VectorItem(id=row['id'],text=row['content'],vector=vec,
-            metadata={'source_uri':'turn:'+row['id'],'person_id':'owner'}) for row,vec in zip(batch,vectors)])
-    graph=ProtagineGraph.__new__(ProtagineGraph); graph.database='fixture'; graph.driver=GraphReadAdapter(ledger,records)
-    graph._vector_store=store; graph.set_embed_fn(pipeline.embed)
-    arms = ('canonical_hybrid',) if args.source_only else ('lexical_only','existing_hybrid','source_semantic')
+    arms = ('canonical_hybrid',) if args.source_only else ('lexical_only','canonical_hybrid')
     results=[]
     queries = [q for q in fixture['queries'] if args.split is None or q['split'] == args.split]
     for index,q in enumerate(queries):
-        contact=q['principal']; time_query=interpret_time_query(q['query'],now=datetime.fromisoformat(q['as_of']+'T18:00:00+00:00'))
-        lexical=ledger.search_sources(q['query'],contact_id=contact,session_id='later',limit=10)
+        contact=q['principal']; as_of=datetime.fromisoformat(q['as_of']+'T18:00:00+00:00')
         # One shared query embedding; report its measured cost separately.
         start=time.perf_counter(); await pipeline.embed_query(q['query']); query_ms=(time.perf_counter()-start)*1000
-        start=time.perf_counter(); graph_rows=[] if args.source_only else await graph.recall_candidates(query=q['query'],person_id=contact,limit=25); graph_ms=(time.perf_counter()-start)*1000
-        start=time.perf_counter(); semantic,media=await projections.search(q['query'],contact_id=contact,session_id='later',limit=15); source_ms=(time.perf_counter()-start)*1000
+        start=time.perf_counter()
+        collected=await collect_sources(ledger,query=q['query'],contact_id=contact,session_id='later',
+                                        vector_store=store,embedding_pipeline=pipeline)
+        collection_ms=(time.perf_counter()-start)*1000
         for arm in arms:
             start=time.perf_counter()
-            hits=merge_source_hits(lexical,semantic) if arm in ('source_semantic','canonical_hybrid') else lexical
-            beliefs,quotes=claims.prepare_context(graph_rows if arm!='lexical_only' else [],hits,
-                contact_id=contact,session_id='later',time_query=time_query)
-            if args.source_only:
-                quotes = expand(ledger, quotes, contact_id=contact, session_id='later')
-                quotes = current_candidates(ledger, quotes, contact_id=contact, session_id='later')
-            if args.ranking_format == 'verbose-claim-json':
-                beliefs = [dict(row, ranking_text=row['content']) for row in beliefs]
-            selected,context,replay=await selector.select(q['query'],beliefs,quotes,limit=5,max_chars=6000)
+            candidates=lexical_only(collected) if arm=='lexical_only' else collected
+            packet=await select_memory(candidates,query=q['query'],selector=selector,timezone_name='UTC',
+                                       limit=5,now=as_of)
             results.append({'query_id':q['id'],'split':q['split'],'tags':q['tags'],'arm':arm,
-                'assessment':assess(q,selected,fixture['records']),'context':context,'replay':replay,
+                'assessment':assess(q,packet.selected,fixture['records']),'context':packet.content,
+                'replay':selector.last_replay,'semantic':collected.semantic if arm!='lexical_only' else 'unavailable',
                 'selection_ms':(time.perf_counter()-start)*1000,'query_embedding_ms':query_ms,
-                'graph_ms':graph_ms,'source_semantic_ms':source_ms})
+                'collection_ms':collection_ms})
         if (index+1)%12==0: print(f"Actual retrieval {index+1}/{len(fixture['queries'])}",flush=True)
     summaries={}
     for arm in arms:
@@ -362,10 +327,11 @@ async def run(config, args):
         'fixture_sha256':hashlib.sha256(fixture_path.read_bytes()).hexdigest(),'calls':calls,
         'selection_sources': {str(path.relative_to(ROOT.parents[1])): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in (Path(__file__).resolve(),
+                         ROOT.parents[1] / 'sidecar/protagine/memory/search.py',
                          ROOT.parents[1] / 'sidecar/protagine/memory/selection.py',
                          ROOT.parents[1] / 'sidecar/protagine/memory/recall.py')},
         'limits':['Default corpus: 120 frozen neutral sources, 96 queries, 24 holdout. A supplied smaller fixture is a smoke test.',
-            'Actual local extraction/embeddings/reranker and canonical SQLite/Lance. Graph query reads are scoped SQLite fixture adapter, not Neo4j.',
+            'Actual local extraction/embeddings/reranker and canonical SQLite/Lance through the production collect_sources/select_memory path; lexical_only is that path with semantic recall unavailable.',
             'Public/team fixture annotations do not invent shared authority: sources belong to fixture owner; six guest privacy queries expect abstention.',
             'Synthetic query_generation labels cannot substitute for a real embedding swap. Equal-dimension incompatibility is covered by real-Lance controlled tests separately.',
             'Unlinked historical derived-summary fixture records remain independent sources, not retroactively invented lineage.',
@@ -377,7 +343,7 @@ async def run(config, args):
             'Source-only canonical SQLite/Lance retrieval: lexical10 plus semantic15, actual selector candidate20, final5/6000.',
             'Exact fixture tool/user/assistant text is imported; this does not test native observation nomination or ordinary conversation formation.',
             'Owner annotations use the actual source ledger. All corpus records belong to one synthetic owner; authority and concurrent mutations are not exercised.',
-            'No extraction, graph, media, contact-fact, native request assembly or generated final answer is exercised.',
+            'No extraction, media, contact-fact, native request assembly or generated final answer is exercised.',
             'The explicit trial cutoff and matching configuration stamp are not a new calibration qualification; returned weights remain unverified unless independently attested.',
             'Independent labels measure selected evidence usefulness and junk separately from eligibility; complete evidence does not guarantee a truthful answer.',
             'Use a new disposable state for a new embedding identity or fixture. Held-out labels must not select thresholds or source/query representations.']
@@ -389,7 +355,7 @@ async def run(config, args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--fixture', type=Path, default=ROOT / 'fixtures.json')
-    parser.add_argument('--source-only', action='store_true', help='Canonical source retrieval only: exact fixture roles and annotations, no extraction, graph or captions')
+    parser.add_argument('--source-only', action='store_true', help='Canonical source retrieval only: exact fixture roles and annotations, no extraction or captions')
     parser.add_argument('--split', choices=('development', 'holdout'), help='Run only one frozen query partition')
     parser.add_argument('--state-dir', type=Path, required=True, help='New disposable directory, or its marked extraction state to reuse')
     parser.add_argument('--output', type=Path, required=True)

@@ -96,9 +96,7 @@ async def test_context_names_obligation_and_other_session_holder(tmp_path, monke
     obligation = store.create('owner', 'Compare repair options', due_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat())
     CommitmentWork(store).operate(obligation['id'], operation='claim', **holder('voice'))
     monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'owner')
-    monkeypatch.setattr(host, '_p8_runtime', None)
     monkeypatch.setattr(host, '_commitment_store', store)
-    monkeypatch.setattr(host, '_require_scoped_context_runtime_for_guest', lambda *a: None)
     for person in ('owner', 'guest'):
         authority = RequestAuthority(principal_id='host', credential_id='key', scopes=frozenset({'context:read'}), viewer_person_id=person, person_ids=frozenset({person}), audiences=frozenset({'viewer'}), authenticated=True)
         request = SimpleNamespace(state=SimpleNamespace(protagine_authority=authority))

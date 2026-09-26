@@ -2,7 +2,6 @@
 import asyncio
 from contextlib import ExitStack, contextmanager
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,7 +21,6 @@ def prepare(request, state, arguments, config):
     owner = inputs['people']['owner']
     viewer = inputs['people'][inputs['viewer']]
     inputs['contact_id'] = owner['id']
-    os.environ['PROTAGINE_SELF_JUDGMENTS_ENABLED'] = '1'
 
     @contextmanager
     def setup_host(app, state, inputs, config):
@@ -52,8 +50,8 @@ def prepare(request, state, arguments, config):
 
     with ExitStack() as resources:
         observe_memory = resources.enter_context(memory_prepare(request, state, arguments, config, setup_host=setup_host))
-        arguments.update(enabled_toolsets=['protagine'] if inputs['mechanism'] == 'judgment' or inputs.get('control') else [],
-                         max_iterations=8 if inputs['mechanism'] == 'judgment' or inputs.get('control') else 1)
+        arguments.update(enabled_toolsets=['protagine'] if inputs.get('control') else [],
+                         max_iterations=8 if inputs.get('control') else 1)
         if inputs['viewer'] != 'owner':
             arguments.update(platform='sms', user_id=viewer['phone'], chat_id='perspective-fixture', chat_type='dm')
             tokens = set_session_vars(platform='sms', user_id=viewer['phone'], chat_id='perspective-fixture')

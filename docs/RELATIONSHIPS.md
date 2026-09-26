@@ -1,40 +1,43 @@
-# Relationship Intelligence: one person, every channel
+# People: one person, every channel
 
-Status: DESIGN v1.0 (2026-07-06) — implementation in this release.
+Status: M5 "People" (architecture 4.7, 7.4). Implementation in this release.
 
-Protagine's promise is a persistent social memory for an agent: who it talks
-to, what those people are like, what standing each relationship has, and how
-best to approach them. This document is the durable spec for the identity
-and relationship layer that delivers that promise, written against a live
-audit of a reference deployment where the machinery existed but attribution
-failed (95%+ of non-owner traffic landed on a `default` pseudo-contact and
-third parties accumulated zero history).
+Protagine keeps a persistent social memory for an agent: who it talks to,
+what standing each relationship has, whether it may reach out to them and
+how often. This document is the durable spec for the identity and contact
+layer. It was first written against an audit of a deployment where the
+machinery existed but attribution failed (95%+ of non-owner traffic landed on
+a `default` pseudo-contact and third parties accumulated zero history).
 
 ## Design principles
 
 1. **Attribution before analysis.** Every downstream capability (affect,
-   facts, psyche profiles, scoring, cadence, outreach) is only as good as
-   knowing WHO each utterance came from. Per-message sender resolution is
-   the foundation; everything else already exists and starves without it.
+   facts, cadence, outreach, the digest) is only as good as knowing WHO each
+   utterance came from. Per-message sender resolution is the foundation.
 2. **A person is one contact with many handles.** The unit of identity is
-   the contact; channels contribute handles (`whatsapp`, `sms`, `rcs`,
-   `email`, `voice`, `face`, ...). Matching is deterministic where safe
-   (exact handle, cross-gateway phone-key, normalized email), and a
-   PROPOSAL where fuzzy (same display name in a shared group scope). Silent
-   fuzzy merges are forbidden: a wrong merge poisons two histories at once.
-3. **Unknown people become shadow contacts, never nothing.** A sender that
-   cannot be matched gets a shadow contact (tier `unknown`,
-   `interaction_allowed=false`, provenance recorded) so history accrues
-   from first contact. Promotion to a real relationship is the existing
-   trust-tier / scope machinery's job.
-4. **Machines are not people.** Turns of system origin (cron prompts,
-   skill invocations, self-echo) must never write affect, facts,
-   engagement observations, or interactions. They attribute to the
-   reserved `system` sentinel and are excluded from every relationship
-   surface. (Same lesson as the directive self-poisoning incident.)
-5. **Stores accept only real contacts.** The ToM APIs validate contact ids
+   the contact; channels contribute handles (`whatsapp`, `sms`, `email`,
+   `voice`, any custom gateway, ...). Matching is deterministic where safe
+   (an exact handle, an E.164 number on any gateway, a normalized email),
+   and a PROPOSAL where fuzzy (the same display name in a shared group
+   scope), which the owner confirms. Silent fuzzy merges are forbidden: a
+   wrong merge poisons two histories at once.
+3. **Meet people by default.** A sender that cannot be matched gets a shadow
+   contact (tier `unknown`, `may_contact='ask'`, provenance recorded) so
+   history accrues from first contact. There is no switch: shadows are the
+   design. A shadow is remembered, but the social drive ignores it until the
+   owner sets a cadence or a tier, so a group chat never becomes a stream of
+   check-in asks.
+4. **A tier is standing, never permission.** Whether the agent may reach out
+   is `may_contact` (never, ask, auto), raised only by the owner and lowered
+   by a contact's opt-out. Familiarity, affect and relationship estimates
+   never change it.
+5. **Machines are not people.** Turns of system origin (cron prompts,
+   skill invocations, self-echo) never write affect, facts or interactions.
+   They attribute to the reserved `system` sentinel and are excluded from
+   every relationship surface.
+6. **Stores accept only real contacts.** The ToM APIs validate contact ids
    against the contact store; test strings and free-text names are refused
-   rather than silently minting psyche state.
+   rather than silently minting state.
 
 ## Architecture
 
@@ -65,26 +68,45 @@ authoritative server-side attribution regardless of client caching bugs.
 
 ### 2. ParticipantResolver (sidecar, `identity/participants.py`)
 
-`resolve(sender, *, allow_shadow=True) -> Resolution(contact_id, method, created)`
+`resolve(platform, user_id, display_name, group_id, channel_id) -> Resolution(contact_id, method, created)`
 
 Resolution ladder, first hit wins:
-1. **Verified exact handle**: `contact_handles(gateway=platform, address=user_id)`
-   with canonical email/SMS formatting. An explicit per-channel correction
-   takes precedence over cross-gateway phone inference.
-2. **Cross-gateway phone**: `user_id` parses as a phone → `phone_key`
-   match against ANY gateway's handles (the cross-gateway case: an `sms` handle
-   matching an `rcs` sender).
-3. **Normalized email**: lowercase match for email-shaped ids.
-4. **Scoped display-name (PROPOSAL only)**: `display_name` uniquely
-   matches one member of the same group scope. File a candidate association;
-   keep the sender's separate shadow identity until an explicit correction.
-5. **Shadow contact**: create (tier `unknown`, `interaction_allowed=false`,
-   `met_via=<channel_id>`, `import_source=auto:sender`) with the handle
-   attached, when `PROTAGINE_IDENTITY_SHADOW_CONTACTS` (default true).
+1. **Exact transport handle**: `contact_handles(gateway=platform, address=user_id)`
+   in its stored form, a verified one first, then any other that is not a
+   name guess. An explicit per-channel correction, or a second contact kept
+   on the same number as a separate alias, takes precedence over
+   cross-gateway phone inference.
+2. **Canonical identity (C1)**: `canonical_handle(gateway, address)` in
+   `contacts/store.py`. An address written as a phone number (`is_e164`:
+   `^\+[1-9]\d{6,14}$` after stripping spaces, dashes, dots and parentheses,
+   or a phone JID `<number>@s.whatsapp.net` / `<number>@c.us`, whose digits
+   always carry the country code) is the phone identity on **any** gateway
+   and matches on `phone_key` whatever gateway stored it. A bare digit string
+   is a user id as often as a number: it matches exactly on its own gateway,
+   where a legacy bare 10-digit row is read as NANP. Nothing names a channel:
+   a phone channel nobody listed resolves like `sms`. An email matches on its
+   lower-cased form; anything else matches only its exact gateway and
+   address. Two contacts sharing one number is ambiguous and resolves to
+   none, never a guess.
+3. **Scoped display-name (PROPOSAL only)**: `display_name` uniquely matches
+   one member of the same group scope. A candidate association is filed and
+   the sender keeps a separate shadow identity. The candidate becomes an
+   owner ask (`link_proposal`); `store.confirm_link` attaches the handle
+   (folding the shadow into the person through `merge`) and
+   `store.reject_link` closes it. A handle an established contact holds is
+   never folded: `confirm_link` refuses (`identity_handle_held`, audited
+   `link_refused`) and closes the proposal; the owner merges the two
+   explicitly if they are one person.
+4. **Shadow contact**: tier `unknown`, `may_contact='ask'`,
+   `import_source=auto:sender`, the handle attached (`Contact.is_shadow` until
+   the owner files the person with a tier). Stored handles keep the transport
+   gateway they arrived on (it is needed to send). A shadow's handle is the
+   sender's own choice, so an owner's reference that equals it is a guess the
+   owner confirms, never an exact identification (`resolve_reference`).
 
 The resolver also OWNS the machine gate: senderless turns on machine
-channels (`cron:`, `api:` prefixes, configurable) or system-origin text
-resolve to the `system` sentinel.
+channels (`cron:`, `api:` prefixes, `PROTAGINE_IDENTITY_MACHINE_CHANNELS`) or
+system-origin text resolve to the `system` sentinel.
 
 ### Current source attribution in active requests
 
@@ -109,24 +131,31 @@ to the same person. The native social-tool fixture qualifies correction and
 reversal during an active request, channel separation, and inherited-child tool
 revocation without an external model or a message send.
 
-### 3. turns/sync becomes the attribution chokepoint
+### 3. turns/sync is the attribution chokepoint
 
 On every synced turn:
-- If `sender` present → resolver decides the contact (overriding the
+- If `sender` is present, the resolver decides the contact (overriding the
   client-supplied `context.contact_id`, which remains the fallback).
-- The resolved contact gets `record_interaction(contact_id, channel_id)`
-  (non-owner and owner alike; `system` never).
-- The comms ledger row carries the REAL `channel_id` (group vs DM vs voice
-  provenance) instead of a collapsed `direct`.
-- Affect/facts/engagement extraction runs against the resolved contact;
-  `system` turns skip ToM entirely.
+- The contact's own words are checked for an opt-out (section 7).
+- The resolved contact gets `record_interaction` (non-owner and owner alike;
+  `system` never). It counts **conversations** (C3): a turn more than 30
+  minutes after the contact's previous one starts a new conversation, a
+  turn inside that window belongs to the current one, and
+  `last_interaction_at` only moves forward.
+- The comms ledger row carries the real `channel_id` (group, DM or voice).
+- Affect and facts extraction runs against the resolved contact; `system`
+  turns skip it entirely.
+- A turn sent without a session (`context.session_id` empty, such as a gateway
+  recording a dispatched task's result) becomes its own session: `derived:` and a
+  digest of the caller's principal and the envelope. A retry lands on the same
+  session and source, so replays and conflicts behave as with any session. A
+  checkpoint or an input-linked answer still needs the caller's session.
 
 ### 4. ToM boundary validation
 
-`POST /affect/events`, `POST /mind/facts`, engagement observation writes:
-contact must exist in the store (or be the owner). Unknown ids are
-rejected with a clear error. (`system` is storable in comms for ops
-visibility but refused by ToM.)
+`POST /affect/events` and `POST /mind/facts`: the contact must exist in the
+store (or be the owner). Unknown ids are rejected with a clear error.
+(`system` is storable in comms for ops visibility but refused by ToM.)
 
 ### 5. Voice and in-person
 
@@ -138,127 +167,165 @@ and call interactions accrue to the same person as their texts. Same for
 `face` if a deployment enrolls faces. Protagine stays generic: it defines the
 handle kinds; deployments supply the recognizers.
 
-### 6. Owner curation tools
+### 6. The owner's interfaces
 
-- `link_contact(who, gateway, address)` — attach a handle ("that WhatsApp
-  is Sam's"). Tool + `POST /contacts/{id}/handles`. SHIPPED.
-- `merge_contacts(keep, merge)` — fold one contact into another (reassign
-  handles, sum interaction history, soft-delete the loser; audited +
-  reversible). Tool + `POST /contacts/merge` + store `merge_contacts`.
-  SHIPPED.
-- `pending_contact_proposals` — the rung-4 handle proposals awaiting owner
-  review. Tool + `GET /contacts/proposals` + store `list_handle_proposals`.
-  SHIPPED.
+One interface, three doors: the router `/v1/mind/people`
+(`api/routers/people.py`), the tool `protagine_people` and the CLI
+`protagine people`. `<who>` is a contact id, a phone number, an email,
+`gateway:address` or a unique name (`store.resolve_reference`: a handle
+address only one contact holds comes before any name, and an ambiguous name
+resolves to nobody: the 404 lists the candidates, who they are and nothing
+more; with `exact=True` names are refused, which is how an owner's grant to
+message a third party is kept to someone the owner identified). The owner
+reads as `auto` by identity in `who` and `inspect`, whatever an older row's
+column says.
 
-### 7. RelationshipProfiler (`relationships/profiler.py`)
+| Router | Tool | CLI | Who |
+|---|---|---|---|
+| `GET /?q=` | `who` | `people who [q]` | everyone (a guest sees id, name and tier of the one person the query names exactly; listing is the owner's) |
+| `GET /{who}` | `inspect` | `people inspect <who>` | everyone (record, digest, handles, proposals and permission history for the owner) |
+| `POST /link` | `propose_link` | `people link <who> <gateway> <address>` | everyone: a candidate the owner confirms |
+| `GET /proposals` | | `people proposals` | the open candidates |
+| `POST /{who}/permission` | `set_permission` | `people permit <who> never\|ask\|auto` | owner |
+| `POST /{who}/cadence` | `set_cadence` | `people cadence <who> <minutes\|off>` | owner |
+| `POST /merge` | `merge` | `people merge <keep> <drop>` | owner |
 
-Per contact with enough signal, a compact **RelationshipBrief**:
-- **Standing**: trust tier, interaction count/recency/frequency, channels
-  used (from comms provenance), cadence state, shared scopes.
-- **Psyche**: the engagement extractor's OCEAN dims + qualitative profile
-  (motivators, style) — the existing extractor, now fed real per-person
-  observations.
-- **Affect**: current valence/arousal + trend.
-- **Rapport**: top shared-fact topics.
-- **Approach guidance** (`PROTAGINE_APPROACH_GUIDANCE`, default true): derived
-  suggestions — preferred channel (most-used), best time (interaction-hour
-  histogram in the contact's timezone), style notes from the psyche dims
-  ("direct and brief", "responds to structured detail"), plus standing
-  cautions (recent negative affect trend, overdue cadence).
+A mutation needs the caller's `contact_id` to be the owner, or `by: cli`
+from the local CLI (the API key is the local owner); anything else is 403
+`not_owner`. The tool refuses the three mutations outside the owner's own
+interactive session before asking the sidecar.
 
-Refresh: `_phase_relationship_profiling` (autonomy loop) re-profiles
-contacts with ≥ `PROTAGINE_RELATIONSHIP_PROFILE_MIN_INTERACTIONS` new
-interactions (default 5) since last profile; briefs cached in
-`protagine-relationships.db`.
+**Merge (C2).** `store.merge(keep, drop, *, performed_by, reattribute, sources_of)`:
+- every handle of `drop` moves through `identity_links.correct` (one durable
+  receipt per handle, `merge:<drop>:<handle_id>`)
+- the sources `drop` holds in the ledger ride on receipts of their own
+  (`identity_links.move_sources`, `merge:<drop>:sources:<n>`, at most 100
+  each, every source on exactly one receipt); the host's existing
+  reconciliation of `pending_identity_reconciliations` re-attributes them,
+  immediately for a merge through the router and otherwise on the source
+  worker's next pass
+- the other stores keyed by contact re-attribute through the
+  `reattribute(old_id, new_id)` hooks (the comms log, the affect store and
+  the commitment store, which also readdresses every owner's message granted
+  to `drop`), before the sources move: a row whose contact and source
+  disagree is purged as erased, so moving the rows first keeps them
+- in one write guarded on `drop` still being live (a merge of the same pair
+  that finished meanwhile folds nothing twice): `last_interaction_at` is the
+  later of the two, `first_seen_at` the earlier, `interaction_count` the sum,
+  the keeper's cadence else the dropped one's, `may_contact` `never` if
+  either was (an opt-out survives a merge), the keeper's tier, the keeper's
+  digest (the dropped one's when the keeper has none; never two joined), tags
+  and notes appended, group memberships and identity candidates moved,
+  `drop` soft-deleted
+- both records are audited (`merged_in`, `merged_into`). A merge that stopped
+  half way can simply be run again.
 
-Consumers:
-- Context assembly injects the brief when the conversation's contact is a
-  profiled person (approach section included for non-owner contacts).
-- `protagine_relationship_brief(name)` tool + `GET /relationships/{contact_id}`.
-- `protagine_outreach_check` enriched with the approach section.
-- The relationship initiative generators finally receive real signals.
+### 7. Outbound permission: `may_contact`
 
-### 8. Remediation of poisoned history (deployment runbook)
+`contacts.may_contact` is `never`, `ask` or `auto` (architecture 7.4). The
+owner is `auto` by identity. A new shadow, an introduction, a provisioned
+handle and a migrated contact start at `ask`; a contact whose old
+`interaction_allowed` was false migrated to `never` (migration
+`006_may_contact.sql`, which drops `interaction_allowed`; the store needs
+SQLite >= 3.35 and says so at connect).
 
-- `default`: STOP new person-writes (machine gate); exclude it from every
+- `store.set_may_contact(contact_id, value, *, by, reason)` is the owner's
+  path, in any direction, audited `may_contact_set`.
+- `store.lower_may_contact(contact_id, *, reason, source_ref)` goes to
+  `never` only, audited `opt_out`. Two detectors end there: the phrase match
+  in `contacts/optout.py` on the contact's own words (a bare `STOP`, also
+  behind a gateway's bracketed timestamp or sender header, `unsubscribe`, "don't message/text/contact me", "no more messages from
+  you", "stop the check-ins", "I'd rather you didn't message me", "leave me
+  alone", "remove me" and close variants; never for the owner) and the
+  appraisal call's `opt_out` flag. A phrase counts only as a request of its
+  own, at the start of a sentence or ending its clause: "remove me from the
+  Thursday thread" or "the kids won't leave me alone today" is not one.
+- Nothing else writes the column: `update()` refuses it, a tier promotion
+  leaves it alone, and learning never touches it.
+
+### 8. Cadence and the social drive's candidates
+
+`contacts.cadence_minutes` is the owner's check-in cadence (`set_cadence`,
+audited `cadence_set`; null clears it). `compute_cadence_overdue` honours it
+exactly when set and otherwise estimates the contact's rhythm from their
+conversations (active span / conversations), so a chatty contact no longer
+collapses to the floor. `store.social_candidates()` lists what the social
+drive may consider: not the owner, `may_contact` is not `never` and the owner
+set a cadence or the tier is `regular` or above. Shadow and group-only
+contacts are never listed, so a group of strangers raises no check-in and no
+ask (`test_people_acceptance.py` runs ten through the real sender resolution
+and a real tick).
+
+### 9. Per-contact digest
+
+`contacts.digest` (with `digest_sources`) is a short template record of a
+person: who they are, how they are reachable, when you last talked, what is
+open and the top claims from their own sources. It never carries what the
+owner set for them (permission, cadence, who introduced them): the digest is
+shown as "About this person" when that person is the viewer and composes the
+messages sent to them, so those stay in the owner's `inspect`, read from the
+columns. The mind writes it daily for contacts with a conversation in the last
+day (`store.set_digest`, sources `["template"]`). While a generated digest can
+be written (the memory faculty's, with consolidation on and a router), the
+template fills only an empty digest or its own earlier template. The section
+is cut at the template's 600 characters whoever wrote the column. With the
+people faculty off there is no digest section. It replaces the old
+relationship briefs.
+
+### 10. Remediation of poisoned history (deployment runbook)
+
+- `default`: stop new person-writes (machine gate); exclude it from every
   relationship surface; keep rows for ops history. No deletion (part of it
   is genuine pre-fix owner traffic).
-- Test residue (`validate-*` and other non-cid ids): purge from affect/
-  facts/engagement stores; the ToM boundary validation prevents recurrence.
-
-### 9. Diagnostics
-
-Doctor gains `server-relationships`:
-- WARN when >20% of last-7-day comms attribute to `default`/`system`-like
-  ids (attribution regression signal).
-- WARN when ToM stores contain ids absent from the contact store.
-- INFO summary: contacts with history, profiled contacts, pending merge
-  proposals.
+- Test residue (`validate-*` and other non-cid ids): purge from the affect
+  and facts stores; the ToM boundary validation prevents recurrence.
 
 ## Config
 
 | Env | Default | Meaning |
 |---|---|---|
-| `PROTAGINE_IDENTITY_SHADOW_CONTACTS` | `true` | Unknown senders become shadow contacts |
 | `PROTAGINE_IDENTITY_MACHINE_CHANNELS` | `cron,api,internal` | Channel prefixes whose senderless turns are `system` |
-| `PROTAGINE_RELATIONSHIP_PROFILE_MIN_INTERACTIONS` | `5` | New interactions before a (re)profile |
-| `PROTAGINE_RELATIONSHIP_PROFILE_REFRESH_SECS` | `21600` | Profiling phase cadence |
-| `PROTAGINE_APPROACH_GUIDANCE` | `true` | Include approach guidance in briefs |
 
 ## Test plan
 
-- Resolver: every ladder rung; failed match → shadow (and not when
-  disabled); machine gate (channel prefix + system-origin text); phone
-  cross-gateway; email normalization; display-name rung files a proposal
-  and never silently links.
-- turns/sync: sender overrides stale client contact; record_interaction
-  fires for non-owner; comms rows carry channel; `system` skips ToM.
-- ToM validation: unknown ids rejected; owner and real cids accepted.
-- Profiler: brief fields from canned stores; approach derivations
-  (channel preference, hour histogram, style notes); cache refresh gate.
-- Doctor: attribution-regression WARN paths.
-- Live E2E (reference deployment): synthetic group turn from a known
-  third party attributes + records; unknown sender creates a shadow;
-  voice turn accrues to the same contact as their texts.
+- `test_people_store.py`: migration 006 on a pre-006 store; `may_contact`
+  moves only through the owner path and lowers only to `never`; cadence and
+  digest; conversations (C3); `social_candidates`; `resolve_reference`; the
+  C1 probe (three phone senders on `sms`, `whatsapp` and a custom gateway
+  are three contacts on every later turn, no orphans; one number on two
+  gateways is one contact; a non-E.164 custom id stays gateway-scoped);
+  merge (C2) folds, moves handles, candidates and sources exactly once,
+  calls the hooks and can run again after stopping half way; link proposals.
+- `test_people_router.py`: every route; the owner check (403 for anyone
+  else, accepted for the owner and `by: cli`); a guest sees only who someone
+  is; a merge re-attributes ledger sources, commitments and sourced affect;
+  evals 7.2 test 4. `tests/hermes_adapter/test_people_contract.py` runs
+  evals 7.2 tests 4 and 8 through the real plugin against these routes.
+- `test_people_acceptance.py`: a group of ten strangers and invariant
+  episode 2 on the real stores; `test_people_family_walk.py`: the
+  `mind-people-1` dev split and the delegated chase walked through the
+  plugin arm's code with a scripted model, graded by the family's oracles.
+- `test_optout.py`: the family's phrasings, close variants and near misses.
+- `test_people_cli.py`, `tests/hermes_adapter/test_tools_commands.py` and
+  `test_guard.py`: the CLI and the tool, owner-only mutations refused in a
+  guest, worker and cron session, cron delivery to a `never` contact blocked.
+- Resolver ladder: `test_resolve_messaging_handle.py`,
+  `test_identity_corrections.py`, `test_signals_attribution.py`.
 
-## Source erasure and evolving profiles
+## Source erasure
 
-New conversation-derived affect and engagement observations retain the canonical
-turn ID, session and exact message hashes already used by shared facts. The
-existing source-forget endpoint deletes their linked observations and recomputes
-current state. Reads also reconcile erased evidence, including after restart or
-an interrupted cleanup. A late model result cannot recreate erased support.
-The response reports `affect_cleanup` and `engagement_cleanup` separately;
-`pending` means the physical cleanup must be retried, not that erasure is done.
+Conversation-derived affect observations retain the canonical turn ID,
+session and exact message hashes already used by shared facts. The existing
+source-forget endpoint deletes their linked observations and recomputes
+current state. Reads also reconcile erased evidence, including after restart
+or an interrupted cleanup. A late model result cannot recreate erased
+support. The response reports `affect_cleanup`; `pending` means the physical
+cleanup must be retried, not that erasure is done.
 
-Affect event responses expose `source_lineage` and `evidence_basis`. Events with
-unknown or explicit independent origins stay labeled `unlinked_observation`.
-Engagement keeps the old aggregate profile once as a `legacy_unlinked` baseline;
-new observations are separate records. Removing an observation removes its
-qualifier text and its numeric contribution, then replays only surviving
-observations over that baseline. The profile reports the baseline's unlinked
-observation count. Reopening the store never recaptures a derived profile as a
-new baseline. These changes do not infer historical provenance, erase backups,
-or change independently authored directives or permission grants.
-
-This is source-aware retention, not proof that an inferred trait or note is
-correct. Raw source retention, learned assertions and inferred relationship
-state remain distinct. Existing attribution and authority rules still govern
-which conversations can update these stores.
-
-Cached relationship briefs re-read current affect and engagement projections at
-use time. A changed or forgotten source therefore changes the next ordinary
-turn's approach guidance without waiting for five more interactions. New cache
-rows omit copied mood and psyche guidance; old copies are ignored on read. If a
-current projection is unavailable, its advice is omitted. Contact/channel and
-cadence caching, scoped rapport projection, standing and outreach rules retain
-their existing behavior. This keeps advice consistent with retained evidence;
-it does not establish that an inferred trait is correct.
-
-
-If code is rolled back to a writer that only understands the old engagement
-aggregate, its subsequent aggregate edits have no observation lineage. The
-new reader does not relabel that cache as a new baseline on upgrade; replay of
-retained observations can supersede such rollback-era cache edits. Restore or
-explicitly reconcile those independent edits before treating them as retained
-observations. This limitation is not a source-deletion claim about old data.
+Affect event responses expose `source_lineage` and `evidence_basis`. Events
+with unknown or explicit independent origins stay labeled
+`unlinked_observation`. This is source-aware retention, not proof that an
+inferred state is correct. Raw source retention, learned assertions and
+inferred relationship state remain distinct, and the attribution and
+authority rules above still govern which conversations can update these
+stores.

@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from protagine.initiatives.models import StoredInitiative
 
-from .audit import NOTICE_TYPES, _clip
+from .audit import NOTICE_TYPES, _clip, ask_line, outgoing_text
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def message_payload(row: StoredInitiative, *, owner_id: str | None) -> Dict[str,
         "recipient": recipient,
         "recipient_is_owner": bool(owner_id) and recipient == owner_id,
         "recipient_handles": list(context.get("recipient_handles") or []),
-        "text": context.get("text") or row.description,
+        "text": outgoing_text(row),
         "title": row.description,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
@@ -52,7 +53,8 @@ class Outbox:
     def __init__(self, store: Any, *, owner_id: str | None, clock=None) -> None:
         self.store = store
         self.owner_id = owner_id
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
+        self.on_sent = None   # callable(row) set by the tick: a sent message may settle what it was for
 
     # -- the queue --------------------------------------------------------------
 
@@ -117,9 +119,15 @@ class Outbox:
         result = str(result or "uncertain").lower()
         note = summary or error or None
         if result in {"sent", "ok", "done", "delivered"}:
-            return self.store.transition(intention_id, "sent", action="sent", outcome="done", verified="none",
-                                         hermes_kind="message", hermes_ref=hermes_ref or row.hermes_ref,
-                                         result=note, completed_at=now, at=now)
+            updated = self.store.transition(intention_id, "sent", action="sent", outcome="done", verified="none",
+                                            hermes_kind="message", hermes_ref=hermes_ref or row.hermes_ref,
+                                            result=note, completed_at=now, at=now)
+            if callable(self.on_sent) and updated is not None:
+                try:
+                    self.on_sent(updated)
+                except Exception as error:
+                    logger.warning("sent hook failed for %s (%s)", intention_id, type(error).__name__)
+            return updated
         if result in {"failed", "error"}:
             return self.store.transition(intention_id, "failed", action="send_failed", outcome="failed",
                                          verified="hermes_failure", hermes_kind="message",
@@ -138,10 +146,17 @@ class Outbox:
             count += 1
         return count
 
-    def cancel_unsent(self, reason: str) -> int:
-        """The off switch: unsent entries are cancelled at once."""
-        count = 0
+    def cancel_unsent(self, reason: str, *, owed: Iterable[str] = ()) -> int:
+        """The off switch: unsent entries are cancelled at once, except a word owed to the owner (``owed``: a
+        task's report, a requested answer), which is its obligation's only word: it goes back to waiting
+        (deferred) and nothing sends it until the mind is back on and decides it again."""
+        count, owed = 0, set(owed)
         for row in self.store.intentions(status=["approved"], kind=["message"], limit=500):
+            if row.type in owed and (not row.entity_id or row.entity_id == self.owner_id):
+                self.store.transition(row.id, "proposed", action="deferred", decision="defer",
+                                      decision_reason=f"{reason}: owed to the owner, it waits for the mind",
+                                      at=self.clock())
+                continue
             self.store.transition(row.id, "cancelled", action="cancelled", outcome="cancelled",
                                   cancelled_at=self.clock(), cancelled_reason=reason, at=self.clock())
             count += 1
@@ -181,7 +196,7 @@ class Outbox:
             return None
         lines = ["I need your say on these before I act:"]
         for row in asks:
-            lines.append(f"- [{row.ask_code}] {_clip(row.description, 140)} ({row.decision_reason})")
+            lines.append(f"- {ask_line(row, reason=True)}")
         lines.append("Reply 'yes <code>' or 'no <code>'. Silence lets them expire.")
         stamp = self.clock().strftime("%Y%m%d%H%M")
         return self._owner_message(type="ask_notice", title=f"{len(asks)} open ask(s)", text="\n".join(lines),
@@ -196,7 +211,12 @@ class Outbox:
         return self.store.get_by_dedup_key(f"digest:{local_date}") is not None
 
     def build_digest(self, *, since: datetime, level: str, breaker_states: List[Dict[str, Any]] | None = None,
-                     suggestions: List[StoredInitiative] | None = None, goals: List[str] | None = None) -> str:
+                     suggestions: List[StoredInitiative] | None = None, goals: List[str] | None = None,
+                     opt_outs: List[str] | None = None, found: List[str] | None = None,
+                     offers: List[str] | None = None, paused: str | None = None) -> str:
+        """The day's digest. Owner outreach (architecture 4.10) adds what the mind found that bears on the
+        owner's interests but did not interrupt them for (``found``), the offers of help that went unsent or
+        were put off (``offers``) and, while check-ins are paused, how to resume them (``paused``)."""
         rows = self.store.intentions(since=since, limit=500)
         rows = [row for row in rows if row.type not in NOTICE_TYPES]
         acted = [row for row in rows if row.decision == "act" and row.kind in {"task", "message", "goal"}]
@@ -217,12 +237,23 @@ class Outbox:
             heading = "Waiting for you" if level != "suggest" else "Suggested (reply 'yes <code>' to do one)"
             lines.append(f"{heading} ({len(asks)}):")
             for row in asks[:12]:
-                lines.append(f"- [{row.ask_code}] {_clip(row.description, 120)}")
+                lines.append(f"- {ask_line(row, limit=120)}")
         for row in suggestions or []:
             lines.append(f"- suggestion: {_clip(row.description, 120)}")
+        if found:
+            lines.append(f"Found for you ({len(found)}):")
+            lines += [f"- {_clip(item, 200)}" for item in found[:6]]
+        if offers:
+            lines.append(f"Offers ({len(offers)}):")
+            lines += [f"- {_clip(item, 160)}" for item in offers[:6]]
+        if paused:
+            lines.append(paused)
         if goals:
             lines.append(f"Goals I am pursuing ({len(goals)}):")
             lines += [f"- {_clip(item, 140)}" for item in goals[:4]]
+        if opt_outs:
+            lines.append(f"Opted out ({len(opt_outs)}), no longer messaged:")
+            lines += [f"- {_clip(item, 140)}" for item in opt_outs[:12]]
         if uncertain:
             lines.append(f"Delivery uncertain ({len(uncertain)}), not resent:")
             for row in uncertain[:6]:

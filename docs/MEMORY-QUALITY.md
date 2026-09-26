@@ -62,12 +62,11 @@ when their source supports that interpretation. Short and mutable
 facts can still matter: a key location, an appointment or a reusable repair
 procedure should not disappear merely because it can change.
 
-Canonical ingestion no longer duplicates every exchange as an episodic graph
+Canonical ingestion no longer duplicates every exchange as an episodic
 summary. Automatic ToM fact extraction is also removed: guessing what a contact
 accepted from an assistant is a separate task from learning a supported assertion.
-Affect and engagement updates continue. Explicit contact-knowledge APIs remain;
-their model estimates are marked as automatic projections and cannot be copied
-into the graph by a later backfill. Explicitly supplied facts and legacy
+Contact affect comes from the existing appraisal call. Explicit contact-knowledge APIs remain;
+their model estimates are marked as automatic projections. Explicitly supplied facts and legacy
 summary-only integrations retain their existing APIs.
 
 In default native per-turn context assembly (`/v1/host/context/assemble`),
@@ -75,9 +74,8 @@ retained contact-knowledge estimates no longer appear in a separate unconditiona
 "Known Facts" section. Automatic candidates require a canonical source link
 whose contact, session and complete message-hash membership still match the
 current source ledger. Expiry and erasure checks apply before the 512-record
-window. An optional P8 visibility envelope is an additional audience boundary;
-it does not substitute for source support. Canonical-only projections still
-exclude contact stores. Up to 512 eligible current records are scanned
+window. A guest's contact-scoped context never includes these estimates. Up
+to 512 eligible current records are scanned
 with the existing lexical tokenizer, and at most 25 query-matching candidates
 enter the same selector and character budget as source evidence. An empty query
 or one with no matching terms does not inject them, including when the reranker
@@ -91,33 +89,25 @@ the source, and estimates are not exact canonical quotations.
 This preserves bounded lexical access to useful retained estimates without a new
 index or model. It does not guarantee paraphrase-only recall or coverage beyond
 the current 512-record window. Explicit contact-knowledge listing remains
-available. Automatic context and ToM context use the same source eligibility
-rule. Contact estimates require query overlap and carry their attributed
+available. Contact estimates require query overlap and carry their attributed
 correction packet and exact source references. The complete packet must fit the
 recall character budget. Source and correction revisions are rechecked after
 selection; explicit source history remains available when a packet cannot fit.
-Automatic relationship inferences
-also require current supporting facts. A correction suppresses the old inference
-rather than interpreting it again; missing source membership cannot produce a
-UUID-only fallback. Cached audience views and context assembly recheck the current
-source after other asynchronous work. Explicit inference history remains readable.
 Old unlinked facts, including hand-entered
 ones, remain available through explicit fact/history APIs but are not injected
 automatically. Their historical source enum and free-form metadata do not
 reliably distinguish owner curation from automated extraction. No curation or
 canonical source is invented for those records.
 
-Shared-fact writes no longer create graph copies. Explicit fact listing uses
-only the canonical store; automatic recall reads its current source-checked
-view. Automatic context uses no graph memory candidates, including retained
-`tom:shared_fact` copies and copies marked with shared-fact metadata. A mirror
-cannot bypass an expired, deleted, unlinked or outdated contact estimate.
-Other graph consumers retain their existing policies. No retained fact, mirror
-or original source is deleted or migrated by this selection change.
+Shared-fact writes create no second copy. Explicit fact listing uses only the
+canonical store; automatic
+recall reads its current source-checked view, so no copy can bypass an expired,
+deleted, unlinked or outdated contact estimate. No retained fact or original
+source is deleted or migrated by this selection change.
 
 Persistent extraction consumers use the provider's completed final answer.
-Reasoning-only and truncated responses are not saved as assertions, affect,
-engagement or image descriptions. Image descriptions remain fallible derived
+Reasoning-only and truncated responses are not saved as assertions, affect
+or image descriptions. Image descriptions remain fallible derived
 evidence tied to the original asset; they have a 160-word limit and a separate
 output budget for reasoning models. The job status exposes failed attempts so
 an unavailable or unsuitable model is distinguishable from an empty result.

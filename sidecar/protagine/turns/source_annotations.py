@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from protagine.util.temporal import ledger_stamp, now_utc
 
 
 def initialize(conn):
@@ -58,7 +59,7 @@ def append(ledger, *, contact_id, session_id, annotation_id, source_id, source_v
                 raise SourceErased('source_erased')
             annotation_messages = json.loads(stored['messages_json'])
         else:
-            at = datetime.now(timezone.utc).isoformat()
+            at = now_utc().isoformat()
             content = {'target': target, 'excerpt': excerpt, 'correction': correction,
                        'author_principal': author_principal, 'recorded_at': at,
                        'state': 'attributed_correction'}
@@ -71,10 +72,10 @@ def append(ledger, *, contact_id, session_id, annotation_id, source_id, source_v
                 'session_id': session_id, 'scope': row['scope'], 'occurred_at': at})
             try:
                 conn.execute('''INSERT INTO turn_sources
-                    (turn_id,content_sha256,contact_id,session_id,scope,messages_json,occurred_at)
-                    VALUES (?,?,?,?,?,?,?)''', (annotation_source, digest, contact_id, session_id,
+                    (turn_id,content_sha256,contact_id,session_id,scope,messages_json,occurred_at,ingested_at)
+                    VALUES (?,?,?,?,?,?,?,?)''', (annotation_source, digest, contact_id, session_id,
                         row['scope'], json.dumps(annotation_messages, ensure_ascii=True, sort_keys=True,
-                                                 separators=(',', ':')), at))
+                                                 separators=(',', ':')), at, ledger_stamp()))
             except sqlite3.IntegrityError as exc:
                 raise ValueError('annotation_id_conflict') from exc
             ledger._index_messages(conn, annotation_source, annotation_messages)

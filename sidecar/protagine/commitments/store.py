@@ -10,7 +10,8 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,18 @@ class CommitmentResolutionConflict(ValueError):
     """A terminal commitment does not match a bound cascade operation."""
 
     settlement_error_code = "operation_conflict"
+
+
+def _metadata_still(stored: Optional[str], listed: Optional[Dict[str, Any]]) -> bool:
+    """True when every metadata key ``listed`` names still holds its listed value (absent reads as None)."""
+    if not listed:
+        return True
+    try:
+        metadata = json.loads(stored) if stored else {}
+    except (json.JSONDecodeError, TypeError):
+        metadata = {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    return all(metadata.get(key) == value for key, value in listed.items())
 
 
 class CommitmentConflict(ValueError):
@@ -450,16 +463,20 @@ class CommitmentStore:
         """A writer that acted on a listing must still be looking at that row.
 
         ``expect`` carries the description and canonical ``due_at`` the writer
-        listed; the row must also still be open. Checked inside the write
-        transaction, so an edit or a resolution that landed in between (the
-        owner correcting a deadline while an extraction was still thinking)
-        is never overwritten by the older reading.
+        listed, and optionally ``metadata``: the listed value of each metadata
+        key it names (None for a key the row did not have), each of which
+        must still be the stored one. The row must also still be open.
+        Checked inside the write transaction, so an edit or a resolution that
+        landed in between (the owner correcting a deadline while an
+        extraction was still thinking, a reminder becoming a check-in) is
+        never overwritten by the older reading.
         """
         if expect is None:
             return
         if (current["status"] not in OPEN_STATUSES
                 or current["description"] != expect.get("description")
-                or current["due_at"] != expect.get("due_at")):
+                or current["due_at"] != expect.get("due_at")
+                or not _metadata_still(current["metadata"], expect.get("metadata"))):
             raise CommitmentConflict("commitment changed since it was listed")
 
     @staticmethod
@@ -532,23 +549,26 @@ class CommitmentStore:
         source_type: str = "manual",
         source_context: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        *, dedupe: bool = False, allow_overdue: bool = False,
+        *, dedupe: Union[bool, Callable[[Dict[str, Any]], bool]] = False, allow_overdue: bool = False,
     ) -> Dict[str, Any]:
         """Create, optionally reusing the same open obligation under one write lock.
+
+        ``dedupe`` is True for the similar-description predicate, or a predicate
+        over the person's open rows deciding which one is the same obligation.
 
         ``allow_overdue`` imports an obligation whose deadline has already
         passed (a promise captured late, after an outage or a backlog): it
         keeps its original ``due_at`` and starts ``overdue``.
         """
         commitment_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         status = "pending"
 
         # Validate due_at is in the future AND normalize it to canonical UTC ISO
         # (see _parse_due_at: a raw string sorts wrong and a promise is forgotten).
         if due_at:
             due_dt, due_at = _parse_due_at(due_at)
-            if due_dt < datetime.now(timezone.utc):
+            if due_dt < now_utc():
                 if not allow_overdue:
                     raise ValueError("due_at must be in the future")
                 status = "overdue"
@@ -560,7 +580,8 @@ class CommitmentStore:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 if dedupe:
-                    existing = self._find_open_duplicate(conn, person_id, description)
+                    existing = self._find_open_duplicate(conn, person_id, description,
+                                                         None if dedupe is True else dedupe)
                     if existing is not None:
                         conn.commit()
                         return {**existing, "deduped": True}
@@ -662,8 +683,8 @@ class CommitmentStore:
         ``pending`` again so the overdue event fires once more at the new
         time. ``metadata`` is merged over what is stored, so a snooze or a
         reschedule note never drops a deliverable's content or a resolution.
-        ``expect`` makes the write a compare-and-set against the description
-        and deadline the caller listed (``_check_expectation``): a row that
+        ``expect`` makes the write a compare-and-set against the description,
+        deadline and metadata keys the caller listed (``_check_expectation``): a row that
         changed since raises ``CommitmentConflict`` and is left alone.
 
         Validates status transitions:
@@ -705,7 +726,7 @@ class CommitmentStore:
 
                     # Auto-fill fulfilled_at when transitioning to fulfilled
                     if status == "fulfilled" and not fulfilled_at:
-                        fulfilled_at = datetime.now(timezone.utc).isoformat()
+                        fulfilled_at = now_utc().isoformat()
 
                 # Build UPDATE statement
                 updates: List[str] = []
@@ -723,7 +744,7 @@ class CommitmentStore:
                 if due_at or clear_due_at:
                     updates.append("due_at = ?")
                     params.append(due_at if due_at else None)
-                    reopened = clear_due_at or due_dt > datetime.now(timezone.utc)
+                    reopened = clear_due_at or due_dt > now_utc()
                     if status is None and current_status == "overdue" and reopened:
                         updates.append("status = ?")
                         params.append("pending")
@@ -803,7 +824,7 @@ class CommitmentStore:
         due_at has passed. Including 'overdue' matters: the condition worker
         flips pending→overdue, and a pending-only query would make flipped
         items invisible to everything that surfaces owed work."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         with self._lock:
             conn = self._connect()
             try:
@@ -817,6 +838,25 @@ class CommitmentStore:
                 return [self._row_to_dict(r) for r in rows]
             finally:
                 conn.close()
+
+    def reattribute(self, old_id: str, new_id: str) -> int:
+        """Move a merged contact's items to the contact kept (a merge): the rows owed to or by
+        ``old_id``, and every owner's message addressed to it (``metadata.recipient_id``)."""
+        if not old_id or not new_id or old_id == new_id:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    moved = conn.execute("UPDATE commitments SET person_id = ? WHERE person_id = ?",
+                                         (new_id, old_id)).rowcount
+                    moved += conn.execute(
+                        "UPDATE commitments SET metadata = json_set(metadata, '$.recipient_id', ?) "
+                        "WHERE json_valid(metadata) AND json_extract(metadata, '$.recipient_id') = ?",
+                        (new_id, old_id)).rowcount
+            finally:
+                conn.close()
+        return int(moved or 0)
 
     def get_pending_for_person(self, person_id: str) -> List[Dict[str, Any]]:
         """Get OPEN commitments (pending + overdue) for a specific person.
@@ -870,15 +910,16 @@ class CommitmentStore:
                 out.append(item)
         return out
 
-    def _find_open_duplicate(self, conn, person_id, description):
+    def _find_open_duplicate(self, conn, person_id, description, same=None):
         norm = _normalize_desc(description)
-        if not norm:
+        if not norm and same is None:
             return None
         rows = conn.execute(
             "SELECT * FROM commitments WHERE person_id=? AND status IN (?,?) ORDER BY made_at DESC",
             (person_id, *OPEN_STATUSES))
         for row in rows:
-            if _similar_desc(norm, _normalize_desc(row["description"] or "")):
+            if (same(self._row_to_dict(row)) if same is not None
+                    else _similar_desc(norm, _normalize_desc(row["description"] or ""))):
                 return self._row_to_dict(row)
         return None
 
@@ -1004,7 +1045,7 @@ class CommitmentStore:
                     )
 
                 meta = dict(current.get("metadata") or {})
-                resolved_at = datetime.now(timezone.utc).isoformat()
+                resolved_at = now_utc().isoformat()
                 meta["resolution"] = {
                     **expected_resolution,
                     "at": resolved_at,
@@ -1080,7 +1121,7 @@ class CommitmentStore:
         fulfilled, cancelled (with outcome breakdown), still open. This is the
         calibration signal for whatever generates items — a source whose items
         keep getting cancelled as invalid should get more conservative."""
-        cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+        cutoff = now_utc().timestamp() - days * 86400
         with self._lock:
             conn = self._connect()
             try:

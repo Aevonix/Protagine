@@ -12,6 +12,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from protagine.util.temporal import now_utc
 
 
 def main() -> None:
@@ -107,30 +108,13 @@ def main() -> None:
 
     mcp_sub.add_parser("detect", help="Detect installed coding harnesses")
 
-    # --- key ---
-    key_p = sub.add_parser("key", help="Manage Protagine cryptographic identity")
-    key_sub = key_p.add_subparsers(dest="key_command")
-    key_sub.add_parser("info", help="Show protagine_id and public key")
-    key_sub.add_parser("generate", help="Generate a new keypair (replaces existing)")
-    key_gen = key_sub.add_parser("set-passphrase", help="Encrypt private key with a passphrase")
-    key_gen.add_argument("--passphrase", default=None, help="New passphrase (prompted if not given)")
-    key_sub.add_parser("manifest", help="Create a protagine manifest (shareable public identity)")
-    key_genesis = key_sub.add_parser("claim-genesis", help="Create a signed private federation manifest; trust requires explicit configuration")
-    key_genesis.add_argument("--force", action="store_true", help="Overwrite existing Genesis manifest")
-
-    # --- node ---
-    node_p = sub.add_parser("node", help="Manage this device's node identity")
-    node_sub = node_p.add_subparsers(dest="node_command")
-    node_sub.add_parser("info", help="Show node_id, public key, and certificate status")
-
     # --- backup ---
-    backup_p = sub.add_parser("backup", help="Export Protagine identity or full state as a portable backup")
-    backup_p.add_argument("--full", action="store_true", help="Full-state backup (databases, identity, config, vectors, graph)")
-    backup_p.add_argument("--output", "-o", default=None, help="Output file/directory path")
+    backup_p = sub.add_parser("backup", help="Export the instance state (databases, identity, config, vectors) as a portable archive")
+    backup_p.add_argument("--full", action="store_true", help="Accepted for compatibility: every backup is a full-state backup")
+    backup_p.add_argument("--output", "-o", default=None, help="Output directory (default ~/protagine-backups)")
     backup_p.add_argument("--passphrase", default=None, help="Encrypt backup with this passphrase (prompted if --encrypt)")
     backup_p.add_argument("--encrypt", action="store_true", help="Encrypt backup (prompts for passphrase)")
-    backup_p.add_argument("--no-graph", action="store_true", help="Skip Neo4j graph export (--full only)")
-    backup_p.add_argument("--no-vectors", action="store_true", help="Skip LanceDB vector store (--full only)")
+    backup_p.add_argument("--no-vectors", action="store_true", help="Skip LanceDB vector store")
 
     # --- restore ---
     restore_p = sub.add_parser("restore", help="Restore Protagine from a backup")
@@ -141,7 +125,6 @@ def main() -> None:
     restore_p.add_argument("--current-state", default=None, help="Surviving authoritative source state (--memory-only)")
     restore_p.add_argument("--output", "-o", default=None, help="Fresh memory bundle destination (--memory-only)")
     restore_p.add_argument("--passphrase", default=None, help="Passphrase to decrypt (default: prompts for it)")
-    restore_p.add_argument("--force-identity", action="store_true", help="Allow restoring onto a different protagine identity")
     mm_p.add_argument("--safety", default="basic", choices=["off", "basic", "strict"], help="Image safety level")
     mm_p.add_argument("--skip-download", action="store_true", help="Skip model download")
 
@@ -162,6 +145,8 @@ def main() -> None:
     # --- mind ---
     from protagine.mind.cli import add_parser as add_mind_parser
     add_mind_parser(sub)
+    from protagine.contacts.cli import add_parser as add_people_parser
+    add_people_parser(sub)
 
     # --- feeds ---
     feeds_p = sub.add_parser("feeds", help="Manage spec-driven intelligence feeds")
@@ -244,12 +229,6 @@ def main() -> None:
         code = run_init(args)
         if code != 0 or args.uninstall:
             sys.exit(code)
-        # The portable identity used by backup/restore is created once.
-        _load_dotenv()
-        state_dir = os.environ.get("PROTAGINE_STATE_DIR") or os.environ.get("PROTAGINE_HOME", "")
-        if state_dir and not (Path(state_dir) / "protagine-id").exists():
-            from types import SimpleNamespace
-            _cmd_init(SimpleNamespace(encrypt=False, passphrase=None, claim_genesis=False))
 
     elif args.command == "upgrade":
         from protagine.init import run_upgrade
@@ -568,12 +547,6 @@ def main() -> None:
     elif args.command == "doctor":
         _cmd_doctor(args)
 
-    elif args.command == "key":
-        _cmd_key(args)
-
-    elif args.command == "node":
-        _cmd_node(args)
-
     elif args.command == "backup":
         _cmd_backup(args)
 
@@ -600,6 +573,11 @@ def main() -> None:
         from protagine.mind.cli import run as run_mind_command
         sys.exit(run_mind_command(args))
 
+    elif args.command == "people":
+        _load_dotenv()
+        from protagine.contacts.cli import run as run_people_command
+        sys.exit(run_people_command(args))
+
     elif args.command == "feeds":
         from protagine.feeds.cli import main as feeds_main
         feeds_main(args.feeds_args)
@@ -609,7 +587,7 @@ def main() -> None:
 
 
 def _cmd_backup(args) -> None:
-    """Export Protagine identity or full state as a portable backup."""
+    """Export the instance state as a portable archive."""
     _load_dotenv()
     state_dir = os.environ.get("PROTAGINE_STATE_DIR", os.getcwd())
 
@@ -620,36 +598,18 @@ def _cmd_backup(args) -> None:
         import getpass
         passphrase = getpass.getpass("Backup passphrase: ").encode()
 
-    if args.full:
-        from protagine.backup import create_full_backup
-        output_dir = args.output or os.path.expanduser("~/protagine-backups")
-        try:
-            archive = create_full_backup(
-                state_dir, output_dir,
-                passphrase=passphrase,
-                include_graph=not getattr(args, "no_graph", False),
-                include_vectors=not getattr(args, "no_vectors", False),
-            )
-            print(f"  Full backup saved to {archive}")
-        except FileNotFoundError as e:
-            print(f"  Error: {e}")
-            print("  Run 'protagine init' first to create an identity.")
-            raise SystemExit(1)
-        return
-
+    from protagine.backup import create_full_backup
+    output_dir = args.output or os.path.expanduser("~/protagine-backups")
     try:
-        from protagine.chain.identity import backup_protagine
-        backup = backup_protagine(state_dir, passphrase=passphrase)
-        backup_json = json.dumps(backup, indent=2) + "\n"
-
-        if args.output:
-            Path(args.output).write_text(backup_json)
-            print(f"  Backup saved to {args.output}")
-        else:
-            print(backup_json)
+        archive = create_full_backup(
+            state_dir, output_dir,
+            passphrase=passphrase,
+            include_vectors=not getattr(args, "no_vectors", False),
+        )
+        print(f"  Full backup saved to {archive}")
     except FileNotFoundError as e:
         print(f"  Error: {e}")
-        print("  Run 'protagine init' first to create an identity.")
+        print("  Run 'protagine init' first.")
         raise SystemExit(1)
 
 
@@ -659,9 +619,8 @@ def _cmd_restore(args) -> None:
     state_dir = os.environ.get("PROTAGINE_STATE_DIR", os.getcwd())
     memory_only = getattr(args, "memory_only", False)
     if memory_only and (not getattr(args, "current_state", None)
-                        or not getattr(args, "output", None)
-                        or getattr(args, "force_identity", False)):
-        print("  Memory recovery requires --current-state and a fresh --output; identity cannot be overridden.")
+                        or not getattr(args, "output", None)):
+        print("  Memory recovery requires --current-state and a fresh --output.")
         raise SystemExit(2)
     if not memory_only and (getattr(args, "current_state", None) or getattr(args, "output", None)):
         print("  --current-state and --output require --memory-only.")
@@ -679,67 +638,28 @@ def _cmd_restore(args) -> None:
     passphrase = None
     if args.passphrase:
         passphrase = args.passphrase.encode()
-
-    if args.full or memory_only:
-        if passphrase is None and backup_path.endswith(".enc"):
-            import getpass
-            passphrase = getpass.getpass("  Backup passphrase: ").encode()
-
-        from protagine.backup import restore_full_backup, restore_source_memory
-        try:
-            if memory_only:
-                summary = restore_source_memory(
-                    backup_path, args.output, current_state=args.current_state,
-                    passphrase=passphrase,
-                )
-                print(f"\n  Current source memory recovered to {args.output}")
-                print(f"  Sources: {summary['source_count']}; original images: {summary['source_images']}")
-                print("  Files: turn-idempotency.db, owned images and source-memory-recovery.json.")
-                print("  Install only these memory files with writers stopped and separately current runtime bindings.")
-                print("  The bundle does not restore runtime authority or completed-effect state.")
-                return
-            summary = restore_full_backup(
-                backup_path, state_dir,
-                passphrase=passphrase,
-                force_identity=getattr(args, "force_identity", False),
-            )
-            print(f"\n  Archive reconstructed: {summary['protagine_id']}")
-            print(f"  Databases: {', '.join(summary.get('databases', []))}")
-            print("  Reconcile current authority, erasures and completed effects before starting services.")
-            print("  Use --memory-only for bounded recovery from a surviving current source ledger.")
-        except ValueError as e:
-            print(f"  Error: {e}")
-            raise SystemExit(1)
-        return
-
-    # Legacy identity-only restore
-    id_path = Path(state_dir) / "protagine-id"
-    if id_path.exists():
-        print("  A Protagine identity already exists in this state directory.")
-        existing_id = id_path.read_text().strip()
-        print(f"  Existing protagine_id: {existing_id}")
-        confirm = input("  Overwrite? [y/N] ").strip().lower()
-        if confirm != "y":
-            print("  Restore cancelled.")
-            return
-
-    try:
-        backup_data = json.loads(Path(backup_path).read_text())
-    except json.JSONDecodeError:
-        print("  Error: Invalid backup JSON")
-        raise SystemExit(1)
-
-    if backup_data.get("encrypted") and passphrase is None:
+    if passphrase is None and backup_path.endswith(".enc"):
         import getpass
         passphrase = getpass.getpass("  Backup passphrase: ").encode()
 
+    from protagine.backup import restore_full_backup, restore_source_memory
     try:
-        from protagine.chain.identity import restore_protagine
-        protagine_id = restore_protagine(state_dir, backup_data, passphrase=passphrase)
-        print(f"\n  Protagine restored: {protagine_id}")
-        if backup_data.get("genesis"):
-            print(f"  Genesis status restored")
-        print(f"\n  Run 'protagine start' to bring the Protagine online.")
+        if memory_only:
+            summary = restore_source_memory(
+                backup_path, args.output, current_state=args.current_state,
+                passphrase=passphrase,
+            )
+            print(f"\n  Current source memory recovered to {args.output}")
+            print(f"  Sources: {summary['source_count']}; original images: {summary['source_images']}")
+            print("  Files: turn-idempotency.db, owned images and source-memory-recovery.json.")
+            print("  Install only these memory files with writers stopped and separately current runtime bindings.")
+            print("  The bundle does not restore runtime authority or completed-effect state.")
+            return
+        summary = restore_full_backup(backup_path, state_dir, passphrase=passphrase)
+        print(f"\n  Archive reconstructed: instance {summary['instance_id']}")
+        print(f"  Databases: {', '.join(summary.get('databases', []))}")
+        print("  Reconcile current authority, erasures and completed effects before starting services.")
+        print("  Use --memory-only for bounded recovery from a surviving current source ledger.")
     except ValueError as e:
         print(f"  Error: {e}")
         raise SystemExit(1)
@@ -1003,183 +923,6 @@ def _cmd_initiative(args) -> None:
 
     else:
         print("Usage: protagine initiative [list|show|cancel]")
-
-
-def _cmd_init(args) -> None:
-    """Initialize a new Protagine identity."""
-    _load_dotenv()
-    state_dir = os.environ.get("PROTAGINE_STATE_DIR", os.getcwd())
-
-    from protagine.chain.identity import get_or_create_protagine_id
-    from protagine.chain.local_keys import LocalKeyManager
-
-    id_path = Path(state_dir) / "protagine-id"
-    if id_path.exists():
-        existing = id_path.read_text().strip()
-        print(f"  Protagine already initialized: {existing}")
-        print(f"  Run 'protagine key info' to see details.")
-        return
-
-    # Create protagine_id
-    protagine_id = get_or_create_protagine_id(state_dir)
-    print(f"  Protagine ID: {protagine_id}")
-
-    # Determine passphrase
-    passphrase = None
-    if args.encrypt:
-        import getpass
-        passphrase = getpass.getpass("Protagine key passphrase: ").encode()
-    elif args.passphrase:
-        passphrase = args.passphrase.encode()
-
-    # Generate Protagine keypair
-    keys_dir = os.path.join(state_dir, "protagine-keys")
-    km = LocalKeyManager.generate(keys_dir=keys_dir, protagine_id=protagine_id, passphrase=passphrase)
-    print(f"  Public Key: {km.public_key_hex()}")
-    print(f"  Keypair saved to {keys_dir}/")
-
-    # Claim Genesis if requested
-    if args.claim_genesis:
-        from protagine.chain.identity import create_genesis_manifest
-        priv_path = os.path.join(keys_dir, "private.pem")
-        private_pem = Path(priv_path).read_bytes()
-        genesis_path = os.path.join(state_dir, "genesis.json")
-        create_genesis_manifest(protagine_id, km.public_key_hex(), genesis_path,
-                                private_key_pem=private_pem, passphrase=passphrase)
-        print("  Signed federation manifest created in private instance state.")
-        print("  Set PROTAGINE_GENESIS_TRUST_PUBLIC_KEY to its public key to trust it.")
-
-    print(f"\n  Protagine initialized. Run 'protagine start' to bring it online.")
-
-
-def _cmd_node(args) -> None:
-    """Manage this device's node identity."""
-    _load_dotenv()
-    state_dir = os.environ.get("PROTAGINE_STATE_DIR", os.getcwd())
-
-    if args.node_command == "info":
-        from protagine.chain.node import get_node_info
-        from protagine.chain.identity import get_or_create_protagine_id
-        protagine_id = get_or_create_protagine_id(state_dir)
-        info = get_node_info(state_dir)
-        print(f"  Protagine ID:  {protagine_id}")
-        print(f"  Node ID:    {info.get('node_id', '(not created — run protagine start)')}")
-        print(f"  Node Key:   {info.get('node_public_key', '(none)')}")
-        print(f"  Certified:  {'yes' if info.get('certified') else 'no'}")
-        if info.get('issued_at'):
-            print(f"  Issued At:  {info['issued_at']}")
-    else:
-        print("  Usage: protagine node {info}")
-
-
-def _cmd_key(args) -> None:
-    """Manage Protagine cryptographic identity."""
-    _load_dotenv()
-    state_dir = os.environ.get("PROTAGINE_STATE_DIR", os.getcwd())
-
-    if args.key_command == "info":
-        from protagine.chain.identity import get_or_create_protagine_id, get_genesis_manifest
-        protagine_id = get_or_create_protagine_id(state_dir)
-        keys_dir = os.path.join(state_dir, "protagine-keys")
-        passphrase = os.environ.get("PROTAGINE_KEY_PASSPHRASE", "")
-        passphrase_bytes = passphrase.encode() if passphrase else None
-        try:
-            from protagine.chain.local_keys import LocalKeyManager
-            km = LocalKeyManager(keys_dir=keys_dir, protagine_id=protagine_id, passphrase=passphrase_bytes)
-            pubkey = km.public_key_hex()
-            print(f"  Protagine ID:  {protagine_id}")
-            print(f"  Public Key: {pubkey}")
-            manifest = get_genesis_manifest()
-            if manifest and manifest.get("protagine_id") == protagine_id:
-                print(f"  Genesis:    YES (trust anchor)")
-            else:
-                print(f"  Genesis:    no")
-        except FileNotFoundError:
-            print(f"  Protagine ID:  {protagine_id}")
-            print(f"  Public Key: (no keypair — run 'protagine key generate')")
-
-    elif args.key_command == "generate":
-        from protagine.chain.identity import get_or_create_protagine_id
-        protagine_id = get_or_create_protagine_id(state_dir)
-        keys_dir = os.path.join(state_dir, "protagine-keys")
-        passphrase = os.environ.get("PROTAGINE_KEY_PASSPHRASE", "")
-        passphrase_bytes = passphrase.encode() if passphrase else None
-        from protagine.chain.local_keys import LocalKeyManager
-        km = LocalKeyManager.generate(keys_dir=keys_dir, protagine_id=protagine_id, passphrase=passphrase_bytes)
-        print(f"  Generated new Ed25519 keypair for protagine {protagine_id}")
-        print(f"  Public Key: {km.public_key_hex()}")
-
-    elif args.key_command == "set-passphrase":
-        from protagine.chain.identity import get_or_create_protagine_id
-        protagine_id = get_or_create_protagine_id(state_dir)
-        keys_dir = os.path.join(state_dir, "protagine-keys")
-        existing_pass = os.environ.get("PROTAGINE_KEY_PASSPHRASE", "")
-        existing_pass_bytes = existing_pass.encode() if existing_pass else None
-        passphrase = args.passphrase
-        if not passphrase:
-            import getpass
-            passphrase = getpass.getpass("New passphrase: ")
-        from protagine.chain.local_keys import LocalKeyManager
-        km = LocalKeyManager(keys_dir=keys_dir, protagine_id=protagine_id, passphrase=existing_pass_bytes)
-        km.set_passphrase(passphrase.encode())
-        print(f"  Passphrase set for protagine {protagine_id}")
-
-    elif args.key_command == "manifest":
-        from protagine.chain.identity import get_or_create_protagine_id, create_protagine_manifest
-        protagine_id = get_or_create_protagine_id(state_dir)
-        keys_dir = os.path.join(state_dir, "protagine-keys")
-        passphrase = os.environ.get("PROTAGINE_KEY_PASSPHRASE", "")
-        passphrase_bytes = passphrase.encode() if passphrase else None
-        from protagine.chain.local_keys import LocalKeyManager
-        km = LocalKeyManager(keys_dir=keys_dir, protagine_id=protagine_id, passphrase=passphrase_bytes)
-        manifest_path = os.path.join(state_dir, "protagine-manifest.json")
-        manifest = create_protagine_manifest(protagine_id, km.public_key_hex(), manifest_path)
-        print(f"  Manifest saved to {manifest_path}")
-        print(f"  Share this file with other Colonies to establish trust.")
-
-    elif args.key_command == "claim-genesis":
-        from protagine.chain.identity import get_or_create_protagine_id, create_genesis_manifest, get_genesis_manifest
-        protagine_id = get_or_create_protagine_id(state_dir)
-
-        existing = get_genesis_manifest()
-        if existing and not args.force:
-            print("  Genesis manifest already exists.")
-            print(f"  Existing Genesis protagine_id: {existing.get('protagine_id')}")
-            print("  Use --force to overwrite (NOT recommended if other Colonies trust this manifest)")
-            return
-
-        keys_dir = os.path.join(state_dir, "protagine-keys")
-        passphrase = os.environ.get("PROTAGINE_KEY_PASSPHRASE", "")
-        passphrase_bytes = passphrase.encode() if passphrase else None
-        from protagine.chain.local_keys import LocalKeyManager
-        try:
-            km = LocalKeyManager(keys_dir=keys_dir, protagine_id=protagine_id, passphrase=passphrase_bytes)
-            pubkey = km.public_key_hex()
-        except FileNotFoundError:
-            km = LocalKeyManager.generate(keys_dir=keys_dir, protagine_id=protagine_id)
-            pubkey = km.public_key_hex()
-
-        # Read private key PEM for signing
-        priv_path = os.path.join(keys_dir, "private.pem")
-        private_pem = Path(priv_path).read_bytes()
-
-        genesis_path = os.path.join(state_dir, "genesis.json")
-        manifest = create_genesis_manifest(
-            protagine_id, pubkey, genesis_path,
-            private_key_pem=private_pem,
-            passphrase=passphrase_bytes,
-        )
-        print(f"  Signed federation manifest created for Protagine {protagine_id}")
-        print(f"  Public Key: {pubkey}")
-        print(f"  Manifest signed with your private key and saved to {genesis_path}")
-        print(f"")
-        print("  Keep this manifest in private instance state.")
-        print("  Participating instances must explicitly set PROTAGINE_GENESIS_TRUST_PUBLIC_KEY")
-        print("  to the verification key they intend to trust. Creating a manifest grants no trust.")
-        print("  Share only the signed manifest and public key with those deployments.")
-
-    else:
-        print("  Usage: protagine key {info|generate|set-passphrase|manifest|claim-genesis}")
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -2105,7 +1848,7 @@ def _cmd_validate(args) -> None:
     # Write validation stamp
     stamp_path = Path(state_dir) / ".protagine-e2e-validated"
     stamp_data = {
-        "validated_at": datetime.now(timezone.utc).isoformat(),
+        "validated_at": now_utc().isoformat(),
         "context_sections": len(sections),
         "cognitive_sections": len(found),
         "llm_tested": llm_ok,

@@ -303,7 +303,9 @@ def run_phase(request, stop, trace, *, command=None):
 
 def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/workspace'),
               runner=run_phase, stop=None, trace=None):
-    """Aggregate ordinary workers; no later phase runs after a failed turn."""
+    """Aggregate ordinary workers; no later phase runs after a turn that ended its phase. A turn that spent its
+    iteration budget still answered: the worker went on past it, so does the supervisor, and
+    ``turns_completed`` records the cap."""
     inputs = request['inputs']
     episodes = inputs['episodes']
     workflow = validate_workflow(inputs['workflow'], episodes)
@@ -323,6 +325,12 @@ def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/works
               'tool_evidence': effects}
     boundaries = [0, *workflow['restart_before'], len(episodes)]
     previous = None
+    # A pinned start is decided once, here, and carried by every phase: a restarted worker's
+    # clock continues the episode's, it never re-pins.
+    pinned = 0
+    if inputs.get('clock_start') is not None:
+        from .paired_body import start_offset
+        pinned = start_offset(inputs['clock_start'])
     try:
         for phase, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
             if stop.is_set():
@@ -334,9 +342,11 @@ def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/works
                 raise RuntimeError('Workflow state changed between closed phases')
             child_request = deepcopy(request)
             child_request['inputs']['episodes'] = episodes[start:end]
+            carried = body_before(episodes, start)
+            carried['clock_offset_seconds'] += pinned
             child_request['_workflow_phase'] = {'index': phase, 'start_turn': start,
                 'workflow': workflow, 'prior_read_failures': deepcopy(lifecycle['read_failures_consumed']),
-                'body_before': body_before(episodes, start)}
+                'body_before': carried}
             result['stage'] = 'running'
             observed = runner(child_request, stop, trace)
             child, code = observed['result'], observed['exit_code']
@@ -368,6 +378,8 @@ def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/works
                             item['trace_request_id'] = request_id(item['trace_request_id'], phase)
                 effects[field].extend(items)
             effects['turns_completed'] += evidence.get('turns_completed', 0)
+            if evidence.get('drains'):
+                effects.setdefault('drains', []).extend(deepcopy(evidence['drains']))
             effects['artifacts'] = evidence.get('artifacts', {})
             body = evidence.get('body')
             if isinstance(body, dict):
@@ -405,7 +417,7 @@ def supervise(request, *, home=Path('/state/home'), workspace=Path('/state/works
             if phase:
                 lifecycle['restarts_completed'] += 1
             previous = after
-            if evidence.get('turns_completed') != end-start:
+            if evidence.get('ended_at') is not None or len(evidence.get('turns', [])) != end-start:
                 break
         lifecycle['all_declared_turns_attempted'] = len(effects['turns']) == len(episodes)
         lifecycle['all_phases_closed'] = all(row['agent_close_returned'] is True

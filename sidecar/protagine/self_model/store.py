@@ -789,15 +789,13 @@ class SelfModel:
     as zero.
     """
 
-    def __init__(self, store: CompetenceStore, registry: Any = None,
-                 trust: Any = None, journal: Any = None) -> None:
+    def __init__(self, store: CompetenceStore, registry: Any = None, journal: Any = None) -> None:
         self.store = store
         self._registry = registry
-        self.trust = trust          # TrustEngine (Amendment 1)
         self.journal = journal      # ActionJournal (Amendment 1)
         self.perspective = None      # Optional source-backed working judgments; never authority.
 
-    # -- recording (thin passthrough; trust engine hooks demotion) -------
+    # -- recording (thin passthrough to the competence store) ------------
     def record(self, domain: str, outcome: str,
                latency_secs: Optional[float] = None,
                shadow: bool = False, violation: bool = False,
@@ -807,9 +805,8 @@ class SelfModel:
                event_key: Optional[str] = None,
                evidence_status: str = "observed",
                outcome_contract: str = "legacy.unversioned",
-               evidence: Optional[Dict[str, Any]] = None,
-               defer_trust: bool = False) -> bool:
-        recorded = self.store.record(domain, outcome, latency_secs=latency_secs,
+               evidence: Optional[Dict[str, Any]] = None) -> bool:
+        return self.store.record(domain, outcome, latency_secs=latency_secs,
                           shadow=shadow, violation=violation,
                           stated_confidence=stated_confidence,
                           source=source, source_ref=source_ref,
@@ -817,20 +814,6 @@ class SelfModel:
                           evidence_status=evidence_status,
                           outcome_contract=outcome_contract,
                           evidence=evidence)
-        trust = getattr(self, "trust", None)
-        if recorded and trust is not None and not defer_trust:
-            try:
-                trust.after_outcome(domain)
-            except Exception:
-                logger.debug("trust after_outcome failed", exc_info=True)
-        return recorded
-
-    def reconcile_trust(self, domain: str) -> None:
-        """Apply deterministic trust transitions and propagate failures."""
-
-        trust = getattr(self, "trust", None)
-        if trust is not None:
-            trust.after_outcome(domain)
 
     # -- live load -------------------------------------------------------
     def load(self) -> Dict[str, int]:
@@ -849,13 +832,7 @@ class SelfModel:
         return {"active_initiatives": active, "total": active}
 
     def status(self) -> Dict[str, Any]:
-        out = {"domains": self.store.snapshot(), "load": self.load()}
-        if self.trust is not None:
-            try:
-                out["trust"] = self.trust.snapshot()
-            except Exception:
-                pass
-        return out
+        return {"domains": self.store.snapshot(), "load": self.load()}
 
     def brief(self) -> str:
         from protagine.self_model.brief import self_brief

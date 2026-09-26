@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,6 @@ def emit(event_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
     Args:
         event_type: One of the canonical ``HostEventType`` values —
             ``briefing``, ``anomaly``, ``goal_update``,
-            ``memory_consolidated``, ``world_model_changed``,
             ``skill_draft_approved``, ``proactive_message``, etc.
         payload: Arbitrary event-specific payload. Keep it small —
             subscribers fetch full records via the REST API when they
@@ -74,7 +74,7 @@ def emit(event_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
         broadcaster = _resolve_broadcaster()
         event = {
             "type": event_type,
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "occurred_at": now_utc().isoformat(),
             "payload": payload or {},
         }
         published = broadcaster(event)

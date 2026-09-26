@@ -3,7 +3,6 @@
 The API, SQLite stores and source visibility checks are real. No model or
 external database is required by this fixture.
 """
-import asyncio
 from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
@@ -19,53 +18,19 @@ from test_turn_source_evidence import source_app, envelope, recalled
 FACT = "The test hydrofoil departs Friday at nine."
 
 
-class Extractor:
-    def __init__(self):
-        self.texts = []
-        self.started = asyncio.Event()
-        self.release = None
-
-    async def extract_affect(self, text, contact_id, **kwargs):
-        self.texts.append(text)
-        self.started.set()
-        if self.release is not None:
-            await self.release.wait()
-        return None
-
-    async def extract_facts(self, *args, **kwargs):
-        raise AssertionError("Canonical ingress must not invoke a second fact extractor")
-
-    async def extract_engagement(self, *args, **kwargs):
-        return None
-
-
 @pytest.fixture
 def runtime(source_app, monkeypatch, tmp_path):
     ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
     facts = SharedFactsStore(str(tmp_path / "facts.db"), source_ledger=ledger)
-    extractor, tasks = Extractor(), []
     monkeypatch.setattr(host, "_facts_store", facts)
     monkeypatch.setattr(host, "_affect_store", SimpleNamespace())
-    monkeypatch.setattr(host, "_engagement_store", None)
-    monkeypatch.setattr(host, "_tom_extractor", extractor)
-    monkeypatch.setattr(host, "_graph", None)
-
-    def spawn(coro):
-        if coro.cr_code.co_name == "_run_tom_extraction":
-            task = asyncio.create_task(coro)
-            tasks.append(task)
-            return task
-        coro.close()  # No unrelated cognition/network background jobs in this fixture.
-
-    monkeypatch.setattr(host, "_spawn_task", spawn)
-    yield SimpleNamespace(app=source_app, ledger=ledger, facts=facts, extractor=extractor, tasks=tasks)
-    for task in tasks:
-        if not task.done():
-            task.cancel()
+    # No cognition/network background jobs in this fixture.
+    monkeypatch.setattr(host, "_spawn_task", lambda coro: coro.close())
+    yield SimpleNamespace(app=source_app, ledger=ledger, facts=facts)
     facts.close()
 
 
-async def ingest(client, runtime, turn_id="turn-a", session="session-a", *, wait=True):
+async def ingest(client, runtime, turn_id="turn-a", session="session-a"):
     body = envelope(turn_id)
     body["context"]["session_id"] = session
     body["user_message"]["content"] = FACT
@@ -73,8 +38,6 @@ async def ingest(client, runtime, turn_id="turn-a", session="session-a", *, wait
     response = await client.put("/v2/host/turns/" + turn_id, json=body)
     assert response.status_code == 201, response.text
     assert response.json()["source_recorded"]
-    if wait:
-        await asyncio.wait_for(asyncio.gather(*runtime.tasks), 3)
     return body
 
 
@@ -101,7 +64,6 @@ async def test_ordinary_contact_knowledge_has_lineage_without_becoming_world_fac
         assert record["source_lineage"]["turn_id"] == "turn-a"
         assert len(record["source_lineage"]["message_hashes"]) == 2
         assert record["metadata"]["model_provenance"]["model_id"] == "old-neutral-model"
-        assert runtime.extractor.texts == []
         assert FACT in await recalled(client, session="voice-session")
         assert await recalled(client, contact="contact-b") == ""
         result = await forget(client)
@@ -113,16 +75,6 @@ async def test_ordinary_contact_knowledge_has_lineage_without_becoming_world_fac
         with pytest.raises(SourceErased):
             runtime.facts.source_input("turn-a", "contact-a")
         assert runtime.facts.list_facts()["total"] == 0
-
-
-@pytest.mark.asyncio
-async def test_ordinary_ingress_does_not_start_retired_affect_extraction(runtime):
-    async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url="http://test") as client:
-        await ingest(client, runtime, wait=False)
-        assert runtime.tasks == [] and runtime.extractor.texts == []
-        await forget(client)
-        assert runtime.facts.list_facts()["total"] == 0
-        assert await recalled(client, session="voice-session") == ""
 
 
 @pytest.mark.asyncio

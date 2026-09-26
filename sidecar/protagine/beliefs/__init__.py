@@ -1,23 +1,20 @@
-"""Belief maintenance (item 7): drive the graph's epistemic scaffolding.
+"""Source claims: the structured memory derived from the canonical source ledger.
 
-Detects contradictions (same subject + predicate, conflicting value) across
-world-model properties and graph memories, resolves them by recency >
-confidence > source-trust (marking losers superseded, with an audit trail),
-surfaces genuinely unresolvable conflicts as internal review initiatives,
-and decays stale world-state confidence past its TTL.
-
-Modes (PROTAGINE_BELIEFS_MODE, default shadow = calibration): shadow detects,
-records and surfaces review initiatives without mutating epistemic state;
-live also resolves and decays. Resolutions are journaled (Amendment 1.4).
+Every claim cites the turn and message it came from (``source_claims``), and
+``SourceClaimProjection`` is the one scoped reader that context assembly, the
+preference view and the mind's consolidation use. Contradictions and duplicates
+are found by the nightly consolidation over these rows; there is no separate
+belief store.
 """
 
-from protagine.beliefs.models import Claim, beliefs_mode
-from protagine.beliefs.store import BeliefStore
-from protagine.beliefs.contradictions import detect_conflicts, claims_from_text
-from protagine.beliefs.resolve import pick_winner, source_trust
-from protagine.beliefs.engine import BeliefEngine
+from protagine.beliefs.promotion import MEMORY_KINDS, PROMOTION_VERSION
+from protagine.beliefs.source_projection import SourceClaimProjection
+from protagine.beliefs.source_time import MemoryTimeQuery, filter_unstructured
 
 __all__ = [
-    "Claim", "BeliefStore", "BeliefEngine", "detect_conflicts",
-    "claims_from_text", "pick_winner", "source_trust", "beliefs_mode",
+    "SourceClaimProjection",
+    "MemoryTimeQuery",
+    "filter_unstructured",
+    "PROMOTION_VERSION",
+    "MEMORY_KINDS",
 ]

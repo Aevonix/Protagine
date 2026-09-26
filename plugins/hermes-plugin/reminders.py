@@ -13,10 +13,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import time
 from typing import Any
 
 from protagine_hermes.capture import SessionMap
-from protagine_hermes.client import ProtagineClient, SidecarUnavailable
+from protagine_hermes.client import ProtagineClient, SidecarUnavailable, final_answer
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,7 @@ SCHEMA = {
         "operation": {"type": "string", "enum": ["schedule", "inspect", "cancel"]},
         "source_id": {"type": "string"}, "source_version": {"type": "string"}, "claim_id": {"type": "string"},
         "job_id": {"type": "string"}, "lead_seconds": {"type": "integer"}},
-        "required": ["operation"]},
-}
+        "required": ["operation"]}}
 
 
 def _instant(value: str) -> datetime:
@@ -56,24 +56,27 @@ class Reminders:
         self.client, self.sessions = client, sessions
 
     def handle(self, args: Any = None, *, session_id: str = "", **_: Any) -> str:
+        """An argument the model can correct names its valid form; anything else is ``final_answer``."""
         args = args if isinstance(args, dict) else {}
         try:
-            return json.dumps(self._handle(args, session_id))
+            result = self._handle(args, session_id)
+            return result if isinstance(result, str) else json.dumps(result)
         except SidecarUnavailable:
-            return json.dumps({"error": "the sidecar is unreachable", "scheduling_confirmed": False})
+            return final_answer("the sidecar is unreachable; nothing was scheduled")
+        except ValueError as error:
+            return json.dumps({"error": str(error), "scheduling_confirmed": False})
         except Exception as error:
-            message = str(error) if isinstance(error, ValueError) else type(error).__name__
-            return json.dumps({"error": message, "scheduling_confirmed": False})
+            return final_answer(f"nothing was scheduled ({type(error).__name__})")
 
-    def _handle(self, args: dict[str, Any], session_id: str) -> dict[str, Any]:
+    def _handle(self, args: dict[str, Any], session_id: str) -> dict[str, Any] | str:
         from cron import jobs
         if not self.sessions.is_owner(session_id):
-            raise ValueError("a current owner conversation is required")
+            return final_answer("reminders are the owner's; a current owner conversation is required")
         operation = args.get("operation")
         if operation in {"inspect", "cancel"}:
             job = jobs.get_job(str(args.get("job_id") or ""))
             if not job or job.get("name") != JOB_NAME:
-                raise ValueError("unknown reminder job")
+                return final_answer("unknown reminder job: job_id comes from a schedule answer")
             if operation == "cancel":
                 job = jobs.pause_job(job["id"], reason="Cancelled by owner") or job
             return _view(job)
@@ -94,9 +97,9 @@ class Reminders:
         response.raise_for_status()
         current = response.json()
         if current.get("status") != "current":
-            return {"error": "this source has no current precise deadline", "deadline": current}
+            return final_answer(f"this source has no current precise deadline ({current.get('status')})")
         run_at = _instant(current["deadline_at"]) - timedelta(seconds=lead)
-        if run_at <= datetime.now(timezone.utc):
+        if run_at <= datetime.fromtimestamp(time.time(), timezone.utc):   # Hermes' clock and the model's "Now"
             raise ValueError("the reminder time has already passed; choose a smaller lead")
         from cron.scheduler import create_job_with_scheduler_registration
         from tools.cronjob_job_args import _origin_from_env

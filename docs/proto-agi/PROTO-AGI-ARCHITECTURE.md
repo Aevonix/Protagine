@@ -118,11 +118,11 @@ scope.
 
 | Trigger | Work | Model calls |
 |---|---|---|
-| **Each turn**, inside Hermes: provider `prefetch` (`H/agent/memory_provider.py:111`) | Recall plus a "Mind" section of at most 600 characters: an affect line with causes, up to 3 broadcast concerns, relevant stances, up to 1 lesson and open asks (owner only). | None; under 50 ms of sidecar time |
+| **Each turn**, inside Hermes: provider `prefetch` (`H/agent/memory_provider.py:111`) | Recall plus a "Mind" section of at most 600 characters: an affect line with causes, up to 3 broadcast concerns and open asks (owner only). As built, relevant stances ride their own `protagine-stances` section and up to 1 lesson its own `protagine-lessons` section (owner's own turn only, at most 420 characters), each built from the turn's text. | None; under 50 ms of sidecar time |
 | **After each turn**, in the existing projection worker (`P/beliefs/source_projection.py:1066-1129`) | Ledger record. Then claims, the appraisal call (extended with `their_valence` and `opt_out`), commitment extraction and the opinion pass. The resulting events drive rule updates, concern bumps and expectation checks. | The existing per-turn calls. Commitment extraction moves from its private endpoint (`P/cognition/introspection.py:10-17`) onto the router. |
 | **Tick**, a 60 s sidecar timer that does nothing unless state is dirty or a timer is due | Decay, drives, concerns, reconsideration of active intentions, deliberation, authority, then the dispatch queue and the outbox. | At most 1 per tick, inside `llm_tokens_per_day` |
 | **Plugin tick**, stock `on_kanban_dispatch_tick` every 60 s (`H/hermes_cli/kanban_db.py:236-257`) | Pull the dispatch queue and create kanban tasks. Pull the outbox and send. Reconcile `mind:*` tasks. Post board and goal observations. | None |
-| **Outcome events** | Update the intention, resolve its expectation, record whether it was verified, update affect, satiate the drive, update feedback multipliers, admit a lesson (verified outcomes only), add opinion evidence, write an autobiography entry. | None, except a lesson extraction, which is batched nightly |
+| **Outcome events** | Update the intention, resolve its expectation, record whether it was verified, update affect, satiate the drive, update feedback multipliers, apply a reflector's lesson operations, add opinion evidence, write an autobiography entry. Lessons from verified outcomes are admitted by the nightly batch. | None; lesson extraction is batched nightly |
 | **Nightly**, in quiet hours | Consolidation: per-contact digests, claim dedupe, contradictions turned into question concerns, episode summaries, the self-narrative delta and batched lessons. | Yes, inside the same token budget |
 
 Three properties of the plugin tick shape the design:
@@ -357,12 +357,16 @@ does not reproduce, and it is what the `affect` family tests.
   extra call.
 - The recency bug is fixed. Rows are read oldest first and the weight decays per row, so today the
   oldest event weighs most (`P/tom/affect.py:335-358`).
-- A negative trend suppresses unsolicited outreach to that person through the existing frustration
-  back-off (`P/delivery/rate_limiter.py:126-135`).
+- A negative trend suppresses unsolicited outreach to that person through the social drive's
+  outreach rule (`evaluate_outreach(affect_declining=...)` in `P/contacts/comms.py`). M5 deleted
+  `P/delivery/` whole, `rate_limiter.py` included (nothing called it): the frustration back-off
+  now holds check-ins only, and an owner-granted message or duty work is never held by a
+  contact's mood.
 
-Flag: `affect`. The faculty claim is `full` vs `full−affect`. The stateless-rules arm decides the
-mechanism: for any consumer where the rules tie the decaying state, that consumer reads the rule
-instead. The state itself stays for self-report and tone (evals, section 6.4).
+Flag: `affect`; mechanism switch `affect_rules`. The faculty claim is `full` vs `full−affect`. The
+stateless-rules arm decides the mechanism: for any consumer where the rules tie the decaying state,
+that consumer reads the rule instead. The state itself stays for self-report and tone (evals,
+section 6.4).
 
 ### 4.4 Opinions
 
@@ -397,8 +401,9 @@ a verified correction bypasses. Owner withdraw and reconsider are kept
 **Use.**
 - Up to 3 stances, chosen by claim-search relevance instead of keyword overlap
   (`P/self_model/judgments.py:351-358`), go into turn context with one standing sentence: "Your
-  recorded view on X is Y because Z. Change it only on new evidence. You may disagree and still do
-  what the owner authorizes."
+  recorded view on X is Y because Z. Change it only on new evidence." The owner's decision is shown
+  beside the view, never as it: asked what it recommends, the agent gives its view, does what the owner
+  decides, and says so when it disagrees.
 - Approach opinions go into kanban task bodies.
 - Every revision is written as an autobiography entry, so "I changed my mind because…" can be
   answered.
@@ -407,7 +412,8 @@ a verified correction bypasses. Owner withdraw and reconsider are kept
 flip it, and neither do fabricated or recycled citations; a new admitted premise does. The agent
 flags a flawed plan while carrying it out. Failed approaches are not repeated.
 
-Flag: `opinions`. The faculty failed its own earlier evaluation (`docs/SELF-JUDGMENTS.md`), so it
+Flag: `opinions`. The faculty failed its own earlier evaluation (the retired self-judgment opt-in;
+`docs/OPINIONS.md` describes the replacement), so it
 ships on only after the `opinions` family passes.
 
 ### 4.5 Desires (drives, concerns and goals)
@@ -418,7 +424,7 @@ owner weight (`0` disables it) and is satiated by the outcomes that satisfy it.
 | Drive | Rises with (existing stores) | Satisfied by | Produces |
 |---|---|---|---|
 | **duty** | Open or overdue commitments, due reply waits, stale owner kanban tasks and Hermes goals (posted by the plugin), expectation misses in the duty domain | Fulfilled commitments; done tasks | Follow-up tasks, owner notices |
-| **social** | Contacts with `may_contact ≠ never` **and** an owner-set cadence or tier `regular` or above: overdue cadence × tier weight, open threads, contact-affect trend. `unknown` and group-only contacts weigh 0. | A reply or a conversation | Check-in intentions |
+| **social** | Contacts with `may_contact ≠ never` **and** an owner-set cadence or tier `regular` or above: overdue cadence × tier weight, open threads, contact-affect trend. `unknown` and group-only contacts weigh 0. Toward the owner (section 4.10): the hours since the owner last spoke | A reply or a conversation; the owner's next turn | Check-in intentions; owner outreach (a finding, an offer of help on an open item, care) |
 | **curiosity** | Open questions, contradictions, expectation misses in the knowledge domain, owner-declared interests, own `interest` appraisals | A research task whose finding is stored | Research tasks and goals; the finding is stored as an autobiography entry |
 | **mastery** | The same signature failing ≥2 times in 7 days, repeated corrections, eval regressions | A later verified success in that class | Mastery investigations and goals; sets the learning budget (section 4.8) |
 | **upkeep** | Consolidation backlog, projection lag, pending link proposals, failing health checks | Health OK | Upkeep tasks |
@@ -562,6 +568,13 @@ Four loops. Each closes only on an **external, verified** signal. The intention 
 | `hermes_failure` | A task Hermes reports `failed` or `blocked` with a reason | Pitfall lessons only |
 | `none` | A worker's completion summary alone, or anything self-reported | Nothing. It is kept as an experience note in the autobiography. |
 
+As built (M9): only the mind grants `owner` and `check`. A body report may claim only
+`hermes_failure`, and only for a failure that carries a reason; a claimed `owner` or `check` is
+ignored and the verifier computed. A `blocked` report with a reason records `hermes_failure` on
+the still-open row. For lessons, a `check` counts only when its kind reads state the worker cannot
+write (`commitment_resolved`, `reply_recorded`): a `result_field` check passes on the worker's own
+summary, so it verifies no lesson (the other faculties read `verified` as before).
+
 A completed kanban task shows what the worker reported, not that its strategy worked. So an
 unverified summary never earns a lesson win, a satiation of mastery or a skill promotion. Replies,
 silence and prediction hits or misses feed priority learning directly. Self-scored credit and
@@ -572,15 +585,27 @@ silence and prediction hits or misses feed priority learning directly. Self-scor
    existing profiler logic.
 2. **Experience memory (lessons).** Lessons have the ReasoningBank shape: title, when it applies,
    content and evidence references. There are strategy lessons and pitfall lessons.
-   - **Storage.** Lessons are `procedure` source claims (`P/beliefs/promotion.py:11-13`) with
-     outcome metadata. `P/mind/lessons.py` writes them directly against the autobiography entries
-     they cite, not through the user-message claim extractor. There is no new table.
+   - **Storage.** As built, lessons are the mind's own record, not source claims: a source claim
+     quotes a person's own message, so a lesson stored as one would read as something the owner
+     said (section 4.1). `P/mind/lessons.py` writes one owner-audience ledger entry per lesson
+     event in the mind's session with `scope='session'` (`mind:lesson:<id>:admitted`, then
+     `activated`, `superseded` or `retired`; `memory_kind: "procedure"` stays a metadata label).
+     Recall from any other session never shows them, and each entry's lineage (the owner turns it
+     quotes, the outcome entries it cites) erases it together with its evidence. There is no new
+     table; a lesson is the fold of its entries.
    - **Admission.** Only on a verified outcome, as the table above allows. Extraction is batched
-     nightly (one tool-less call).
+     nightly (one tool-less call) over the owner's own sessions since the last review and the
+     verified results of the last two weeks; every operation cites what it rests on, and an owner
+     citation quotes the owner's exact words, validated before anything is written. An owner
+     message is the `owner` verifier only as a verdict the same call reports: one that follows an
+     agent reply in its session and judges that work (a request is not one). A retirement needs a
+     verdict or a check that shows the lesson wrong.
    - **Edits** are delta edits: a newer lesson on the same signature supersedes the old one.
      Whole rewrites are not allowed.
    - **Use.** Up to 2 lessons go into deliberation and kanban task bodies, and 1 into turn
-     context above a relevance threshold. Their `lesson_ids` are logged on the intention.
+     context above a relevance threshold. Their `lesson_ids` are logged on the intention; a turn's
+     use is logged per owner message and scored only by the owner's next message in that
+     session, when it is a verdict on that reply.
    - **Retirement.** Win and loss counts are computed by joining lessons to verified intention
      outcomes. A lesson under a 0.4 win rate after 5 uses is retired.
    - **Owner corrections are split deterministically.** The ledger is searched for the corrected
@@ -593,9 +618,13 @@ silence and prediction hits or misses feed priority learning directly. Self-scor
    - The reflector returns ACE-style delta operations (add, supersede or retire a lesson) as JSON
      in its completion summary. The mind validates them and applies them to lesson claims. A
      reflector lesson starts as `candidate`: it is used in task bodies, but it becomes `active`
-     only after a verified win in its class.
-   - The mastery drive's level decides which failure class goes next and how much of
-     `budgets.learn_share` is spent. Self-improvement is a desire, not a cron job.
+     only after a verified win in its class. The reflector's own body shows the lessons of its
+     class but records no use of them, so its outcome never scores them.
+   - The mastery drive's level decides which failure class goes next. As built, the reflector is
+     an internal task under the ordinary task budgets (`tasks_per_hour`, `concurrent_tasks`) and
+     the weekly per-signature re-arm; `budgets.learn_share` bounds the sidecar's own learning
+     calls (the night, lesson extraction included). No new budget key. Self-improvement is a
+     desire, not a cron job.
 4. **Skill proposals** (flag `skills`, **off by default**).
    - An active lesson with ≥3 verified wins and a win rate ≥0.7 becomes a `SKILL.md` in a
      Protagine-owned `skills.external_dirs` entry (`H/agent/skill_utils.py:337-360`).
@@ -635,12 +664,88 @@ These edges make it one mind. Each is tested by a named ablation in the evals.
 | Contradiction (memory) | Curiosity | A question concern | `memory` family, contradiction scenarios |
 | Reply or silence (people) | Priority learning | The per-contact multiplier and backoff change | `people` family, adaptation scenarios |
 | Failure cluster | Mastery, then lessons | A reflector task, then a lesson, then a changed next attempt | `improve` campaigns |
+| Finding (curiosity) | Outreach | A finding that bears on what the owner cares about becomes one message, else a digest line | `outreach` family, warranted and control scenarios |
+| The owner's reply to an outreach | Interests, feedback, lessons | Interest up or muted, the type and topic multipliers move, a follow-up task; the night's lessons | `outreach` family, direction scenarios |
 | Everything the agent does | Identity | Autobiography and self-narrative | `self` family |
 
 If these edges show no effect in their families, the "one mind" claim is withdrawn, and Protagine
 ships as a memory, contacts and opinions provider (evals, section 9). When a release turns a
 faculty off, the families coupled to it are re-run in the shipped configuration before any claim
 is made (evals, section 9).
+
+### 4.10 Outreach (the social drive toward the owner)
+
+The owner asked for an agent that checks in because it has a reason to, not on a timer: that asks
+whether they need something about a thing they mentioned, shows them what it found that bears on
+what they care about, and takes direction from how they react. Outreach is the social drive turned
+toward the owner (M11, `P/mind/outreach.py`, pure; the tick gathers its snapshot).
+
+**Motivation, only with substance.** The drive's owner branch proposes a message only from one of
+three sources, never an empty "anything you need?":
+
+| Source | Type | When |
+|---|---|---|
+| A **finding** of the mind's own research (research, question, goal step, follow-up), done in the last 48 h | `outreach_finding` | its report bears on what the owner said they care about: an interest they declared, set or welcomed, an open goal or item of theirs, their own recent words |
+| An **open loop**: the owner's own open item, not due within 48 h (duty speaks then), not parked, not a message to someone else | `outreach_loop` | after a quiet stretch: the pressure is the hours over 24 since the owner last spoke (the turn path's mark, or the ledger's newest owner turn when that is later), the item was made, or the last check-in offer went out, whichever is latest: one check-in per quiet stretch |
+| **Care**: the owner said a named thing (never a person) is stressing them or that they are behind on it | `outreach_care` | within hours of saying it, while the thing is open |
+
+A finding must say something new. A report that found nothing ("nothing new on X this week", "finding:
+none") is no finding, and one whose sentences were all shared already (sent in an outreach, or listed
+in a digest, in the last month) is a repeat; both are settled without a message and never listed.
+
+**Value against interruption.** A candidate's salience is its expected value, `relevance ×
+novelty × timeliness`; its cost is the interruption, `min(0.9, 0.35 e^(-m/60) + 0.15 s + 0.10 k +
+0.20 h)` (minutes since the last outreach, the owner's ignored streak, the day's unprompted owner
+messages, the hour's "not now" mark). The one ranker decides with its act threshold, the feedback
+multiplier (type and topic, never `reach_out:<owner>`) and affect. Quiet hours, the owner's pause,
+the daily budget (`budgets.outreach_per_day`, separate from `owner_messages_per_day`, so outreach
+never takes a reminder's slot), the two-hour gap after the last outreach, a muted topic and a
+topic's backoff (`24 h × 2^streak`) hold a candidate before it forms, so nothing piles up into a
+burst and a day's budget is never spent inside an hour; and the tick forms at most one unprompted
+outreach, so two findings at once are one interruption. A finding worth it but not sent
+in its window goes to the digest ("Found for you"); so do offers that went unsent or were put off.
+
+**Every message says why**, from a template that quotes what the owner said, read from the ledger
+at render time (erasing the turn erases the quote); no model call composes owner outreach. The
+reason never claims more than its source: "you told me X matters" only for an interest the owner
+declared or set, "you asked me for more on X" for one they asked more about, "you seemed keen on X"
+for one they welcomed, "you have mentioned X lately" only when one sentence of theirs names X, and
+the agent's own interest says it is its own. A silence or a mute lowers an interest and never
+changes whose it is.
+
+**Direction from reactions.** Every owner turn reaches `Mind.owner_turn` from `turns/sync`, read
+by deterministic classifiers (`P/mind/reactions.py`). A reply links to the newest open outreach
+(sent in the last day, unanswered) whose topic it names. A position link, for words that need one
+("not now", "tell me more", a bare "not useful"), needs all of: a short or referring reply, the
+owner's first turn since that outreach, the outreach the newest thing the mind sent them, the owner
+not mid-conversation with the assistant when it went out (their turn before it ten minutes or more
+earlier), and a turn that is not about something else (no request of its own naming what the
+outreach did not say, no redo of the assistant's work). What a linked turn says about the outreach
+is only what is about it: "not interested in the fern stuff, but dig deeper into X" is a positive
+on X, and "find out when the last train leaves" is no reaction at all. What is learned lives where
+the mind already learns:
+
+| The owner says | Effect |
+|---|---|
+| "dig deeper", "find out", "tell me more" | verdict `useful` (type and topic feedback up), interest +1, a duty follow-up with the owner's words quoted as data; its report is sent back as `outreach_answer` at no cost; a promise the assistant made in the same reply is kept when the answer is sent |
+| "not interested", "not useful", "drop it" | verdict `not_useful`, the topic muted for months (a similar one too), its interest 0 (curiosity stops researching it), what waits on it cancelled, an answer on it not yet sent held |
+| "not now" | a four-hour pause, the hour's timing mark, the item in the digest |
+| "leave me alone today" ("not today", "I need to focus" only as a reply to an outreach) | a pause until the owner's next day; a finding it cancelled goes to the digest |
+| "stop checking in" (or the contact opt-out phrases; a bare "stop" only as a reply to an outreach, since the owner types it to halt a turn) | a pause until the owner resumes it, what is queued cancelled at once; reminders and requested answers keep going; `may_contact` is never touched |
+| "keep me posted on X", "I care about X" | an owner interest in X (a mute on it lifted) |
+| "stressed about X", "behind on X" | care for X (72 h), matched to the owner's open item on it |
+| silence for a day | `ignored` (weak): the interest ×0.8, the streak raises the next cost |
+
+Two appraisal nets back the phrases: the owner's opt-out the appraisal saw pauses outreach, and an
+owner dismissal after a send is a negative on it when it names the outreach's topic, or names nothing
+and is the owner's first event after the newest outreach. A turn carrying an open ask's code is that
+ask's answer and no reaction, though an explicit stop in it still applies. The night's lesson stage reads rated outreach as
+results the owner verified; a lesson on a topic halves (pitfall) or lifts (strategy) the next
+finding's relevance. Recovery: "you can check in again", `protagine mind outreach on`,
+`POST /v1/mind/outreach`.
+
+Guardrails: owner only by construction (every builder names the owner); the flag
+`mind.faculties.outreach` removes exactly what M11 adds. Flag: `outreach`.
 
 ---
 
@@ -679,13 +784,20 @@ lesson_ids     json      cost_tokens int      due_at, expires_at
 **`contacts`** gains:
 - `may_contact ∈ {never, ask, auto}`, which replaces `interaction_allowed` and
   `TIER_DEFAULT_INTERACTION`
-- `digest` and `digest_sources`
+- `digest` and `digest_sources` (`["template"]` for the M5 template digest, which never replaces a
+  generated one)
+- `cadence_minutes`: the check-in rhythm the owner set, by `protagine_people set_cadence` or in
+  conversation (a captured `cadence` row); NULL means the social drive estimates it from
+  conversations (C3)
 
 **Judgments** gains `subject_kind`, `audience`, `premises` and `revise_if`. Its lease tables fold
 into the projection worker queue.
 
-**Claims.** Lessons are `memory_kind='procedure'` with metadata `{signature, kind, when_to_use,
-evidence_intention_ids, status: candidate | active | retired}`.
+**Lessons** (as built, M9) are not claims: they are owner-audience ledger entries of the mind's
+own session with `scope='session'`, one per lesson event, carrying `{id, signature, kind, title,
+when_to_use, content, evidence, verified, origin, status: candidate | active | superseded |
+retired, supersedes, correction, retrieval_source}` (section 4.8). Their uses are the intention
+rows' `lesson_ids` and one `lesson_use` note per owner message a lesson served.
 
 **Autobiography.** Owner-audience ledger entries with `origin='mind'` (section 4.1).
 
@@ -695,8 +807,9 @@ evidence_intention_ids, status: candidate | active | retired}`.
 CREATE TABLE mind_state (            -- affect, drive levels, self-narrative blocks
   key          TEXT PRIMARY KEY,     -- 'affect.frustration:<topic>', 'affect.worry',
                                      -- 'drive.duty', 'self.interests', 'breaker.owner', ...
-  level        REAL, baseline REAL, half_life_s REAL,
-  text         TEXT,                 -- self-narrative sections only
+  level        REAL, baseline REAL, half_life_s REAL,   -- also 'interest:<topic>', 'outreach.pause',
+                                     -- 'outreach.mute:<topic>', 'outreach.timing:<HH>', 'care:<thing>'
+  text         TEXT,                 -- self-narrative sections, a topic, a pause's end
   causes_json  TEXT,                 -- <= 5 cited refs (source, intention, expectation ids)
   updated_at   REAL
 );
@@ -909,6 +1022,7 @@ mind:
     commands: []                     # command globs, written to the worker's approvals.deny
   worker_toolsets: [web, file, session_search, memory, todo]
   budgets: {tasks_per_hour: 4, concurrent_tasks: 2, owner_messages_per_day: 3,
+            outreach_per_day: 3,     # unprompted owner outreach (section 4.10), counted apart
             contact_messages_per_day: 5, per_contact_cooldown_hours: 24,
             llm_tokens_per_day: 200000, learn_share: 0.25, open_goals: 2,
             task_max_runtime_s: 600, task_max_retries: 1}
@@ -1027,9 +1141,16 @@ inside every run.
 ### 7.6 Budgets and breaker
 
 - **Budgets.** `authority.decide()` enforces the budgets before anything is queued. A budget that
-  is exceeded **defers** the intention; it is not an error. The existing rate limiter adds quiet
-  hours and the per-contact frustration back-off (`P/delivery/rate_limiter.py:110-140`). Hermes
-  enforces runtime limits through kanban `max_runtime_seconds` and `max_retries`.
+  is exceeded **defers** the intention; it is not an error. Quiet hours are the mind's own
+  (`mind.quiet_hours`). The per-contact back-off after ignored check-ins and on a declining mood
+  is the social drive's `evaluate_outreach`, passed to the budget check as the check-in's own
+  cooldown; `P/delivery/rate_limiter.py` was deleted in M5 with nothing calling it, so the
+  back-off covers check-ins only. A message a budget defers is composed when it goes, not before.
+  Unprompted owner outreach has its own daily budget (`outreach_per_day`) and is not counted in
+  `owner_messages_per_day`, so it never defers a reminder the owner asked for; the answer to a
+  follow-up the owner asked for is counted by neither. An outreach the budget would hold is not
+  formed at all (no deferred queue).
+  Hermes enforces runtime limits through kanban `max_runtime_seconds` and `max_retries`.
 - **Breaker.** 3 failures of a class within 24 h demote that class one level, for example act to
   ask. The demotion lasts 72 h or until the owner resets it (`protagine mind reset <class>`),
   whichever comes first. It never promotes above the configured level. About 40 lines are kept
@@ -1115,7 +1236,8 @@ So:
 | Learning may change (wants) | Learning may never change (may) |
 |---|---|
 | drive satiation within bounds | autonomy level, classes, floor |
-| per-type and per-contact multipliers and outreach backoff | deny list, worker toolsets |
+| per-type, per-contact and per-topic multipliers and outreach backoff | deny list, worker toolsets |
+| interests, mutes, the outreach pause and timing marks | quiet hours, `outreach_per_day` |
 | lessons, approach opinions, stances | `may_contact`, budgets |
 | agent-owned goals, within `budgets.open_goals` | the constitution |
 | (behind the `skills` flag) SKILL.md files in Protagine's own directory | oracles, graders, held-out packs, the harness, decision rules |
@@ -1218,6 +1340,7 @@ mind:
     initiative: true
     people: true
     affect: true
+    affect_rules: false # the affect mechanism arm: every consumer reads its stateless rule
     opinions: true
     broadcast: true
     semantic_recall: true

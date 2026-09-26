@@ -3,10 +3,10 @@
 Creates a compressed, optionally encrypted archive of all Protagine state:
 - All SQLite databases in PROTAGINE_STATE_DIR (auto-discovered)
 - Original source images referenced by the canonical ledger snapshot
-- Identity files (protagine-id, keys, genesis)
+- The instance identity (instance-id, identity.yaml, protagine.yaml; api.key only in an encrypted
+  archive, and an unencrypted one carries protagine.yaml with its credential settings redacted)
 - Config files (scrubbed of secrets)
 - LanceDB vector store
-- Neo4j graph export (Cypher, best-effort)
 
 Usage::
 
@@ -35,6 +35,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
+from protagine.instance import INSTANCE_ID_FILE, instance_id, read_instance_id
+from protagine.util.temporal import now_utc
+
 logger = logging.getLogger(__name__)
 
 BACKUP_VERSION = 2
@@ -52,7 +55,6 @@ def create_full_backup(
     output_dir: str | Path,
     *,
     passphrase: Optional[bytes] = None,
-    include_graph: bool = True,
     include_vectors: bool = True,
     include_host_paths: Optional[list[str]] = None,
 ) -> Path:
@@ -64,8 +66,9 @@ def create_full_backup(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    protagine_id = _read_protagine_id(state_dir)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # The archive is bound to the instance it was taken from.
+    instance = instance_id(state_dir)
+    timestamp = now_utc().strftime("%Y%m%dT%H%M%SZ")
     base_name = f"protagine-backup-{timestamp}"
 
     with tempfile.TemporaryDirectory(prefix="protagine-backup-") as tmp:
@@ -74,15 +77,11 @@ def create_full_backup(
 
         db_manifest = _snapshot_databases(state_dir, staging / "databases")
         source_images = _snapshot_source_images(state_dir, staging)
-        _snapshot_identity(state_dir, staging / "identity")
+        _snapshot_identity(state_dir, staging / "identity", secrets=passphrase is not None)
         _snapshot_config(state_dir, staging / "config")
 
         if include_vectors:
             _snapshot_vectors(state_dir, staging / "vector")
-
-        graph_status = "skipped"
-        if include_graph:
-            graph_status = _snapshot_graph(state_dir, staging / "graph")
 
         if include_host_paths:
             _snapshot_host_state(include_host_paths, staging / "host")
@@ -90,12 +89,11 @@ def create_full_backup(
         meta = {
             "backup_version": BACKUP_VERSION,
             "protagine_version": _get_protagine_version(),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "protagine_id": protagine_id,
-            "protagine_id_hmac": _compute_identity_hmac(protagine_id),
+            "timestamp": now_utc().isoformat(),
+            "instance_id": instance,
+            "instance_id_hmac": _compute_identity_hmac(instance),
             "database_manifest": db_manifest,
             "source_images": source_images,
-            "graph_status": graph_status,
             "encrypted": passphrase is not None,
         }
         (staging / "meta.json").write_text(
@@ -123,9 +121,12 @@ def restore_full_backup(
     state_dir: str | Path,
     *,
     passphrase: Optional[bytes] = None,
-    force_identity: bool = False,
 ) -> dict[str, Any]:
     """Restore Protagine state from a full backup archive.
+
+    The archive restores into a fresh state directory or into the instance it
+    was taken from; another instance's directory is refused (remove its
+    ``instance-id`` first if that is really what you want).
 
     Returns a summary dict of what was restored.
     """
@@ -155,13 +156,14 @@ def restore_full_backup(
                 f"this Protagine supports (max {BACKUP_VERSION})"
             )
 
-        existing_id = _read_protagine_id(state_dir)
-        backup_id = meta.get("protagine_id", "")
+        existing_id = read_instance_id(state_dir)
+        backup_id = _archive_instance_id(meta)
 
-        if existing_id and existing_id != backup_id and not force_identity:
+        if existing_id and existing_id != backup_id:
             raise ValueError(
-                f"Backup is from protagine {backup_id} but this instance is "
-                f"{existing_id}. Use --force-identity to override."
+                f"Backup is from instance {backup_id} but this directory is "
+                f"instance {existing_id}. Restore into a fresh directory, or "
+                f"remove its {INSTANCE_ID_FILE} file first."
             )
 
         # Validate every referenced original before writing any restored state.
@@ -169,19 +171,42 @@ def restore_full_backup(
         source_images = _verified_source_images(root)
 
         summary: dict[str, Any] = {
-            "protagine_id": backup_id, "databases": [], "errors": [],
+            "instance_id": backup_id, "databases": [], "errors": [],
             "serving_admitted": False,
         }
 
+        # An archive taken before a subsystem was retired still carries its state; ``protagine upgrade``
+        # moved that out of the instance, and a restore must not put it back.
+        from protagine.init import RETIRED_STATE
+        retired: set[str] = set()
+        summary["retired_skipped"] = []
+
+        def keep(relative: Path) -> bool:
+            if relative.parts and relative.parts[0] in RETIRED_STATE:
+                if relative.parts[0] not in retired:
+                    retired.add(relative.parts[0])
+                    summary["retired_skipped"].append(relative.parts[0])
+                return False
+            return True
+
         identity_dir = root / "identity"
         if identity_dir.is_dir():
-            _restore_directory(identity_dir, state_dir)
+            _restore_directory(identity_dir, state_dir, keep=keep)
             summary["identity"] = True
+        # Only an encrypted archive carries the bearer key; without it ``protagine init`` writes a new one.
+        summary["api_key"] = (identity_dir / "api.key").is_file()
+        if backup_id and not read_instance_id(state_dir):
+            # Archives taken before the instance id existed carry the same UUID
+            # under the chain's name in meta; the restored instance keeps it.
+            (state_dir / INSTANCE_ID_FILE).write_text(backup_id + "\n")
+            (state_dir / INSTANCE_ID_FILE).chmod(0o600)
 
         db_dir = root / "databases"
         if db_dir.is_dir():
             for db_file in sorted(db_dir.glob("*.db")):
                 relative = db_file.relative_to(db_dir)
+                if not keep(relative):
+                    continue
                 dest = state_dir / relative
                 # A crashed destination can still have committed WAL.
                 # SQLite replaces its logical database consistently;
@@ -205,7 +230,7 @@ def restore_full_backup(
 
         config_dir = root / "config"
         if config_dir.is_dir():
-            _restore_directory(config_dir, state_dir)
+            _restore_directory(config_dir, state_dir, keep=keep)
             summary["config"] = True
 
         vector_dir = root / "vector"
@@ -215,12 +240,6 @@ def restore_full_backup(
                 shutil.rmtree(dest)
             shutil.copytree(vector_dir / "lancedb", dest, dirs_exist_ok=True)
             summary["vectors"] = True
-
-        graph_dir = root / "graph"
-        if graph_dir.is_dir():
-            marker = graph_dir / "SKIPPED.txt"
-            if not marker.exists():
-                summary["graph_export"] = str(graph_dir / "neo4j-dump.cypher")
 
     logger.info("Restore complete: %s", summary)
     return summary
@@ -239,7 +258,7 @@ def restore_source_memory(
     membership, revisions, scopes and erasure history replace the old archive's
     memory metadata. The archive supplies only still-owned original image bytes
     missing from that surviving state. No old grants, effects, identity, config,
-    contact databases, tasks, graph or native host state are installed.
+    contact databases, tasks or native host state are installed.
     """
     archive_path = Path(archive_path).resolve(strict=True)
     current_state = Path(current_state).resolve()
@@ -250,10 +269,10 @@ def restore_source_memory(
             or current_state in resolved_destination.parents
             or resolved_destination in current_state.parents):
         raise ValueError("Memory recovery requires a fresh destination outside current state")
-    current_id = _read_protagine_id(current_state)
+    current_id = read_instance_id(current_state)
     ledger = current_state / "turn-idempotency.db"
     if not current_id or not ledger.is_file():
-        raise ValueError("Memory recovery requires the surviving protagine identity and source ledger")
+        raise ValueError("Memory recovery requires the surviving instance id and source ledger")
 
     from protagine.vector.image_store import LocalImageStore
 
@@ -273,8 +292,8 @@ def restore_source_memory(
         meta = json.loads((archived / "meta.json").read_text())
         if meta.get("backup_version", 0) > BACKUP_VERSION:
             raise ValueError("Memory archive version is newer than this Protagine supports")
-        if meta.get("protagine_id") != current_id:
-            raise ValueError("Memory archive and surviving state have different protagine identities")
+        if _archive_instance_id(meta) != current_id:
+            raise ValueError("Memory archive and surviving state have different instance ids")
 
         selected = staging / "selected"
         (selected / "databases").mkdir(parents=True)
@@ -294,8 +313,8 @@ def restore_source_memory(
                 _check_erasure_ancestry(archived / "databases" / "turn-idempotency.db", current)
         except sqlite3.Error as error:
             raise ValueError("Surviving canonical source history is unavailable") from error
-        if _read_protagine_id(current_state) != current_id:
-            raise ValueError("Surviving protagine identity changed during memory recovery")
+        if read_instance_id(current_state) != current_id:
+            raise ValueError("Surviving instance id changed during memory recovery")
 
         bundle = staging / "bundle"
         bundle.mkdir(mode=0o700)
@@ -335,7 +354,7 @@ def restore_source_memory(
                               "sha256": _file_sha256(path), "bytes": path.stat().st_size})
         summary = {
             "recovery_mode": "source_memory_only",
-            "protagine_id": current_id,
+            "instance_id": current_id,
             "source_count": source_count,
             "source_images": len(records),
             "images_recovered_from_archive": recovered_from_archive,
@@ -489,21 +508,46 @@ def _snapshot_source_images(state_dir: Path, staging: Path) -> int:
 # ── Identity snapshot ────────────────────────────────────────────────────
 
 
-def _snapshot_identity(state_dir: Path, dest: Path) -> None:
+IDENTITY_FILES = (INSTANCE_ID_FILE, "identity.yaml", "protagine.yaml", "api.key")
+SECRET_FILES = ("api.key",)
+REDACTED = "<REDACTED>"
+
+
+def _snapshot_identity(state_dir: Path, dest: Path, *, secrets: bool) -> None:
+    """The instance id and the owner-authored identity and configuration.
+
+    Secrets travel only in an encrypted archive (``secrets``): otherwise the sidecar's bearer key
+    (``api.key``, which ``protagine init`` writes anew) stays behind, and ``protagine.yaml`` is copied
+    with its credential-named ``environment`` settings redacted, the rule the ``.env`` copy follows."""
     dest.mkdir(parents=True, exist_ok=True)
-    identity_files = ["protagine-id", "genesis.json"]
-    keys_dir = state_dir / "protagine-keys"
+    for name in IDENTITY_FILES:
+        src = state_dir / name
+        if not src.is_file() or (name in SECRET_FILES and not secrets):
+            continue
+        if name == "protagine.yaml" and not secrets:
+            scrubbed = _scrub_config_file(src)
+            if scrubbed is not None:
+                (dest / name).write_text(scrubbed)
+            continue
+        shutil.copy2(src, dest / name)
 
-    for f in identity_files:
-        src = state_dir / f
-        if src.exists():
-            shutil.copy2(src, dest / f)
 
-    if keys_dir.is_dir():
-        dest_keys = dest / "protagine-keys"
-        dest_keys.mkdir(exist_ok=True)
-        for key_file in keys_dir.iterdir():
-            shutil.copy2(key_file, dest_keys / key_file.name)
+def _scrub_config_file(path: Path) -> Optional[str]:
+    """``protagine.yaml`` with the values of credential-named ``environment`` keys redacted; None (left
+    out of the archive) when it does not parse, since then nothing can be redacted reliably."""
+    import yaml
+    try:
+        data = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError):
+        logger.warning("protagine.yaml not backed up: it does not parse, so it cannot be scrubbed")
+        return None
+    if not isinstance(data, dict):
+        return None
+    environment = data.get("environment")
+    if isinstance(environment, dict):
+        data["environment"] = {key: REDACTED if _SECRET_KEY_PATTERN.search(str(key)) else value
+                               for key, value in environment.items()}
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
 
 
 # ── Config snapshot (with secret scrubbing) ──────────────────────────────
@@ -553,68 +597,6 @@ def _snapshot_vectors(state_dir: Path, dest: Path) -> None:
     dest_lance = dest / "lancedb"
     shutil.copytree(lance_dir, dest_lance)
     logger.info("Snapshotted LanceDB directory")
-
-
-# ── Graph export ─────────────────────────────────────────────────────────
-
-
-def _snapshot_graph(state_dir: Path, dest: Path) -> str:
-    """Export Neo4j graph as Cypher. Returns status string."""
-    dest.mkdir(parents=True, exist_ok=True)
-
-    neo4j_uri = os.environ.get("NEO4J_URI", "")
-    if not neo4j_uri:
-        (dest / "SKIPPED.txt").write_text(
-            "Neo4j not configured (NEO4J_URI not set)\n"
-        )
-        return "skipped_not_configured"
-
-    try:
-        from neo4j import GraphDatabase
-
-        neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
-        neo4j_pass = os.environ.get("NEO4J_PASSWORD", "")
-
-        driver = GraphDatabase.driver(
-            neo4j_uri, auth=(neo4j_user, neo4j_pass)
-        )
-
-        cypher_stmts: list[str] = []
-        with driver.session() as session:
-            nodes = session.run("MATCH (n) RETURN n")
-            for record in nodes:
-                node = record["n"]
-                labels = ":".join(node.labels)
-                props = json.dumps(dict(node), default=str)
-                cypher_stmts.append(
-                    f"CREATE (:{labels} {props});"
-                )
-
-            rels = session.run(
-                "MATCH (a)-[r]->(b) "
-                "RETURN id(a) as a_id, type(r) as rel_type, "
-                "properties(r) as props, id(b) as b_id"
-            )
-            for record in rels:
-                props = json.dumps(record["props"], default=str)
-                cypher_stmts.append(
-                    f"// REL: ({record['a_id']})-[:{record['rel_type']} {props}]->({record['b_id']})"
-                )
-
-        driver.close()
-
-        output = dest / "neo4j-dump.cypher"
-        output.write_text("\n".join(cypher_stmts) + "\n")
-        logger.info("Exported %d graph statements", len(cypher_stmts))
-        return "exported"
-
-    except ImportError:
-        (dest / "SKIPPED.txt").write_text("neo4j driver not installed\n")
-        return "skipped_no_driver"
-    except Exception as exc:
-        logger.warning("Neo4j export failed: %s", exc)
-        (dest / "SKIPPED.txt").write_text(f"Export failed: {exc}\n")
-        return "skipped_error"
 
 
 # ── Host state ───────────────────────────────────────────────────────────
@@ -707,16 +689,14 @@ def _decrypt_file(
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _read_protagine_id(state_dir: Path) -> str:
-    id_path = state_dir / "protagine-id"
-    if id_path.exists():
-        return id_path.read_text().strip()
-    return ""
+def _archive_instance_id(meta: dict) -> str:
+    """The instance an archive was taken from (older archives named it protagine_id)."""
+    return str(meta.get("instance_id") or meta.get("protagine_id") or "")
 
 
-def _compute_identity_hmac(protagine_id: str) -> str:
+def _compute_identity_hmac(instance: str) -> str:
     return hmac.new(
-        protagine_id.encode(), b"protagine-backup-binding", hashlib.sha256
+        instance.encode(), b"protagine-backup-binding", hashlib.sha256
     ).hexdigest()
 
 
@@ -728,10 +708,12 @@ def _get_protagine_version() -> str:
         return "unknown"
 
 
-def _restore_directory(src: Path, dest: Path) -> None:
+def _restore_directory(src: Path, dest: Path, *, keep=lambda relative: True) -> None:
     for item in src.rglob("*"):
         if item.is_file():
             rel = item.relative_to(src)
+            if not keep(rel):
+                continue
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, target)

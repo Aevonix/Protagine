@@ -22,7 +22,7 @@ unless a selected qualification explicitly requires a real model or service.
 |---|---|
 | `sidecar/protagine/` | The Python package: FastAPI sidecar, CLI, all subsystems |
 | `sidecar/protagine/api/` | Pydantic schemas and routers: the single source of truth for the HTTP contract |
-| `sidecar/protagine/intelligence/` | Graph memory, mind model, cognition components |
+| `sidecar/protagine/intelligence/` | Cognition components, synthesis, owner corrections |
 | `sidecar/protagine/mind/` | The mind: authority, the tick, the ranker, outcomes, the outbox and the audit log |
 | `sidecar/tests/` | Sidecar test suite, kept out of the installed product package |
 | `plugins/` | Host integration plugins: `hermes-plugin` (general adapter), `protagine-memory` (memory provider), `feeds-manage` |
@@ -119,10 +119,10 @@ The target ownership boundaries and remaining implementation work are in
 and identity in private integrations. The notes below describe the existing
 implementation, not a claim that every planned boundary is complete.
 
-- **SQLite owns canonical source memory and typed world observations.** Other
-  domains retain separate SQLite stores. Lance is an optional search index;
-  the separate Neo4j memory graph still has executable callers. Hermes owns
-  its transcripts and native work execution. Adapters own delivery outboxes.
+- **SQLite owns canonical source memory and typed situation observations.**
+  Other domains retain separate SQLite stores. Lance is an optional search
+  index; there is no graph database. Hermes owns its transcripts and native work
+  execution. Adapters own delivery outboxes.
 - **Native adapters prepare context and capture turns.** They share the
   sidecar client and durable ingestion path rather than duplicating cognition.
 - **Models are configured per instance.** Credentials stay in private

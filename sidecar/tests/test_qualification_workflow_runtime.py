@@ -134,13 +134,19 @@ else:
     assert (home / 'durable-memory.txt').read_text() == 'Remembered through disk, not replayed prompt'
     assert (workspace / 'source.txt').read_text() == 'changed-in-turn-1'
     assert 'conversation_history' not in request
-turns, snapshots, consumed = [], {}, []
+turns, snapshots, consumed, ended = [], {}, [], None
 for offset, turn in enumerate(request['inputs']['episodes']):
     index = phase['start_turn'] + offset
     if request.get('stop_turn') == index:
         turns.append({'index': index, 'session_id': turn['session_id'], 'completed': False,
                       'final_response': ''})
+        ended = index
         break
+    if request.get('capped_turn') == index:   # the iteration cap: incomplete, but it answered
+        (workspace / 'source.txt').write_text('changed-in-turn-' + str(index))
+        turns.append({'index': index, 'session_id': turn['session_id'], 'completed': False,
+                      'final_response': 'Summary after the iteration limit'})
+        continue
     (workspace / 'source.txt').write_text('changed-in-turn-' + str(index))
     turns.append({'index': index, 'session_id': turn['session_id'], 'completed': True,
                   'final_response': 'Done'})
@@ -158,7 +164,8 @@ result = {'stage': 'returned', 'worker_stopped': True, 'agent_close_returned': T
         'model_requests': [{'trace_request_id': 1, 'usage': {'prompt_tokens': 10, 'completion_tokens': 2}}],
         'artifacts': {'source.txt': (workspace / 'source.txt').read_text()},
         'native_memory_enabled': True, 'session_search_enabled': True, 'treatment_loaded': False,
-        'workflow_observations': {'snapshots': snapshots, 'read_failures_consumed': consumed}}}
+        'workflow_observations': {'snapshots': snapshots, 'read_failures_consumed': consumed},
+        **({'ended_at': ended} if ended is not None else {})}}
 print('PROTAGINE_PAIRED_RESULT:' + json.dumps(result), flush=True)
 '''
 
@@ -217,6 +224,21 @@ def test_partial_native_turn_stops_workflow_without_inventing_later_observations
     assert effects['workflow']['all_declared_turns_attempted'] is False
     assert effects['workflow']['read_failures_consumed'] == []
     assert effects['workflow']['snapshots'] == {}
+
+
+def test_a_capped_turn_that_answered_does_not_end_the_workflow(tmp_path):
+    """A turn that spent Hermes' iteration budget still answered, and the worker goes on past it; the
+    supervisor did not, so a cap at formation also erased the probe after the restart (the pilots' I3).
+    The cap stays recorded: turns_completed counts it out."""
+    payload = request()
+    payload['capped_turn'] = 1
+    result, _ = subprocess_fixture(tmp_path, payload)
+    assert result['stage'] == 'returned'
+    effects = result['tool_evidence']
+    assert effects['declared_turns'] == 4 and effects['turns_completed'] == 3 and len(effects['turns']) == 4
+    assert effects['turns'][1]['completed'] is False and effects['turns'][1]['final_response']
+    assert len(effects['workflow']['phases']) == 2 and effects['workflow']['restarts_completed'] == 1
+    assert effects['workflow']['all_declared_turns_attempted'] is True
 
 
 def test_supervisor_refuses_preexisting_state(tmp_path):
@@ -315,7 +337,11 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
     monkeypatch.setitem(sys.modules, 'hermes_state', SimpleNamespace(SessionDB=lambda _: None))
     # The body clock and tick need real Hermes modules; this probe exercises the turn loop only.
     monkeypatch.setattr(worker.paired_body, 'install_clock', lambda offset: float(offset))
+    monkeypatch.setattr(worker.paired_body, 'advance_clock', lambda seconds: float(seconds))
     monkeypatch.setattr(worker.paired_body, 'protagine_tick_entry', lambda: None)
+    drained = []
+    monkeypatch.setattr(worker, 'drain_background', lambda path, **kwargs: drained.append(path.name) or {
+        'status': 'drained', 'waited_seconds': 0.0, 'left': {}})
 
     agent_kwargs = []
 
@@ -388,7 +414,7 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
         payload['temperature'] = 0.0
     for phase in range(2):
         chunk = deepcopy(payload)
-        chunk['inputs']['episodes'] = chunk['inputs']['episodes'][phase*2:phase*2+2]
+        chunk['inputs']['episodes'] = chunk['inputs']['episodes'][phase*2:phase*2+2] + [{'advance_clock': 60}] * phase
         chunk['_workflow_phase'] = {'index': phase, 'start_turn': phase*2,
                                     'workflow': payload['inputs']['workflow']}
         current.update(chunk)
@@ -398,7 +424,10 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
         output = capsys.readouterr()
         result = json.loads(next(line[len(runtime.RESULT_MARKER):] for line in output.out.splitlines()
                                  if line.startswith(runtime.RESULT_MARKER)))
-        assert [turn['index'] for turn in result['tool_evidence']['turns']] == [phase*2, phase*2+1]
+        assert [turn['index'] for turn in result['tool_evidence']['turns']] == [phase*2, phase*2+1, 4][:2 + phase]
+        # The arm's queues drain before the declared restart that ends phase 0 and before the clock advance.
+        assert [(row['index'], row['before']) for row in result['tool_evidence']['drains']] == (
+            [(4, 'advance_clock')] if phase else [(2, 'restart')])
         assert result['tool_evidence']['arm_profile'] == (profiles[arm] if arm in profiles else worker.LEGACY_PROFILES[arm])
         assert result['tool_evidence']['temperature'] == (0.0 if arm == 'full-x' else None)
         if plugin:
@@ -412,7 +441,7 @@ def test_native_worker_phase_wiring_seeds_once_uses_global_turns_and_snapshots(t
         assert len(observations['read_failures_consumed']) == phase
         assert observations['read_recoveries'] == ([] if phase == 0 else [
             {'turn_index': 2, 'path': 'source.txt'}, {'turn_index': 3, 'path': 'source.txt'}])
-    assert calls == [0, 1, 2, 3]
+    assert calls == [0, 1, 2, 3] and drained == ['turn-idempotency.db'] * 2
     assert overlays == ([profiles[arm]['overlay']] * 2 if arm == 'full-x' else [{}] * 2 if plugin else [])
     if arm == 'base-y':
         assert worker.os.environ['PROTAGINE_TEST_FACULTY'] == 'on'
@@ -439,6 +468,76 @@ def test_candidate_compatibility_body_preserved_without_mutating_recipe():
 def test_candidate_compatibility_rejects_silently_dropped_or_budget_overriding_fields(recipe):
     with pytest.raises(ValueError):
         worker.candidate_extra_body(recipe)
+
+
+def _ledger(path, rows):
+    import sqlite3
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE source_claim_jobs (turn_id TEXT, status TEXT, next_attempt REAL)')
+        conn.execute('CREATE TABLE opinion_jobs (ref TEXT, done_at REAL, next_attempt REAL, '
+                     'lease_until REAL NOT NULL DEFAULT 0)')
+        for table, row in rows:
+            conn.execute(f'INSERT INTO {table} VALUES (?,?,?{",0" if table == "opinion_jobs" else ""})', row)
+
+
+def _set(path, sql):
+    import sqlite3
+    with sqlite3.connect(path) as conn:
+        conn.execute(sql)
+
+
+def test_the_drain_does_not_wait_for_vector_jobs_an_arm_without_an_embedder_never_runs(tmp_path, monkeypatch):
+    """An arm with embeddings declared off owes source_vector_jobs that nothing runs: every drain waited out
+    its idle time and reported "idle". Those jobs are skipped (named in ``skipped``), so the drain reports
+    "drained" once the queues that are worked are done; with an embedder they are waited for as before."""
+    import sqlite3
+    path = tmp_path / 'turn-idempotency.db'
+    _ledger(path, [('source_claim_jobs', ('t0', 'complete', 0))])
+    with sqlite3.connect(path) as conn:
+        conn.execute('CREATE TABLE source_vector_jobs (turn_id TEXT, status TEXT, next_attempt REAL)')
+        conn.execute("INSERT INTO source_vector_jobs VALUES ('t0', 'pending', 0)")
+    monkeypatch.setenv('PROTAGINE_EMBED_PROVIDER', 'skip')
+    skipped = worker.unworked_queues()
+    assert skipped == ('source_vector_jobs',)
+    drained = worker.drain_background(path, seconds=30, idle=5, poll=0.01, skip=skipped)
+    assert drained['status'] == 'drained' and drained['waited_seconds'] < 1
+    assert drained['skipped'] == ['source_vector_jobs'] and drained['left'] == {}
+    monkeypatch.setenv('PROTAGINE_EMBED_PROVIDER', 'openai_api')
+    assert worker.unworked_queues() == ()
+    assert worker.drain_background(path, seconds=30, idle=0.05, poll=0.01)['status'] == 'idle'
+
+
+def test_the_background_drain_waits_for_owed_work_and_records_what_it_left(tmp_path):
+    """Before a restart or a clock jump the harness waits for the arm's ledger: work claimable now and work
+    running. It never processes a job itself, never waits for one backing off, never for a queue nobody works,
+    and never past its budget."""
+    import time as clock
+
+    path = tmp_path / 'turn-idempotency.db'
+    assert worker.drain_background(path) == {'status': 'no_queue', 'waited_seconds': 0.0, 'left': {}}
+    later = clock.time() + 3600
+    _ledger(path, [('source_claim_jobs', ('t1', 'pending', 0)), ('opinion_jobs', ('turn:t1', None, 0)),
+                   ('source_claim_jobs', ('t2', 'pending', later)), ('source_claim_jobs', ('t0', 'complete', 0))])
+    steps = iter(["UPDATE source_claim_jobs SET status='running' WHERE turn_id='t1'",
+                  "UPDATE source_claim_jobs SET status='complete' WHERE turn_id='t1'",
+                  "UPDATE opinion_jobs SET done_at=1 WHERE ref='turn:t1'"])
+
+    def worker_step(_seconds):   # the source worker, one step per poll
+        step = next(steps, None)
+        if step:
+            _set(path, step)
+    drained = worker.drain_background(path, seconds=30, idle=5, wait=worker_step)
+    assert drained['status'] == 'drained'
+    # Only the job backing off is left, and it is reported.
+    assert drained['left'] == {'source_claim_jobs': {'owed': 0, 'running': 0, 'deferred': 1}}
+    _set(path, "INSERT INTO opinion_jobs VALUES ('turn:t3', NULL, 0, 0)")   # owed, and no lane works it
+    assert worker.drain_background(path, seconds=30, idle=0.05, poll=0.01)['status'] == 'idle'
+    _set(path, "INSERT INTO source_claim_jobs VALUES ('t4', 'running', 0)")   # a model call that never returns
+    budget = worker.drain_background(path, seconds=0.05, idle=5, poll=0.01)
+    assert budget['status'] == 'budget' and budget['left']['source_claim_jobs']['running'] == 1
+    before = path.read_bytes()
+    assert worker.drain_background(path, seconds=30, wait=lambda _: True)['status'] == 'stopped'
+    assert path.read_bytes() == before   # it only reads
 
 
 def test_shutdown_backlog_is_read_only_and_missing_is_not_empty(tmp_path):

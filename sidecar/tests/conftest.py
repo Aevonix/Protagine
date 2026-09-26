@@ -76,3 +76,11 @@ def pytest_collection_modifyitems(config, items):
         # str.startswith accepts a tuple of prefixes.
         if path.startswith(live_roots):
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_served_context_window():
+    """The per-conversation record of served context is process-wide; no test inherits another's."""
+    from protagine.memory import compass
+    compass.SERVED.clear()
+    yield

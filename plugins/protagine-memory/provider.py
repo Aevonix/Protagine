@@ -2,7 +2,16 @@
 
 Implements Hermes's MemoryProvider ABC: per-turn recall through
 ``/v1/host/context/assemble``, turn sync when the general plugin is absent,
-a durable checkpoint before compression, and the owner's two write tools.
+a durable checkpoint before compression, and the owner's one write tool.
+
+Hermes appends each turn's recalled context to that turn's user message and
+replays it byte for byte on every later turn. A section the session's last
+turn already carried, unchanged, is therefore one line in the new turn's
+context ("unchanged since your last turn: <section>"); earlier turns are never
+touched, so the cached prompt prefix holds. The per-session fingerprints count
+a prefetch as shown only once its turn completed (``sync_turn``), Hermes waited
+for it and it went inline whole, and they reset on a session switch, before
+compression and on restart.
 
 Config key: memory.provider = "protagine-memory". The sidecar URL and key come
 from the shared ``plugins.protagine`` keys written by ``protagine init``, with
@@ -11,6 +20,7 @@ from the shared ``plugins.protagine`` keys written by ``protagine init``, with
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -26,7 +36,21 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# A forget answers in about a second on a long history. Past this bound the removal is
+# recorded as unconfirmed, never as failed: the sidecar finishes a forget it received.
+FORGET_TIMEOUT_SECONDS = 5.0
+
 INTERNAL_PLATFORMS = frozenset({"", "cli", "internal", "system", "owner", "api", "worker", "cron"})
+
+# A section the session's last shown turn carried, unchanged, is this one line; Current Time is always fresh.
+UNCHANGED_LINE = "unchanged since your last turn: {title}"
+_ALWAYS_SENT = frozenset({"Current Time"})
+# Hermes waits this long for an external prefetch and drops a later answer (``agent.memory_manager``, 0.21.3),
+# and spills one longer than its inline cap to a file (``tools.hook_output_spill``): either way the turn may not
+# have carried the sections whole, so such a prefetch is never counted as shown.
+_PREFETCH_WAIT_FALLBACK_S = 8.0
+_PREFETCH_WAIT_MARGIN_S = 0.5
+_SPILL_CAP_FALLBACK = 10_000
 
 
 def _env(name: str, default: str = "") -> str:
@@ -165,11 +189,12 @@ except ImportError:
 # Tool schemas: what the model sees
 # ---------------------------------------------------------------------------
 
-# The provider's two model tools are the owner's writes; every read the model used to have here
+# The provider's one model tool is the owner's write; every read the model used to have here
 # (commitments, facts, affect, timeline) arrives in the per-turn context instead, and
-# ``protagine_memory_search`` covers the rest. Each schema is sent with every request, so it says only
-# what the model needs to choose the tool and fill it in.
-_OWNER_LANE_TOOLS = frozenset({"protagine_resolve_commitment", "protagine_record_affect"})
+# ``protagine_memory_search`` covers the rest. Contact affect is not the model's to write: the
+# appraisal's their_valence records it from the contact's own turns. Each schema is sent with every
+# request, so it says only what the model needs to choose the tool and fill it in.
+_OWNER_LANE_TOOLS = frozenset({"protagine_resolve_commitment"})
 _LANE_REFUSALS = {
     "unbound": "no participant is bound to this turn; the direct Protagine tools do not work on this "
                "lane, answer from the message and the assembled context",
@@ -177,41 +202,31 @@ _LANE_REFUSALS = {
                   "assembled context",
     "guest": "the direct Protagine tools are owner-only; a guest turn answers from the assembled context",
 }
-_AFFECT_SOURCES = ("explicit", "inferred", "signal")  # the host route's vocabulary
 
 
 def _terminal(reason: str) -> str:
-    """One final answer: the tool cannot work on this lane and a retry would only repeat it."""
-    return json.dumps({"unavailable": True, "retry": False, "reason": reason})
+    """One final answer: the call cannot succeed this turn and a retry would only repeat it. The same answer
+    as the general plugin's ``final_answer``, which this provider, loadable on its own, does not import."""
+    return json.dumps({"unavailable": True, "retry": False, "reason": reason}, ensure_ascii=False)
 
 
-def _detail(response: Any) -> str:
-    try:
-        detail = response.json().get("detail")
-    except Exception:
-        return ""
-    if isinstance(detail, list):
-        detail = "; ".join(str(item.get("msg") or item) if isinstance(item, dict) else str(item) for item in detail)
-    return str(detail or "")[:200]
+# An id nobody listed (a model guesses one from a contact and a subject, then searches and guesses
+# again when a transport error comes back): the answer is final, and says where ids come from. What
+# the turn itself says is captured after it, so there is nothing to record by hand either.
+_UNKNOWN_COMMITMENT = ("no open commitment has that id; only an id= listed under Pending Commitments can be "
+                       "settled, and what this turn says is captured after it")
 
 
 _PROTAGINE_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {"name": "protagine_resolve_commitment",
-     "description": "Settle a commitment listed in context: fulfilled (done), dismissed (stale; give reason) or "
-                    "snoozed (give new_due_at, ISO-8601 UTC).",
+     "description": "Settle an open commitment by its id= under Pending Commitments (none listed: nothing to "
+                    "settle): fulfilled (done), dismissed (stale; give reason) or snoozed (give new_due_at, "
+                    "ISO-8601 UTC).",
      "parameters": {"type": "object", "properties": {
          "commitment_id": {"type": "string"},
          "action": {"type": "string", "enum": ["fulfilled", "dismissed", "snoozed"]},
          "reason": {"type": "string"}, "new_due_at": {"type": "string"}},
          "required": ["commitment_id", "action"]}},
-    {"name": "protagine_record_affect",
-     "description": "Record the participant's expressed feeling: valence -1 to 1, arousal 0 to 1, source "
-                    "explicit (said so), inferred (from their words) or signal (non-verbal), optional trigger.",
-     "parameters": {"type": "object", "properties": {
-         "valence": {"type": "number"}, "arousal": {"type": "number"},
-         "source": {"type": "string", "enum": list(_AFFECT_SOURCES)},
-         "trigger": {"type": "string"}},
-         "required": ["valence", "arousal"]}},
 ]
 
 # Static guidance lives here, once per request, instead of being repeated inside every turn's
@@ -253,10 +268,12 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         self._handle_cache: dict[str, tuple] = {}  # "platform:sender" -> (monotonic ts, contact_id)
         self._handle_cache_lock = threading.Lock()
         self._handle_negative_cache: dict[str, tuple[float, str, int]] = {}
+        # session_id -> (platform, sender) from pre_llm_call: the binding the general plugin's guard and tools
+        # read, used when a host binds the sender on the agent alone and sets no gateway context.
+        self._turn_senders: dict[str, tuple[str, str]] = {}
         self._last_turn_started_at = 0.0
         self._turn_number = 0
         self._prev_turn_gap_secs = None
-        self._compressed_sessions: set[str] = set()  # recall may repeat these sessions' own turns
         self._platform = "cli"
         self._sync_thread: Optional[threading.Thread] = None
         self._circuit_open_until: Optional[float] = None
@@ -267,6 +284,12 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         self._last_checkpoint: dict[str, Any] = {"state": "unverified"}
         self._last_erasure: dict[str, Any] = {"state": "unverified"}
         self._turn_writer_skip_logged = False
+        # session_id -> {section key: fingerprint} of the last turn whose context the model has in its history,
+        # and session_id -> (message, fingerprints) of the prefetch its turn has not completed yet.
+        self._shown: dict[str, dict[str, str]] = {}
+        self._offered: dict[str, tuple[str, dict[str, str]]] = {}
+        self._shown_lock = threading.Lock()
+        self._spill_cap: Optional[float] = None
 
     def _configure(self, config: dict[str, Any]) -> None:
         self.sidecar_url = config.get("url") or _env("PROTAGINE_URL") or "http://127.0.0.1:7777"
@@ -321,7 +344,7 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
     def _is_circuit_open(self) -> bool:
         if self._circuit_open_until is None:
             return False
-        if datetime.now(timezone.utc).timestamp() > self._circuit_open_until:
+        if _ttime.monotonic() > self._circuit_open_until:   # a breaker times real seconds, whatever the wall clock
             self._circuit_open_until = None
             self._connection_failures = 0
             return False
@@ -331,7 +354,7 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         self._connection_status = "degraded"
         self._connection_failures += 1
         if self._connection_failures >= 3:
-            self._circuit_open_until = datetime.now(timezone.utc).timestamp() + 60
+            self._circuit_open_until = _ttime.monotonic() + 60
             logger.warning("Protagine: circuit breaker opened for 60s after %d failures", self._connection_failures)
 
     def _record_connection_success(self) -> None:
@@ -393,8 +416,9 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
     # -- Clock scoped to the owning user turn (pre_llm_call hook) --------------
 
     def _current_time_line(self) -> str:
+        """Read from ``time.time``, the one wall clock Hermes' own clock and the sidecar's "Now" follow too."""
         from zoneinfo import ZoneInfo
-        now = datetime.now(timezone.utc)
+        now = datetime.fromtimestamp(_ttime.time(), timezone.utc)
         if self._timezone:
             try:
                 now = now.astimezone(ZoneInfo(self._timezone))
@@ -429,8 +453,15 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             result.append(note)
         return result
 
-    def resolve_contact(self, platform: str, user_id: str) -> None:
-        """Warm the sender's contact so per-contact memory engages (pre_llm_call)."""
+    def resolve_contact(self, platform: str, user_id: str, session_id: str = "") -> None:
+        """Keep the turn's sender for its session and warm the sender's contact (pre_llm_call), so per-contact
+        memory engages whichever way the host bound the sender."""
+        if session_id:
+            with self._handle_cache_lock:
+                self._turn_senders.pop(session_id, None)
+                while len(self._turn_senders) >= self._HANDLE_CACHE_MAX:
+                    self._turn_senders.pop(next(iter(self._turn_senders)))
+                self._turn_senders[session_id] = (str(platform or ""), str(user_id or ""))
         if user_id:
             self._resolve_handle(platform, user_id)
 
@@ -443,8 +474,80 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         if not contact_id:
             logger.warning("Protagine prefetch withheld: current turn has no participant binding")
             return ""
-        ctx = self._prefetch_sync(query, session_id=effective_session, contact_id=contact_id)
-        return self._with_fresh_temporal_sync(ctx, contact_id=contact_id)
+        started = _ttime.monotonic()
+        sections = self._prefetch_sections(query, session_id=effective_session, contact_id=contact_id)
+        prints, unchanged = self._unchanged(effective_session, sections)
+        ctx = self._format_sections(sections, unchanged=unchanged) if sections else ""
+        result = self._with_fresh_temporal_sync(ctx, contact_id=contact_id)
+        self._offer(effective_session, query, prints, size=len(result), elapsed=_ttime.monotonic() - started)
+        return result
+
+    # -- Unchanged sections: one line instead of what the last turn already carried --------
+
+    @staticmethod
+    def _section_key(section: dict[str, Any]) -> tuple[str, str]:
+        title = str(section.get("title", section.get("id", "protagine-context")))
+        return str(section.get("id") or title), title
+
+    def _unchanged(self, session_id: str, sections: list[dict[str, Any]]) -> tuple[dict[str, str], set[str]]:
+        """``(fingerprint of every section, keys of the ones the session's last shown turn carried as they are)``."""
+        with self._shown_lock:
+            shown = dict(self._shown.get(session_id) or {})
+        prints, unchanged = {}, set()
+        for section in sections:
+            key, title = self._section_key(section)
+            prints[key] = hashlib.sha256(f"{title}\n{section.get('body', '')}".encode("utf-8", "replace")).hexdigest()
+            if title not in _ALWAYS_SENT and shown.get(key) == prints[key]:
+                unchanged.add(key)
+        return prints, unchanged
+
+    def _prefetch_wait(self) -> float:
+        try:
+            from agent.memory_manager import _EXTERNAL_PREFETCH_TIMEOUT_S as wait
+        except ImportError:
+            wait = _PREFETCH_WAIT_FALLBACK_S
+        return float(wait) - _PREFETCH_WAIT_MARGIN_S
+
+    def _spill_limit(self) -> float:
+        if self._spill_cap is None:
+            try:
+                from tools.hook_output_spill import get_spill_config
+                config = get_spill_config()
+                self._spill_cap = float(config.get("max_chars") or _SPILL_CAP_FALLBACK) if config.get(
+                    "enabled", True) else float("inf")
+            except Exception:
+                self._spill_cap = float(_SPILL_CAP_FALLBACK)
+        return self._spill_cap
+
+    def _offer(self, session_id: str, message: str, prints: dict[str, str], *, size: int, elapsed: float) -> None:
+        """What this prefetch showed, kept until ``sync_turn`` says its turn completed: only a prefetch Hermes
+        waited for and put inline whole."""
+        with self._shown_lock:
+            if prints and elapsed <= self._prefetch_wait() and size <= self._spill_limit():
+                self._offered.pop(session_id, None)
+                while len(self._offered) >= self._HANDLE_CACHE_MAX:
+                    self._offered.pop(next(iter(self._offered)))
+                self._offered[session_id] = (message, prints)
+            else:
+                self._offered.pop(session_id, None)
+
+    def _confirm_shown(self, session_id: str, message: str) -> None:
+        """The turn a prefetch fed completed: its sections are in the history every later turn replays."""
+        with self._shown_lock:
+            offered = self._offered.get(session_id)
+            if offered is None or offered[0] != message:
+                return
+            del self._offered[session_id]
+            self._shown.pop(session_id, None)
+            while len(self._shown) >= self._HANDLE_CACHE_MAX:
+                self._shown.pop(next(iter(self._shown)))
+            self._shown[session_id] = offered[1]
+
+    def _reset_shown(self) -> None:
+        """A switched, rewound or compressed history may no longer carry what earlier turns were shown."""
+        with self._shown_lock:
+            self._shown.clear()
+            self._offered.clear()
 
     def _with_turn_gap(self, block):
         gap = self._prev_turn_gap_secs
@@ -457,19 +560,26 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                  f"Runtime reference clock: {self._current_time_line()}. Contact timezone and location unknown.")
         return self._with_turn_gap(block) if include_turn_gap else block
 
-    @staticmethod
-    def _turn_sender_context() -> tuple[str, str, str]:
+    def _turn_sender_context(self, session_id: str = "") -> tuple[str, str, str]:
+        """``(platform, sender, chat)`` of the current turn: the gateway's session context when there is one
+        (it binds each message's own sender), else the sender the turn's ``pre_llm_call`` named for this
+        session, as a host that binds the sender on the agent alone does (the general plugin's session map)."""
         try:
             from gateway.session_context import get_session_env
-            return ((get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower(),
-                    (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip(),
-                    (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip())
+            bound = ((get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower(),
+                     (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip(),
+                     (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip())
         except Exception:
-            return "", "", ""
+            bound = ("", "", "")
+        if any(bound):
+            return bound
+        with self._handle_cache_lock:
+            platform, sender = self._turn_senders.get(session_id or self._session_id, ("", ""))
+        return platform.strip().lower(), sender.strip(), ""
 
     def _prefetch_contact(self, session_id: str = "") -> str:
         """The exact turn participant: a resolved sender, or the owner on internal lanes."""
-        platform, sender, chat = self._turn_sender_context()
+        platform, sender, chat = self._turn_sender_context(session_id)
         effective = platform or str(self._platform or "").strip().lower()
         if sender:
             try:
@@ -519,23 +629,31 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
 
     def _prefetch_sync(self, query: str, *, session_id: str = "", contact_id: Optional[str] = None) -> str:
         """Blocking /context/assemble call -> formatted context string."""
+        sections = self._prefetch_sections(query, session_id=session_id, contact_id=contact_id)
+        return self._format_sections(sections) if sections else ""
+
+    def _prefetch_sections(self, query: str, *, session_id: str = "",
+                           contact_id: Optional[str] = None) -> list[dict[str, Any]]:
+        """Blocking /context/assemble call -> its sections (none when it cannot answer)."""
         bound_contact = contact_id or self._prefetch_contact(session_id)
         if not bound_contact:
-            return ""
+            return []
         if self._is_circuit_open():
             logger.debug("Protagine prefetch skipped: circuit breaker open")
-            return ""
+            return []
         guest = bound_contact != self._contact_id
+        # A kanban worker prefetches on the owner's lane with its task body as the message: task work, not
+        # the owner's turn, so it names its task (the sidecar then adds no turn lesson and logs no use).
+        task = os.environ.get("HERMES_KANBAN_TASK") or ""
         try:
             with httpx.Client(timeout=10) as client:
                 resp = client.post(f"{self.sidecar_url}/v1/host/context/assemble", headers=self._headers(), json={
                     "identity": {"host_id": "hermes"},
-                    "context": {"session_id": session_id or self._session_id, "contact_id": bound_contact},
+                    "context": {"session_id": session_id or self._session_id, "contact_id": bound_contact,
+                                **({"metadata": {"kanban_task": task}} if task else {})},
                     "incoming_message": {"role": "user", "content": query},
-                    "session_history": "compressed" if (session_id or self._session_id) in self._compressed_sessions
-                    else "intact",
                     "include_initiatives": not guest,
-                    **({"audience": "viewer", "projection_policy": "scoped_viewer_required"} if guest else {}),
+                    **({"audience": "viewer"} if guest else {}),
                 })
                 resp.raise_for_status()
                 data = resp.json()
@@ -546,14 +664,14 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                 logger.warning("Protagine prefetch auth failed (HTTP %d); check the API key", code)
             else:
                 logger.debug("Protagine prefetch failed: %s", exc)
-            return ""
+            return []
         except (httpx.HTTPError, OSError) as exc:
             self._record_connection_failure()
             logger.debug("Protagine prefetch failed: %s", exc)
-            return ""
+            return []
         self._record_connection_success()
         sections = data.get("sections", []) if isinstance(data, dict) else []
-        return self._format_sections(sections) if sections else ""
+        return [section for section in sections if isinstance(section, dict)] if isinstance(sections, list) else []
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Intentionally a no-op: recall is keyed on the next message, not known yet."""
@@ -620,7 +738,9 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "",
                   turn_id: str = "", **_: Any) -> None:
-        """Persist a completed turn (non-blocking) when this provider is the turn writer."""
+        """Persist a completed turn (non-blocking) when this provider is the turn writer. Whoever writes it, the
+        turn completed: the context its prefetch showed is in the history later turns replay."""
+        self._confirm_shown(session_id or self._session_id, user_content)
         if not self._turn_writer_enabled():
             if not self._turn_writer_skip_logged:
                 logger.info("Protagine memory provider is read/context-only; the general plugin owns turn capture")
@@ -645,7 +765,7 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             sender = {"platform": turn_platform or "unknown", "user_id": turn_sender, "display_name": "",
                       "group_id": turn_chat if turn_chat and turn_chat != turn_sender else ""}
         url, headers = self.sidecar_url, self._headers()
-        self._last_sync_attempt = datetime.now(timezone.utc).isoformat()
+        self._last_sync_attempt = datetime.fromtimestamp(_ttime.time(), timezone.utc).isoformat()
         self._last_sync_error = None
 
         def _sync():
@@ -718,12 +838,12 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
                 return _terminal(_LANE_REFUSALS[lane])
         handler = getattr(self, f"_tool_{tool_name}", None)
         if handler is None:
-            return json.dumps({"error": f"Unknown Protagine tool: {tool_name}"})
+            return _terminal(f"unknown Protagine tool: {tool_name}")
         try:
             return handler(args)
-        except Exception as exc:
+        except Exception as exc:   # a handler's own requests answer for themselves: this is its arguments
             logger.warning("Protagine tool %s failed: %s", tool_name, exc)
-            return json.dumps({"error": f"Tool failed: {exc}"})
+            return json.dumps({"error": f"the arguments could not be used ({type(exc).__name__}); correct them"})
 
     # -- Tool handlers ---------------------------------------------------------
 
@@ -743,45 +863,42 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             if not args.get("new_due_at"):
                 return json.dumps({"error": "new_due_at is required to snooze"})
             body = {"due_at": args["new_due_at"], "metadata": {
-                "snoozed_by": "agent", "snoozed_at": datetime.now(timezone.utc).isoformat(), "note": reason or ""}}
+                "snoozed_by": "agent", "snoozed_at": datetime.fromtimestamp(_ttime.time(), timezone.utc).isoformat(),
+                "note": reason or ""}}
         try:
             with httpx.Client(timeout=5) as client:
                 resp = client.patch(f"{self.sidecar_url}/v1/host/commitments/{commitment_id}",
                                     headers=self._headers(), json=body)
+                if resp.status_code == 404:
+                    return _terminal(_UNKNOWN_COMMITMENT)
+                if resp.status_code in (400, 422):   # refused as sent: the sidecar's words say what to correct
+                    try:
+                        detail = resp.json().get("detail")
+                    except Exception:
+                        detail = None
+                    return json.dumps({"error": f"the settle was refused: {str(detail or resp.status_code)[:300]}"})
+                if 400 <= resp.status_code < 500:
+                    return _terminal(f"the sidecar refused the settle (HTTP {resp.status_code})")
                 resp.raise_for_status()
                 return json.dumps({"ok": True, "action": action, "commitment": resp.json()})
         except Exception as exc:
-            return json.dumps({"error": str(exc)})
-
-    def _tool_protagine_record_affect(self, args: dict) -> str:
-        """The route accepts only its own ``source`` vocabulary and real person contacts; anything
-        else is a 422 no retry can fix, so the tool maps the first and reports the second once."""
-        source = str(args.get("source") or "").strip().lower()
-        payload = {"contact_id": self._contact_id, "valence": args["valence"],
-                   "arousal": args.get("arousal", 0.5), "source": source if source in _AFFECT_SOURCES else "inferred",
-                   "trigger": args.get("trigger") or None,
-                   **({"session_id": self._session_id} if self._session_id else {})}
-        try:
-            with httpx.Client(timeout=5) as client:
-                resp = client.post(f"{self.sidecar_url}/v1/host/affect/events", headers=self._headers(), json=payload)
-                if 400 <= resp.status_code < 500:
-                    return _terminal(f"affect was not recorded (HTTP {resp.status_code}): {_detail(resp)}")
-                resp.raise_for_status()
-                return json.dumps({"success": True})
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
+            return _terminal(f"the settle was not confirmed ({type(exc).__name__})")
 
     # -- Optional hooks --------------------------------------------------------
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "",
                           reset: bool = False, **kwargs) -> None:
+        self._reset_shown()
         compression_continuation = (kwargs.get("reason") == "compression" and self._session_id
                                     and parent_session_id == self._session_id)
         if reset or kwargs.get("rewound") or (new_session_id != self._session_id and not compression_continuation):
             self._last_turn_started_at = 0.0
             self._prev_turn_gap_secs = None
-        if reset or kwargs.get("rewound"):
-            self._compressed_sessions.discard(new_session_id)
+        elif compression_continuation:
+            with self._handle_cache_lock:   # the same turn goes on under the new id, with the sender it bound
+                sender = self._turn_senders.get(parent_session_id)
+                if sender is not None:
+                    self._turn_senders[new_session_id] = sender
         self._session_id = new_session_id
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
@@ -803,21 +920,37 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
         if not contact or not old_text or not self._session_id:
             return
         try:
-            with httpx.Client(timeout=3) as client:
+            with httpx.Client(timeout=FORGET_TIMEOUT_SECONDS) as client:
                 response = client.post(f"{self.sidecar_url}/v1/host/memory/sources/forget", headers=self._headers(),
                                        json={"contact_id": contact, "session_id": self._session_id, "old_text": old_text})
-            if response.is_success and response.json().get("source_erased") is True:
-                receipt = response.json()
-                self._last_erasure = {"state": "source_erased", "scope": "canonical_turn_sources",
-                                      "watermark": receipt.get("watermark")}
-                self._temporal_cache = (0.0, "")
-            else:
-                self._last_erasure = {"state": "unmapped_or_ambiguous", "scope": "canonical_turn_sources"}
-        except Exception:
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+            # Never sent: nothing was removed.
             self._last_erasure = {"state": "failed", "scope": "canonical_turn_sources"}
+            return
+        except Exception:
+            # Sent, but the answer did not come back in time: the sidecar finishes a
+            # forget it received, so the removal may well have landed.
+            self._last_erasure = {"state": "unconfirmed", "scope": "canonical_turn_sources"}
+            return
+        if not response.is_success:
+            self._last_erasure = {"state": "unmapped_or_ambiguous", "scope": "canonical_turn_sources"}
+            return
+        try:
+            receipt = response.json()
+        except ValueError:
+            self._last_erasure = {"state": "unconfirmed", "scope": "canonical_turn_sources"}
+            return
+        if receipt.get("source_erased") is True:
+            self._last_erasure = {"state": "source_erased", "scope": "canonical_turn_sources",
+                                  "watermark": receipt.get("watermark")}
+            self._temporal_cache = (0.0, "")
+        else:
+            self._last_erasure = {"state": "unmapped_or_ambiguous", "scope": "canonical_turn_sources"}
 
     def on_pre_compress(self, messages: List[Dict[str, Any]], *, require_checkpoint: bool = False) -> str:
-        """Commit direct evidence through the shared outbox before Hermes compresses."""
+        """Commit direct evidence through the shared outbox before Hermes compresses. The compressed history no
+        longer carries earlier turns' context, so every section is sent whole again."""
+        self._reset_shown()
         try:
             if os.environ.get("HERMES_KANBAN_TASK"):
                 self._last_checkpoint = {"state": "not_applicable", "reason": "worker_run"}
@@ -825,10 +958,6 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
             if not messages:
                 self._last_checkpoint = {"state": "empty", "messages": 0}
                 return ""
-            # Hermes is about to fold this session's earlier turns into a summary: from now on recall
-            # may repeat this session's own sources, because the model no longer sees them verbatim.
-            if self._session_id:
-                self._compressed_sessions.add(self._session_id)
             contact_id = self._prefetch_contact()
             if not contact_id:
                 raise ValueError("checkpoint has no exact participant")
@@ -867,7 +996,12 @@ class ProtagineMemoryProvider(_MemoryProviderABC):
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
-    def _format_sections(self, sections: list[dict[str, Any]]) -> str:
-        """Unfenced sections; native Hermes owns the memory framing and the system block the guidance."""
-        return "\n\n".join(f"## {section.get('title', section.get('id', 'protagine-context'))}\n{section.get('body', '')}"
-                           for section in sections)
+    def _format_sections(self, sections: list[dict[str, Any]], *, unchanged: frozenset | set = frozenset()) -> str:
+        """Unfenced sections; native Hermes owns the memory framing and the system block the guidance. A section in
+        ``unchanged`` is one line: the session's last turn carried it as it is."""
+        parts = []
+        for section in sections:
+            key, title = self._section_key(section)
+            parts.append(UNCHANGED_LINE.format(title=title) if key in unchanged
+                         else f"## {title}\n{section.get('body', '')}")
+        return "\n\n".join(parts)

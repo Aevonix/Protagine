@@ -2,9 +2,9 @@ name: protagine
 version: 1.10.0
 description: |
   Protagine adapter on stock Hermes seams: durable turn capture, the guard for
-  mind-originated and non-owner runs, the /mind command, and the memory, self,
-  people and reminder tools. Recall itself comes from the protagine-memory
-  provider.
+  mind-originated and non-owner runs, the /mind command, and the memory, self
+  (with the agent's opinions), people and reminder tools. Recall itself comes
+  from the protagine-memory provider.
 author: Aevonix
 entry_point: __init__.py
 category: general

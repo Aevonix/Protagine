@@ -118,7 +118,7 @@ jobs:
           import subprocess, sys
           adapter, = Path('dist').glob('protagine_hermes-*.whl')
           sidecar, = Path('dist').glob('protagine-*.whl')
-          subprocess.run([sys.executable, '-m', 'pip', 'install', str(adapter) + '[test]', str(sidecar) + '[lancedb]'], check=True)
+          subprocess.run([sys.executable, '-m', 'pip', 'install', str(adapter) + '[test]', str(sidecar)], check=True)
           PY
           python -m pip check
       - name: Qualify the adapter against stock Hermes
@@ -158,6 +158,16 @@ jobs:
           PROTAGINE_TEST_HERMES_PYTHON: ${{ github.workspace }}/.qualification/hermes-venv/bin/python
         working-directory: sidecar
         run: pytest tests/ -v
+      # The paired worker runs inside Hermes; the tests that drive it in-process skip above (no Hermes in
+      # the sidecar's interpreter) and run here with stock Hermes installed.
+      - name: Install stock Hermes into the test interpreter
+        run: pip install -e ./.qualification/hermes
+      - name: Run the worker tests that need Hermes in-process
+        working-directory: sidecar
+        run: >-
+          pytest -v tests/test_people_family_walk.py tests/test_people_acceptance.py
+          tests/test_m8_arm_contrasts.py tests/test_paired_people_instrument.py
+          tests/test_qualification_paired_campaign.py tests/test_outreach_family_walk.py
 
   docker:
     runs-on: ubuntu-latest

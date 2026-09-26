@@ -27,7 +27,7 @@ The [known gaps](docs/KNOWN-GAPS.md) track unfinished behavior.
 | Persistent memory | Retains original evidence and its source, speaker and time. Corrections can supersede earlier information. Search indexes can be rebuilt without changing the originals. |
 | Automatic recollection | Selects relevant memory before an ordinary reply. Later model requests check source validity and refresh the view of ongoing work. The agent can search explicitly or open the original evidence when it needs more context. |
 | Shared work | Connects conversations to Hermes tasks, workers and schedules. The agent can inspect, steer or stop enrolled work while a separate conversation continues. |
-| Identity and relationships | Stores preferences, contact links, appraisals and working judgments outside any one model. Owner corrections remain attributable. Relationship estimates are separate from access permissions. |
+| Identity and relationships | Stores preferences, contact links, appraisals and opinions outside any one model. Owner corrections remain attributable. Relationship estimates are separate from access permissions. |
 | Background deliberation | Reviews the agent's situation and proposes work through the existing initiative path. Its operating mode and cadence belong to the deployment. |
 | Learning | Uses ordinary experience to improve remembered knowledge and preferences. Skill proposals, evaluation and rollback provide a path toward broader improvements. Reliable autonomous self-improvement remains a development goal. |
 
@@ -85,9 +85,9 @@ this handoff. Consistent completion with live models still needs validation.
 Reliability is unfinished. Models still add unsupported claims, delegated tasks
 can stall, and consistent behavior across physical channels needs more evidence.
 Complete forgetting across transcripts, unlinked copies and backups is unfinished.
-Automatic persistent opinions are experimental and disabled by default. Useful
-background initiative and autonomous self-improvement still need complete
-demonstrations in ordinary use.
+Opinions that change only on new evidence are a release-candidate faculty, not yet
+shown to help by their benchmark family. Useful background initiative and
+autonomous self-improvement still need complete demonstrations in ordinary use.
 
 Internal-review probability measurement is experimental and disabled by
 default. Explicitly enrolled reviews can measure first-attempt completion
@@ -109,6 +109,10 @@ pipx install protagine
 protagine init
 hermes gateway restart
 ```
+
+The package includes the vector store; where pipx's default interpreter is
+newer than 3.13, add `--python python3.12` (the
+[install guide](docs/INSTALL.md) has the full line).
 
 `protagine init` asks for your name, the agent's name and the autonomy level,
 then installs the adapter into Hermes' own environment, writes the Hermes keys
@@ -134,7 +138,7 @@ tools and models configured for that deployment.
 ## Research mission
 
 We use **Proto-AGI** for the goal of a persistent agent that remembers what
-matters, revises its judgments, keeps commitments and improves through
+matters, revises its opinions on evidence, keeps commitments and improves through
 experience. The owner should be able to keep talking to it while it works,
 correct it and inspect the evidence behind its actions.
 
@@ -160,7 +164,7 @@ use and recovery.
 | Remember across models and channels | Apply a fact or correction from one conversation in another after a model swap, using the right evidence. |
 | Maintain quality | Keep low-value material from crowding out useful memory. Handle contradictions, corrections and forgetting consistently. |
 | Continue work during conversation | Inspect, redirect or cancel the same task from another enrolled channel without losing its state or permissions. |
-| Use a coherent identity | Show how a stored preference or judgment changes behavior. Resolve uncertain contact identities before joining their records. |
+| Use a coherent identity | Show how a stored preference or opinion changes behavior. Resolve uncertain contact identities before joining their records. |
 | Recall beyond text | Recover useful information from supported media and reopen the relevant original. |
 | Take useful initiative | Notice an opportunity or overdue commitment, take an authorized next step and follow it through without repeated alerts. |
 | Improve a recurring failure | Diagnose a problem, evaluate a change on an independent task, demonstrate a benefit and recover from a regression. |
@@ -191,7 +195,7 @@ not a prerequisite for the harness approach described above.
   [documents](docs/SOURCE-DOCUMENTS.md), [video](docs/SOURCE-VIDEOS.md).
 - **Agent state:** [contacts](docs/SOCIAL-STATE.md),
   [working perspective](docs/WORKING-PERSPECTIVE.md),
-  [judgments](docs/SELF-JUDGMENTS.md), [commitments](docs/COMMITMENT-WORK.md).
+  [opinions](docs/OPINIONS.md), [commitments](docs/COMMITMENT-WORK.md).
 - **Execution:** [model roles](docs/FUNCTION-ROUTING.md),
   [inference pool](docs/INFERENCE-POOL.md),
   [model qualification](docs/MODEL-QUALIFICATION.md).

@@ -32,7 +32,7 @@ async def test_exact_corrected_phone_handle_does_not_become_an_unknown_third_per
         gateway='whatsapp', address='12125550101@s.whatsapp.net', expected_contact_id=second.contact_id,
         contact_id=first.contact_id, evidence_refs=['fixture:owner-reversal'])
     assert (await ParticipantResolver(store).resolve(platform='whatsapp', user_id='12125550101@s.whatsapp.net')).contact_id == first.contact_id
-    assert (await store.resolve_messaging_handle('rcs', '(212) 555-0101')).contact_id == first.contact_id
+    assert (await store.resolve_messaging_handle('rcs', '+1 (212) 555-0101')).contact_id == first.contact_id
     assert len(await store.list()) == 2
 
 

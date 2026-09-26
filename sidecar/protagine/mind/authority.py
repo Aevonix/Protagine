@@ -16,8 +16,11 @@ import json
 import random
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
+from protagine.util.temporal import now_utc
+
+from .rank import OUTREACH_ANSWER, OUTREACH_TYPES, TASK_OUTCOME
 
 LEVELS = ("off", "suggest", "standard", "trusted")
 CLASSES = ("internal", "owner", "contact", "external", "floor")
@@ -27,7 +30,7 @@ INTERNAL_SAFE_TOOLSETS = frozenset({"web", "file", "session_search", "memory", "
 
 # The floor (architecture 7.3): four classes, matched conservatively on
 # intention text, message text and, in mind-originated runs, tool arguments.
-# Moved from ``P/self_model/trust.py``; the plugin guard carries the same set.
+# The one floor since M2 (the trust ladder that also held it is gone); the plugin guard carries the same set.
 FLOOR_PATTERNS: Dict[str, re.Pattern[str]] = {
     "money_movement": re.compile(
         r"\b(?:wire|transfer|send|move)\s+(?:\$|money|funds|payment)|"
@@ -76,9 +79,9 @@ def new_ask_code(taken: Iterable[str], *, rng: random.Random | None = None) -> s
 def may_contact_of(contact: Any, *, owner_id: str | None) -> str:
     """``may_contact`` for a contact record or id (architecture 7.4).
 
-    The column arrives with the people milestone; until then it is derived:
-    the owner is ``auto``, ``interaction_allowed`` false is ``never`` and
-    everyone else is ``ask``.
+    The owner is ``auto`` by identity; everyone else is what the
+    ``contacts.may_contact`` column says, and ``ask`` when the record has no
+    usable value. Nothing else (a tier, a legacy flag, familiarity) grants.
     """
     contact_id = contact if isinstance(contact, str) else getattr(contact, "contact_id", None)
     if contact_id is None and isinstance(contact, Mapping):
@@ -88,11 +91,7 @@ def may_contact_of(contact: Any, *, owner_id: str | None) -> str:
     if contact is None or isinstance(contact, str):
         return "ask"
     value = contact.get("may_contact") if isinstance(contact, Mapping) else getattr(contact, "may_contact", None)
-    if value in MAY_CONTACT:
-        return str(value)
-    allowed = contact.get("interaction_allowed") if isinstance(contact, Mapping) \
-        else getattr(contact, "interaction_allowed", None)
-    return "never" if allowed is False else "ask"
+    return str(value) if value in MAY_CONTACT else "ask"
 
 
 def classify(*, kind: str, recipient: str | None, owner_id: str | None,
@@ -114,13 +113,15 @@ def classify(*, kind: str, recipient: str | None, owner_id: str | None,
 
 def decide_table(*, level: str, cls: str, may_contact: str = "ask", floor: bool = False,
                  deny: bool = False, budget_exhausted: bool = False,
-                 breaker_tripped: bool = False, enabled: bool = True) -> str:
+                 breaker_tripped: bool = False, enabled: bool = True, requested: bool = False) -> str:
     """The pure decision (architecture 7.2, 7.3, 7.5, 7.6), in precedence order:
 
     1. the off switch or ``off`` level: ``drop``
     2. the deny list: ``drop``
     3. the floor: ``ask``, and nothing raises it
-    4. the level x class table, with ``may_contact`` for the contact class
+    4. the level x class table, with ``may_contact`` for the contact class; at ``suggest`` a
+       ``requested`` word to the owner (``REQUESTED_TYPES``) acts like internal work: the level
+       holds the mind's initiative for the digest, not what the owner asked to be told
     5. a tripped breaker demotes an ``act`` one level, to ``ask``
     6. an exhausted budget defers an ``act``; it is not an error
     """
@@ -131,7 +132,7 @@ def decide_table(*, level: str, cls: str, may_contact: str = "ask", floor: bool 
     if floor or cls == "floor":
         return "ask"
     if level == "suggest":
-        decision = "act" if cls == "internal" else "ask"     # digest only
+        decision = "act" if cls == "internal" or (requested and cls == "owner") else "ask"   # digest only
     elif level == "standard":
         if cls in {"internal", "owner"}:
             decision = "act"
@@ -166,11 +167,19 @@ class Verdict:
                 "floor": self.floor, "notice": self.notice}
 
 
+# The research-shaped task types (the ones whose report is a finding, ``outcomes.FINDING_TYPES``): one
+# worker run reads sources and writes them up, so it gets a longer run and a second attempt.
+RESEARCH_TASK_BUDGET = {"max_runtime_s": 1800, "max_retries": 2}
+DEFAULT_TASK_TYPES = {name: dict(RESEARCH_TASK_BUDGET)
+                      for name in ("research", "question", "mastery_investigation", "goal_step", "outreach_followup")}
+
+
 @dataclass
 class Budgets:
     tasks_per_hour: int = 4
     concurrent_tasks: int = 2
     owner_messages_per_day: int = 3
+    outreach_per_day: int = 3      # unprompted outreach to the owner in any 24 h (architecture 4.10)
     contact_messages_per_day: int = 5
     per_contact_cooldown_hours: float = 24
     llm_tokens_per_day: int = 200000
@@ -178,19 +187,45 @@ class Budgets:
     open_goals: int = 2
     goal_tasks: int = 4            # steps an agent-owned goal may spend
     goal_horizon_days: int = 7     # the longest horizon an adopted goal may have
-    task_max_runtime_s: int = 600
+    task_max_runtime_s: int = 600  # one worker run of a task type ``task_types`` does not name
     task_max_retries: int = 1
+    # Per task type: ``{max_runtime_s, max_retries}``, either one falling back to the two above.
+    task_types: Dict[str, Dict[str, int]] = field(
+        default_factory=lambda: {name: dict(value) for name, value in DEFAULT_TASK_TYPES.items()})
 
     @classmethod
     def from_config(cls, value: Mapping[str, Any] | None) -> "Budgets":
         budgets = cls()
         for name, default in vars(budgets).items():
             raw = (value or {}).get(name, default)
+            if name == "task_types":
+                # Over the defaults, one type and one field at a time: overriding research's runtime
+                # keeps its retries, and the other types keep theirs.
+                merged = {kind: dict(entry) for kind, entry in default.items()}
+                for kind, entry in (raw.items() if isinstance(raw, Mapping) else ()):
+                    if not isinstance(entry, Mapping):
+                        continue
+                    target = merged.setdefault(str(kind), {})
+                    for key in ("max_runtime_s", "max_retries"):
+                        try:
+                            if key in entry:
+                                target[key] = int(entry[key])
+                        except (TypeError, ValueError):
+                            pass
+                budgets.task_types = merged
+                continue
             try:
                 setattr(budgets, name, type(default)(raw))
             except (TypeError, ValueError):
                 setattr(budgets, name, default)
         return budgets
+
+    def for_task(self, task_type: str | None) -> tuple[int, int]:
+        """``(max_runtime_s, max_retries)``: one worker run's limit and the retries after a failed run,
+        for a task of this type."""
+        entry = self.task_types.get(str(task_type or "")) or {}
+        return (int(entry.get("max_runtime_s", self.task_max_runtime_s)),
+                int(entry.get("max_retries", self.task_max_retries)))
 
 
 @dataclass
@@ -267,12 +302,25 @@ class Authority:
 
     BUDGET_ACTION = "queued"  # the history action counted by the budgets
     DIGEST_TYPES = ("digest", "ask_notice", "breaker_notice", "health_notice")
+    # Words to the owner that are not the mind's initiative: its own reports, the reminders and
+    # heads-ups the owner asked for, and the question a message the owner asked for raises (who is
+    # the recipient the owner named). ``suggest`` does not hold them for the digest.
+    # Words owed to the owner for what they asked: the answer to a follow-up, and the report of a task done
+    # for an obligation to them. Decided like every word to the owner (the off switch, the level, the floor,
+    # the deny list), they are the obligation's own delivery: bounded by what was asked (a task budget, a
+    # follow-up), never held by the daily owner budget and never spending a slot of it.
+    OWED_OWNER_TYPES = (OUTREACH_ANSWER, TASK_OUTCOME)
+    REQUESTED_TYPES = DIGEST_TYPES + ("commitment_reminder", "commitment_due_soon", "recipient_unknown",
+                                      *OWED_OWNER_TYPES)
+    # Unprompted outreach has its own daily budget and never takes a slot of the owner budget, so it can
+    # never defer a reminder the owner asked for; the answer to a follow-up the owner asked for is neither.
+    OUTREACH_OWNER_TYPES = tuple(sorted(OUTREACH_TYPES)) + (OUTREACH_ANSWER,)
 
     def __init__(self, policy: Policy, store: Any, *, owner_id: str | None, clock=None) -> None:
         self.policy = policy
         self.store = store
         self.owner_id = owner_id
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self._enabled_override: Optional[bool] = None
 
     # -- state ----------------------------------------------------------------
@@ -302,8 +350,10 @@ class Authority:
         since = now - timedelta(hours=breaker.window_hours)
         reset_at = self.store.last_transition_at("breaker_reset", type=f"breaker_reset:{cls}") \
             if self.store is not None else None
+        # A failure the outcome marked uncounted (a timeout, ``Outcomes._breaker_count``) fails its task only.
         failures = [row for row in (self.store.failures_since(cls, since) if self.store is not None else [])
-                    if reset_at is None or (row.failed_at and row.failed_at > reset_at)]
+                    if (reset_at is None or (row.failed_at and row.failed_at > reset_at))
+                    and ((row.result_metadata or {}).get("breaker") or {}).get("counted") is not False]
         tripped = len(failures) >= breaker.failures
         until = None
         if tripped:
@@ -328,8 +378,14 @@ class Authority:
     # -- budgets -------------------------------------------------------------------
 
     def budget_check(self, *, kind: str, recipient: str | None, type: str = "",
-                     now: datetime | None = None) -> Optional[str]:
-        """The reason an act must wait, or None when the budgets allow it (7.6)."""
+                     now: datetime | None = None, cooldown_hours: float | None = None) -> Optional[str]:
+        """The reason an act must wait, or None when the budgets allow it (7.6).
+
+        ``cooldown_hours`` is a message's own per-contact cooldown (a check-in's
+        reply-and-silence backoff, architecture 4.7 item 6); it replaces the
+        flat ``per_contact_cooldown_hours`` for that one decision. The daily
+        contact-message cap still applies.
+        """
         if self.store is None:
             return None
         now = now or self.clock()
@@ -345,7 +401,9 @@ class Authority:
                 if open_goals >= budgets.open_goals:
                     return f"budget: {budgets.open_goals} open goals reached"
                 return None
-            running = len(self.store.intentions(status=["approved", "dispatched"], kind=["task"], limit=1000))
+            # A blocked task waits on someone in Hermes and runs nothing: it holds no slot.
+            running = len([row for row in self.store.intentions(status=["approved", "dispatched"], kind=["task"],
+                                                                limit=1000) if row.outcome != "blocked"])
             if running >= budgets.concurrent_tasks:
                 return f"budget: {budgets.concurrent_tasks} concurrent tasks reached"
             return None
@@ -354,8 +412,19 @@ class Authority:
                 return None
             day_ago = now - timedelta(days=1)
             if recipient and recipient == self.owner_id:
+                if type in self.OWED_OWNER_TYPES:
+                    return None
+                if type in OUTREACH_TYPES:
+                    sent = self.store.count_transitions(self.BUDGET_ACTION, day_ago, kind="message",
+                                                        recipient=recipient,
+                                                        include_types=tuple(sorted(OUTREACH_TYPES)))
+                    if sent >= budgets.outreach_per_day:
+                        return f"budget: {budgets.outreach_per_day} outreach messages per day reached"
+                    return None
                 sent = self.store.count_transitions(self.BUDGET_ACTION, day_ago, kind="message",
-                                                    recipient=recipient, exclude_types=self.DIGEST_TYPES)
+                                                    recipient=recipient,
+                                                    exclude_types=(self.DIGEST_TYPES + self.OUTREACH_OWNER_TYPES
+                                                                   + self.OWED_OWNER_TYPES))
                 if sent >= budgets.owner_messages_per_day:
                     return f"budget: {budgets.owner_messages_per_day} owner messages per day reached"
                 return None
@@ -367,9 +436,10 @@ class Authority:
             if sent - owner_sent >= budgets.contact_messages_per_day:
                 return f"budget: {budgets.contact_messages_per_day} contact messages per day reached"
             if recipient:
+                hours = budgets.per_contact_cooldown_hours if cooldown_hours is None else max(0.0, float(cooldown_hours))
                 last = self.store.last_transition_at(self.BUDGET_ACTION, recipient=recipient)
-                if last is not None and now - last < timedelta(hours=budgets.per_contact_cooldown_hours):
-                    return f"budget: {budgets.per_contact_cooldown_hours:g} h cooldown for this contact"
+                if last is not None and now - last < timedelta(hours=hours):
+                    return f"budget: {hours:g} h cooldown for this contact"
         return None
 
     def tokens_allowed(self, now: datetime | None = None) -> bool:
@@ -382,17 +452,18 @@ class Authority:
 
     def decide(self, *, kind: str, recipient: str | None, text: str, type: str = "",
                may_contact: str = "ask", toolsets: Iterable[str] = (), tools: Iterable[str] = (),
-               now: datetime | None = None) -> Verdict:
+               now: datetime | None = None, cooldown_hours: float | None = None) -> Verdict:
         """act | ask | drop | defer for one intention, with the reason (7.2-7.6)."""
         now = now or self.clock()
         cls = classify(kind=kind, recipient=recipient, owner_id=self.owner_id, toolsets=toolsets, text=text)
         matched = floor_class(text)
         denied = self.policy.denied(text, tools)
         breaker = self.breaker_state(cls if cls != "floor" else "owner", now) if cls != "floor" else {"tripped": False}
-        budget = self.budget_check(kind=kind, recipient=recipient, type=type, now=now)
+        budget = self.budget_check(kind=kind, recipient=recipient, type=type, now=now, cooldown_hours=cooldown_hours)
         decision = decide_table(level=self.level, cls=cls, may_contact=may_contact, floor=matched is not None,
                                 deny=denied is not None, budget_exhausted=budget is not None,
-                                breaker_tripped=bool(breaker.get("tripped")), enabled=self.enabled)
+                                breaker_tripped=bool(breaker.get("tripped")), enabled=self.enabled,
+                                requested=kind == "message" and type in self.REQUESTED_TYPES)
         if self.level == "off":
             reason = "autonomy level off"
         elif not self.enabled:
@@ -405,7 +476,7 @@ class Authority:
             reason = budget or "budget"
         elif decision == "ask" and breaker.get("tripped"):
             reason = f"breaker: {breaker['failures']} recent {cls} failures; asking until {breaker.get('until')}"
-        elif self.level == "suggest" and cls != "internal":
+        elif self.level == "suggest" and decision == "ask":
             reason = f"{self.level}: {cls} effects are suggested in the digest"
         elif cls == "contact":
             reason = f"{self.level}: contact may_contact={may_contact}"
@@ -479,9 +550,29 @@ def in_quiet_hours(local_minute: int, window: Optional[tuple[int, int]]) -> bool
     return local_minute >= start or local_minute < end
 
 
+def last_boundary(now: datetime, tz: Any, minute: int) -> datetime:
+    """The latest local time of day ``minute`` (minutes after local midnight) at or before ``now``."""
+    local = now.astimezone(tz)
+    at = time(int(minute) // 60 % 24, int(minute) % 60)
+    boundary = datetime.combine(local.date(), at, tzinfo=tz)
+    if boundary > local:
+        boundary = datetime.combine(local.date() - timedelta(days=1), at, tzinfo=tz)
+    return boundary
+
+
+def boundary_crossed(since: datetime, now: datetime, *, tz: Any, minute: int) -> bool:
+    """Whether the local time of day ``minute`` fell in ``(since, now]``.
+
+    The rule for anything nightly: it holds once per night crossed, whatever hour
+    the clock started at, never twice for the same night, and once for a machine
+    that slept through the hour. ``since`` is the persisted moment of the last run.
+    """
+    return since < last_boundary(now, tz, minute) <= now
+
+
 __all__ = [
     "ASK_ALPHABET", "Authority", "Breaker", "Budgets", "CLASSES", "DECISIONS", "FLOOR_PATTERNS",
-    "INTERNAL_SAFE_TOOLSETS", "LEVELS", "MAY_CONTACT", "Policy", "Verdict", "ask_expiry", "classify",
-    "decide_table", "demote", "floor_class", "in_quiet_hours", "may_contact_of", "new_ask_code",
-    "parse_quiet_hours",
+    "INTERNAL_SAFE_TOOLSETS", "LEVELS", "MAY_CONTACT", "Policy", "Verdict", "ask_expiry", "boundary_crossed",
+    "classify", "decide_table", "demote", "floor_class", "in_quiet_hours", "last_boundary", "may_contact_of",
+    "new_ask_code", "parse_quiet_hours",
 ]

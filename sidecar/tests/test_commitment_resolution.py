@@ -435,7 +435,8 @@ class _FakeRouter:
 
 async def test_extraction_skips_open_and_rejected_duplicates(tmp_path, monkeypatch):
     """The extractor must not re-record an item that is already open, nor one
-    recently rejected as invalid/duplicate: code-enforced, not prompt-hoped."""
+    recently rejected as invalid/duplicate: code-enforced, not prompt-hoped. Both
+    are exact (case and spacing aside): a longer wording is another item."""
     from protagine.commitments import extract
     from protagine.turns.idempotency import TurnIdempotencyLedger
 
@@ -450,6 +451,8 @@ async def test_extraction_skips_open_and_rejected_duplicates(tmp_path, monkeypat
     router = _FakeRouter(
         '[{"description": "send Sam the build recap", "due_at": null,'
         '  "priority": 70, "source_type": "cognition", "metadata": null},'
+        ' {"description": "water  the Plants", "due_at": null,'
+        '  "priority": 40, "source_type": "cognition", "metadata": null},'
         ' {"description": "Water the plants every day", "due_at": null,'
         '  "priority": 40, "source_type": "cognition", "metadata": null},'
         ' {"description": "Email Bob the quarterly report", "due_at": null,'
@@ -460,7 +463,7 @@ async def test_extraction_skips_open_and_rejected_duplicates(tmp_path, monkeypat
     assert await extractor.process_one(router) is False  # the job is done; nothing left to claim
     open_now = cstore.get_pending_for_person("p-01")
     descs = sorted(c["description"] for c in open_now)
-    assert descs == ["Email Bob the quarterly report", "Send Sam the build recap"]
+    assert descs == ["Email Bob the quarterly report", "Send Sam the build recap", "Water the plants every day"]
 
 
 def test_extraction_imports_an_already_due_promise_as_overdue(tmp_path):

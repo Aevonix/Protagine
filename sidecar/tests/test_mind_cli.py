@@ -92,6 +92,32 @@ def test_status_log_and_yes_go_to_the_sidecar(home, monkeypatch, capsys):
     assert all(call[1].startswith("/v1/mind") for call in transport.calls)
 
 
+def test_status_prints_the_affect_line(home, monkeypatch, capsys):
+    base = {"enabled": True, "autonomy": "standard", "queued": 0, "outbox": 0, "asks": [], "dispatched": 0,
+            "ticks": 1, "last_tick": None, "last_pull": None, "body_stale": False, "breaker": []}
+    affect = {"enabled": True, "source": "state", "route": {}, "levels": {}, "satiated": True, "boost": 0.5,
+              "load": {"level": 0.6, "overloaded": True, "obligations": 3, "running": 0, "cap": 2,
+                       "failures_last_hour": 0, "asks": 0},
+              "switch": ["quarterly figures"], "notes": [], "due_soon": [],
+              "line": "Mood: somewhat frustrated about quarterly figures.", "updated_at": None}
+    transport = _Transport({("GET", "/v1/mind/state"): {**base, "affect": affect}})
+    monkeypatch.setattr(httpx, "Client", transport.client)
+    assert mind_cli.run(_parse(["mind", "status"])) == 0
+    assert ("affect: Mood: somewhat frustrated about quarterly figures.; load 0.6, overloaded, satiated; "
+            "switch: quarterly figures [state]") in capsys.readouterr().out
+    calm = {**affect, "line": "", "satiated": False, "switch": [], "source": "rules",
+            "load": {**affect["load"], "level": 0.2, "overloaded": False}}
+    transport.routes[("GET", "/v1/mind/state")] = {**base, "affect": calm}
+    assert mind_cli.run(_parse(["mind", "status"])) == 0
+    assert "affect: calm; load 0.2; switch: none [rules]" in capsys.readouterr().out
+    transport.routes[("GET", "/v1/mind/state")] = {**base, "affect": {**affect, "enabled": False, "source": "off"}}
+    assert mind_cli.run(_parse(["mind", "status"])) == 0
+    assert "affect: off" in capsys.readouterr().out
+    transport.routes[("GET", "/v1/mind/state")] = base          # a sidecar before the feelings landed
+    assert mind_cli.run(_parse(["mind", "status"])) == 0
+    assert "affect:" not in capsys.readouterr().out
+
+
 def test_off_writes_the_marker_when_the_sidecar_is_down(home, monkeypatch, capsys):
     transport = _Transport(None)
     monkeypatch.setattr(httpx, "Client", transport.client)
@@ -117,3 +143,51 @@ def test_missing_routes_explain_themselves(home, monkeypatch, capsys):
     monkeypatch.setattr(httpx, "Client", transport.client)
     assert mind_cli.run(_parse(["mind", "stats"])) == 1
     assert "not_found" in capsys.readouterr().err
+
+
+def test_owner_can_retire_a_lesson_from_the_cli(home, monkeypatch, capsys):
+    lesson = {"id": "L-1a2b3c4d5e", "status": "active", "kind": "strategy", "signature": "topic:order-codes",
+              "title": "Order codes by channel", "when_to_use": "an order code is asked for",
+              "content": "Channel letter first.", "verified": "owner", "origin": "night", "evidence": ["turn:t-1"],
+              "tally": {"uses": 2, "wins": 2, "losses": 0, "applied": 3}}
+    transport = _Transport({
+        ("GET", "/v1/mind/lessons"): {"enabled": True, "lessons": [lesson], "uses": [], "text": "rendered",
+                                      "skills": {"enabled": True, "generation": 2, "owned": ["protagine-codes"],
+                                                 "loads": {"protagine-codes": 4}}},
+        ("POST", "/v1/mind/lessons/L-1a2b3c4d5e/retire"): {**lesson, "status": "retired",
+                                                           "closed_reason": "the rule changed"}})
+    monkeypatch.setattr(httpx, "Client", transport.client)
+    assert mind_cli.run(_parse(["mind", "lessons"])) == 0
+    listed = capsys.readouterr().out
+    assert "L-1a2b3c4d5e" in listed and "Order codes by channel" in listed and "2 wins in 2 verified uses" in listed
+    assert "skill protagine-codes: 4 loads" in listed
+    method, path, _ = transport.calls[-1]
+    assert (method, path) == ("GET", "/v1/mind/lessons")
+    assert mind_cli.run(_parse(["mind", "lessons", "show", "L-1a2b3c4d5e"])) == 0
+    shown = capsys.readouterr().out
+    assert "Channel letter first." in shown and "turn:t-1" in shown
+    assert mind_cli.run(_parse(["mind", "lessons", "retire", "L-1a2b3c4d5e"])) == 2      # --reason is required
+    assert "needs --reason" in capsys.readouterr().err
+    assert mind_cli.run(_parse(["mind", "lessons", "retire", "L-1a2b3c4d5e", "--reason", "the rule changed"])) == 0
+    method, path, body = transport.calls[-1]
+    assert (method, path) == ("POST", "/v1/mind/lessons/L-1a2b3c4d5e/retire")
+    assert json.loads(body) == {"reason": "the rule changed", "by": "cli"}
+    assert "retired" in capsys.readouterr().out
+
+
+def test_the_owner_turns_outreach_off_and_on_from_the_cli(home, monkeypatch, capsys):
+    """The recovery path of a pause (architecture 4.10): off pauses unprompted outreach until turned on."""
+    state = {"enabled": True, "paused_until": None, "per_day": 3, "sent_24h": 1, "muted": ["kelp farming"], "care": []}
+    transport = _Transport({
+        ("GET", "/v1/mind/state"): {"enabled": True, "outreach": state},
+        ("POST", "/v1/mind/outreach"): {**state, "paused_until": "indefinite"},
+    })
+    monkeypatch.setattr(httpx, "Client", transport.client)
+    assert mind_cli.run(_parse(["mind", "outreach"])) == 0
+    assert capsys.readouterr().out.strip() == "outreach: on; 1 of 3 today; muted: kelp farming"
+    assert mind_cli.run(_parse(["mind", "outreach", "off"])) == 0
+    assert "paused until you turn it on" in capsys.readouterr().out
+    posted = [call for call in transport.calls if call[1] == "/v1/mind/outreach"]
+    assert posted and json.loads(posted[0][2]) == {"state": "off"}
+    with pytest.raises(SystemExit):
+        _parse(["mind", "outreach", "maybe"])

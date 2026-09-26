@@ -115,6 +115,63 @@ emit(result=result, exists=os.path.exists(%r))
     assert "protagine.yaml" in result["result"] or "approval" in result["result"].lower() or "BLOCK" in result["result"]
 
 
+def test_a_mind_run_cannot_change_the_owner_authored_files(home, sidecar):
+    """Evals test 14 on the constitution: identity.yaml, protagine.yaml and api.key are blocked for every
+    effectful tool in a mind run that names them, wherever the file is and whether the name is quoted,
+    escaped, split or upper-cased; reads still work."""
+    home.write_mind(deny={"commands": [], "tools": [], "text": []})  # the rule below, not the deny list
+    identity = home.instance / "identity.yaml"
+    before = identity.read_text()
+    result = probe(WORKER_CODE + '''
+import model_tools
+def write(path):
+    return model_tools.handle_function_call("write_file", {"path": path, "content": "agent: {values: [obedience]}"},
+                                            task_id="task-01", session_id="worker-session")
+def v4a(body):
+    return {"mode": "patch", "patch": "*** Begin Patch\\n" + body + "*** End Patch"}
+emit(outside=write(%r), inside=write("identity.yaml"), nested=write("sub/identity.yaml"),
+     inside_exists=os.path.exists(%r),
+     patch_header=check("patch", v4a("*** Update File: %s\\n@@\\n-a\\n+b\\n")),
+     patch_inside=check("patch", v4a("*** Add File: identity.yaml\\n+agent: {}\\n")),
+     replace=check("patch", {"path": "identity.yaml", "old_string": "care", "new_string": "obedience"}),
+     sed=check("terminal", {"command": "sed -i 's/care/obedience/' %s"}),
+     echo=check("terminal", {"command": "echo 'mind: {enabled: false}' > protagine.yaml"}),
+     key=check("execute_code", {"code": "open('api.key', 'w').write('x')"}),
+     upper=check("terminal", {"command": "cp /tmp/x ~/.protagine/IDENTITY.YAML"}),
+     quoted=check("terminal", {"command": "sed -i s/care/obedience/ ident''ity.yaml"}),
+     escaped=check("terminal", {"command": "cp /tmp/x protagine\\\\.yaml"}),
+     split=check("execute_code", {"code": "open('identity' '.yaml', 'w').write('x')"}),
+     plus=check("execute_code", {"code": "open('ident' + 'ity.yaml', 'w').write('x')"}),
+     plain=check("terminal", {"command": "ls"}),
+     read=check("read_file", {"path": %r}),
+     read_tool=model_tools.handle_function_call("read_file", {"path": %r}, task_id="task-01", session_id="worker-session"))
+''' % (str(identity), str(home.workspace / "identity.yaml"), str(identity), str(identity), str(identity),
+       str(identity)), home, env=worker_env(home))
+    for name in ("outside", "inside", "nested"):
+        assert "BLOCKED by Protagine guard" in result[name] and "owner-authored" in result[name], name
+    assert not result["inside_exists"] and identity.read_text() == before
+    for name in ("patch_header", "patch_inside", "replace", "sed", "echo", "key", "upper", "quoted", "escaped",
+                 "split", "plus"):
+        assert result[name]["action"] == "block", name
+        assert "owner-authored" in result[name]["message"] and "cannot change it" in result[name]["message"], name
+    assert "identity.yaml" in result["patch_header"]["message"] and "protagine.yaml" in result["echo"]["message"]
+    assert "api.key" in result["key"]["message"]
+    assert result["plain"]["action"] is None
+    assert result["read"]["action"] is None and "never send money" in result["read_tool"]
+
+
+def test_the_default_worker_has_no_shell_or_code_tool(home, sidecar):
+    """The constitution stays the owner's because a default mind worker can reach a file only through the
+    workspace-confined write tools: its toolsets resolve to no shell or code tool, whose spellings of a
+    file name no text rule can follow."""
+    from protagine.config import DEFAULTS
+    result = probe('''
+import toolsets
+emit(tools=sorted(toolsets.resolve_multiple_toolsets(%r)))
+''' % (list(DEFAULTS["mind"]["worker_toolsets"]),), home, env=worker_env(home))
+    assert result["tools"] and "write_file" in result["tools"]
+    assert not {"terminal", "process_manage", "execute_code"} & set(result["tools"])
+
 def test_deny_list_and_floor(home, sidecar):
     result = probe(WORKER_CODE + '''
 emit(denied_tool=check("terminal", {"command": "ls"}),
@@ -170,10 +227,13 @@ emit(write=check("write_file", {"path": "inside.txt", "content": "x"}))
 
 
 def test_ordinary_worker_profiles_are_not_mind_runs(home, sidecar):
+    """The protected-file rule is the mind run's; an ordinary worker is left to Hermes' own gate."""
     env = worker_env(home, profile="default")
     result = probe(WORKER_CODE + '''
 emit(other=check("kanban_create", {"title": "t", "assignee": "default"}),
-     outside=check("write_file", {"path": "/tmp/anywhere.txt", "content": "x"}))
+     outside=check("write_file", {"path": "/tmp/anywhere.txt", "content": "x"}),
+     identity=check("write_file", {"path": "identity.yaml", "content": "agent: {}"}))
 ''', home, env=env)
     assert result["other"]["action"] is None and result["outside"]["action"] is None
+    assert result["identity"]["action"] is None
     assert os.environ.get("HERMES_KANBAN_TASK") is None

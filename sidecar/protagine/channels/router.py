@@ -57,7 +57,6 @@ class ChannelInfo(BaseModel):
     supports_voice: bool = False
     supports_rich_text: bool = False
     max_message_length: Optional[int] = None
-    phone_identity_unification: bool = False
     provides_channel_id: bool = False
     delivery_protocol: str = "hermes"
     delivery_aliases: list[str] = []
@@ -172,7 +171,6 @@ def _to_info(ch) -> ChannelInfo:
         supports_voice=m.supports_voice,
         supports_rich_text=m.supports_rich_text,
         max_message_length=m.max_message_length,
-        phone_identity_unification=m.phone_identity_unification,
         provides_channel_id=m.provides_channel_id,
         delivery_protocol=m.delivery_protocol,
         delivery_aliases=m.delivery_aliases,

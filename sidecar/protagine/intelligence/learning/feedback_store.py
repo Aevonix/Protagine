@@ -1,10 +1,10 @@
 """FeedbackStore — persist and retrieve user corrections for learning.
 
-Corrections feed into ContinuousLearner and are periodically summarized
-by MetaLearner into durable preference updates.
+Corrections are durable owner evidence: the selfhood benchmark joins them to
+outbound receipts.
 
 Storage: SQLite (default ~/.protagine/feedback.db) so corrections survive
-process restarts without requiring Neo4j to be reachable.
+process restarts.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class UserCorrection:
         """Factory that generates a UUID and timestamps the correction."""
         return cls(
             correction_id=str(uuid.uuid4()),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=now_utc(),
             original_response=original_response,
             correction_text=correction_text,
             correction_type=correction_type,
@@ -154,7 +155,7 @@ class FeedbackStore:
         """Stamp *processed_at* on each correction so consume_unprocessed skips it."""
         if not correction_ids:
             return
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = now_utc().isoformat()
         placeholders = ",".join("?" * len(correction_ids))
         with self._conn() as conn:
             conn.execute(
@@ -198,7 +199,7 @@ class FeedbackStore:
     def get_correction_summary(self, days: int = 7) -> Dict[str, object]:
         """Return summary statistics for corrections in the last *days* days."""
         cutoff = (
-            datetime.now(timezone.utc)
+            now_utc()
             .replace(hour=0, minute=0, second=0, microsecond=0)
         )
         # Subtract days manually (no timedelta import needed above)
@@ -309,7 +310,7 @@ class FeedbackStore:
         try:
             ts = datetime.fromisoformat(ts_raw)
         except ValueError:
-            ts = datetime.now(timezone.utc)
+            ts = now_utc()
         return UserCorrection(
             correction_id=row["correction_id"],
             timestamp=ts,

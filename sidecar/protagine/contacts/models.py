@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 
 # ── Trust tiers ──────────────────────────────────────────────────────────────
@@ -21,24 +22,19 @@ _TIER_RANK = {t: i for i, t in enumerate(("unknown", "acquaintance", "silenced",
 PRIVACY_LEVELS = ("public", "private", "restricted")
 GATEWAYS = ("imessage", "telegram", "email", "sms", "signal", "custom", "internal")
 
-# Default interaction_allowed per trust tier (spec §8.1).
-# group_guest is False here because that flag governs *global* (1:1) interaction;
-# in-scope interaction is authorized by the trust_scope, not this flag.
-TIER_DEFAULT_INTERACTION: Dict[str, bool] = {
-    "inner_circle": True,
-    "trusted": True,
-    "regular": True,
-    "group_guest": False,
-    "peripheral": False,
-    "silenced": False,
-    "acquaintance": False,
-    "unknown": True,
-}
+# Per-contact outbound permission (architecture 7.4). A tier is standing, never permission:
+# only the owner raises ``may_contact``; a contact's opt-out lowers it to ``never``.
+MAY_CONTACT = ("never", "ask", "auto")
 
 
-def more_permissive_tier(a: str, b: str) -> str:
-    """Return the more permissive (higher-ranked) trust tier."""
-    return a if _TIER_RANK.get(a, 0) >= _TIER_RANK.get(b, 0) else b
+def tier_rank(tier: str) -> int:
+    """The tier's rank; unknown names rank lowest."""
+    return _TIER_RANK.get(tier, 0)
+
+
+def regular_or_above(tier: str) -> bool:
+    """``regular``, ``trusted`` or ``inner_circle``: the tiers the social drive considers on their own."""
+    return tier_rank(tier) >= _TIER_RANK["regular"]
 
 
 def more_restrictive_privacy(a: str, b: str) -> str:
@@ -59,7 +55,6 @@ class Contact:
     organization: Optional[str]
     relationship_score: float
     trust_tier: str
-    interaction_allowed: bool
     tags: List[str]
     privacy_level: str
     person_node_id: Optional[str]
@@ -79,6 +74,19 @@ class Contact:
     # how/where the agent met them. None for contacts not created via an intro.
     introduced_by: Optional[str] = None
     met_via: Optional[Dict[str, Any]] = None
+    # People (M5): outbound permission, the owner-set cadence and the per-contact digest.
+    may_contact: str = "ask"
+    cadence_minutes: Optional[int] = None
+    digest: Optional[str] = None
+    digest_sources: List[str] = field(default_factory=list)
+
+    @property
+    def is_shadow(self) -> bool:
+        """A sender the agent remembered on its own (``auto:*``) that the owner has not filed yet
+        (the tier is still ``unknown``). Its handles are the sender's own choosing, so they identify
+        nobody for the owner: they are never an exact reference, and a confirmed link folds a shadow
+        but never an established contact."""
+        return str(self.import_source or "").startswith("auto:") and self.trust_tier == "unknown"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -89,7 +97,10 @@ class Contact:
             "organization": self.organization,
             "relationship_score": self.relationship_score,
             "trust_tier": self.trust_tier,
-            "interaction_allowed": self.interaction_allowed,
+            "may_contact": self.may_contact,
+            "cadence_minutes": self.cadence_minutes,
+            "digest": self.digest,
+            "digest_sources": self.digest_sources,
             "tags": self.tags,
             "privacy_level": self.privacy_level,
             "person_node_id": self.person_node_id,
@@ -120,6 +131,9 @@ class Contact:
         )
         met_via_raw = row.get("met_via_json")
         met_via = json.loads(met_via_raw) if isinstance(met_via_raw, str) and met_via_raw else None
+        sources_raw = row.get("digest_sources", "[]")
+        digest_sources = json.loads(sources_raw) if isinstance(sources_raw, str) and sources_raw else (sources_raw or [])
+        cadence = row.get("cadence_minutes")
         return cls(
             contact_id=row["contact_id"],
             display_name=row.get("display_name"),
@@ -128,7 +142,6 @@ class Contact:
             organization=row.get("organization"),
             relationship_score=float(row.get("relationship_score", 0.0)),
             trust_tier=row.get("trust_tier", "unknown"),
-            interaction_allowed=bool(row.get("interaction_allowed", 1)),
             tags=tags,
             privacy_level=row.get("privacy_level", "private"),
             person_node_id=row.get("person_node_id"),
@@ -145,6 +158,10 @@ class Contact:
             timezone=row.get("timezone"),
             introduced_by=row.get("introduced_by"),
             met_via=met_via,
+            may_contact=row.get("may_contact") or "ask",
+            cadence_minutes=int(cadence) if cadence is not None else None,
+            digest=row.get("digest"),
+            digest_sources=[str(item) for item in digest_sources],
         )
 
 
@@ -226,18 +243,18 @@ class MergeAuditRecord:
     triggered_by: str
     contact_a_snapshot: Dict[str, Any]
     contact_b_snapshot: Dict[str, Any]
-    merged_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    merged_at: datetime = field(default_factory=lambda: now_utc())
 
     def __post_init__(self):
         if self.merged_at is None:
-            self.merged_at = datetime.now(timezone.utc)
+            self.merged_at = now_utc()
 
 
 # ── Trust scopes (context-scoped trust: group chats, households, project rooms) ──
 #
 # A trust_scope grants its members a trust tier that applies ONLY inside the scope
 # (e.g. a specific group conversation). Membership never confers global 1:1 rights —
-# a member's contact.trust_tier / interaction_allowed are independent. This is the
+# a member's contact.trust_tier / may_contact are independent. This is the
 # generic primitive any agent uses to say "trusted in this room, not in my DMs".
 
 SCOPE_TYPES = ("group", "household", "project", "event", "custom")

@@ -262,9 +262,9 @@ async def test_actual_scoped_search_and_automatic_context_share_the_pair(memory_
 
 
 @pytest.mark.asyncio
-async def test_intact_session_history_leaves_this_sessions_own_turns_to_the_host(tmp_path, monkeypatch):
-    """The host still shows this session's earlier turns verbatim: quoting them back adds nothing, so
-    an ``intact`` history drops this session's quotations and pairs and keeps every other session's."""
+async def test_this_sessions_own_earlier_turns_stay_recallable(tmp_path, monkeypatch):
+    """Hermes may have folded this session's earlier turns into a summary, and nothing the sidecar hears says
+    whether it has: this session's quotations and pairs stay recallable next to every other session's."""
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     ledger = TurnIdempotencyLedger(tmp_path/'source.db')
     seed(ledger)  # recorded under session 'original'
@@ -272,18 +272,8 @@ async def test_intact_session_history_leaves_this_sessions_own_turns_to_the_host
         messages=[{'role': 'user', 'content': 'The prototype laboratory move is confirmed for May 14.'}],
         derive_claims=False)
     hits = ledger.search_sources('prototype laboratory', **SCOPE, limit=20)
-    assert {hit['session_id'] for hit in hits} == {'original', 'later'}
-
-    async def select(history):
-        return await select_memory(CollectedSources(ledger, **SCOPE,
-            watermark=ledger.erasure_watermark('person'), hits=list(hits)),
-            query='Where is the prototype laboratory now?', selector=RecallSelector(), limit=5,
-            timezone_name='UTC', session_history=history)
-
-    everything = await select(None)
-    assert {row['session_id'] for row in everything.selected} == {'original', 'later'}
-    intact = await select('intact')
-    assert intact.selected and {row['session_id'] for row in intact.selected} == {'original'}
-    assert 'move is confirmed' not in intact.content and REPLY in intact.content
-    compressed = await select('compressed')
-    assert {row['session_id'] for row in compressed.selected} == {'original', 'later'}
+    packet = await select_memory(CollectedSources(ledger, **SCOPE,
+        watermark=ledger.erasure_watermark('person'), hits=list(hits)),
+        query='Where is the prototype laboratory now?', selector=RecallSelector(), limit=5, timezone_name='UTC')
+    assert {row['session_id'] for row in packet.selected} == {'original', 'later'}
+    assert 'move is confirmed' in packet.content

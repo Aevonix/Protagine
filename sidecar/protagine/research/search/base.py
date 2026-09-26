@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+from protagine.util.temporal import now_utc
 
 
 @dataclass
@@ -18,7 +19,7 @@ class SearchResult:
     content: Optional[str] = None  # Full page content if available
     source: str = ""
     rank: int = 0
-    retrieved_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    retrieved_at: datetime = field(default_factory=lambda: now_utc())
 
 
 class SearchProvider(ABC):

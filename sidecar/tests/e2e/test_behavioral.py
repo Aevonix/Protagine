@@ -312,96 +312,6 @@ class TestPatternSurpriseBehavior:
 
 
 # ---------------------------------------------------------------------------
-# World Model — behavioral
-# ---------------------------------------------------------------------------
-
-class TestWorldModelBehavior:
-    """Verify the world model actually represents and traverses a graph."""
-
-    def test_entity_dedup_on_upsert(self, client):
-        """Upserting an entity with the same ID should update, not duplicate."""
-        eid = f"we-e2e-dedup-{uuid.uuid4().hex[:6]}"
-
-        # Create directly via store — but we can test via the API
-        # by creating, then creating again with same name
-        name = f"DedupTest {uuid.uuid4().hex[:4]}"
-        r1 = client.post("/v1/host/world/entities", json={
-            "name": name, "entity_type": "person", "confidence": 0.7,
-        })
-        eid = r1.json()["id"]
-
-        # Get stats before
-        stats_before = client.get("/v1/host/world/stats").json()
-
-        # Upsert same entity (MERGE by ID)
-        from protagine.world_model.entities import PersonEntity
-        # Can't directly upsert by ID via API (it generates IDs), 
-        # so test that creating with same name creates separate entity
-        r2 = client.post("/v1/host/world/entities", json={
-            "name": name, "entity_type": "person", "confidence": 0.8,
-        })
-        # Both should exist as separate entities (API creates new IDs)
-        assert r2.json()["id"] != eid
-
-    def test_bidirectional_traversal(self, client):
-        """If A→B relationship exists, B should see A in its neighborhood."""
-        rA = client.post("/v1/host/world/entities", json={
-            "name": f"BidiA {uuid.uuid4().hex[:4]}", "entity_type": "person",
-        })
-        rB = client.post("/v1/host/world/entities", json={
-            "name": f"BidiB {uuid.uuid4().hex[:4]}", "entity_type": "person",
-        })
-        aId, bId = rA.json()["id"], rB.json()["id"]
-
-        # Create A→B
-        client.post("/v1/host/world/relationships", json={
-            "source_id": aId, "target_id": bId,
-            "relationship_type": "WM_KNOWS", "confidence": 0.8,
-        })
-
-        # B's neighborhood should find A (via incoming relationship)
-        r = client.get(f"/v1/host/world/entities/{bId}/neighborhood?max_hops=1")
-        assert r.status_code == 200
-        data = r.json()
-        neighbor_ids = [n["id"] for n in data["reachable"]]
-        assert aId in neighbor_ids, f"A should be reachable from B's neighborhood, got {neighbor_ids}"
-
-    def test_path_through_intermediate_node(self, client):
-        """Path A→B→C should be findable from A to C through B."""
-        entities = []
-        for i in range(3):
-            r = client.post("/v1/host/world/entities", json={
-                "name": f"Chain{i} {uuid.uuid4().hex[:4]}", "entity_type": "person",
-            })
-            entities.append(r.json()["id"])
-
-        # Create chain A→B→C
-        for i in range(2):
-            client.post("/v1/host/world/relationships", json={
-                "source_id": entities[i], "target_id": entities[i + 1],
-                "relationship_type": "WM_CONNECTED_TO", "confidence": 0.8,
-            })
-
-        # Find path A→C
-        r = client.get(f"/v1/host/world/entities/{entities[0]}/path/{entities[2]}")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["found"] is True
-        # Path should go through B
-        path = data["path"]
-        intermediate_ids = {p["source_id"] for p in path} | {p["target_id"] for p in path}
-        assert entities[1] in intermediate_ids, "Path should go through intermediate node B"
-
-    def test_stats_reflect_actual_data(self, client):
-        """World stats should reflect entities we've created."""
-        stats = client.get("/v1/host/world/stats").json()
-        assert stats["total_entities"] > 0, "Should have entities from tests"
-        assert stats["total_relationships"] > 0, "Should have relationships from tests"
-        # Entity type breakdown should exist
-        assert len(stats["entities_by_type"]) > 0, "Should have entity type breakdown"
-
-
-# ---------------------------------------------------------------------------
 # Cross-Subsystem Integration — behavioral
 # ---------------------------------------------------------------------------
 
@@ -470,8 +380,8 @@ class TestCrossSubsystemBehavior:
         # Core capabilities that must be present
         required_caps = [
             "memory", "response_gate", "reasoning", "context",
-            "goals", "contacts", "world_model", "skills",
-            "identity", "secrets", "autonomy", "sessions",
+            "goals", "contacts", "skills",
+            "secrets", "autonomy", "sessions",
             "events", "commitments", "affect", "shared_facts",
             "patterns", "surprises",
         ]

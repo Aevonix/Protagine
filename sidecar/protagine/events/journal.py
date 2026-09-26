@@ -31,6 +31,7 @@ try:  # Protagine is deployed on Linux; retain a safe process-local fallback.
     import fcntl
 except ImportError:  # pragma: no cover - exercised only on non-POSIX hosts
     fcntl = None  # type: ignore[assignment]
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -532,7 +533,7 @@ def append_event_record(
                 hashlib.sha256(normalized_key.encode("utf-8")).hexdigest()[:26]
                 if normalized_key else uuid.uuid4().hex[:26]
             )
-            recorded_at = datetime.now(timezone.utc).isoformat()
+            recorded_at = now_utc().isoformat()
             event_payload: Dict[str, Any] = {
                 "seq": seq,
                 "ulid": event_id,

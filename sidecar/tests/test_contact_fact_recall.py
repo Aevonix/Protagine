@@ -1,4 +1,8 @@
-"""Full authenticated context uses one selector for current contact estimates."""
+"""Full authenticated context uses one selector for current contact estimates.
+
+The owner's context reads source-linked estimates; a guest's contact-scoped
+context reads none, and an unlinked record is never injected automatically.
+"""
 from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
@@ -6,12 +10,10 @@ import pytest
 
 from protagine.api.middleware import ApiKeyMiddleware
 from protagine.api.routers import host
-from protagine.server import _attach_p8_runtime
 from protagine.tom.facts import SharedFactsStore
 from protagine.turns import TurnIdempotencyLedger
-from test_recall_unified_context import Graph, Reranker, belief, calibrate
+from test_recall_unified_context import Reranker, calibrate
 from onekey import KEY, _principal, _write_keyring
-from test_tom_p8_server_integration import _authority, _request
 from test_turn_source_evidence import source_app
 
 
@@ -19,12 +21,9 @@ from test_turn_source_evidence import source_app
 def contact_context(source_app, tmp_path, monkeypatch):
     monkeypatch.setenv('PROTAGINE_OWNER_CONTACT_ID', 'contact-a')
     monkeypatch.setenv('PROTAGINE_OWNER_PERSON_ID', 'contact-a')
-    monkeypatch.setenv('PROTAGINE_RECIPIENT_SIMULATOR_MODE', 'shadow')
     ledger = TurnIdempotencyLedger(tmp_path/'turn-idempotency.db')
     facts = SharedFactsStore(str(tmp_path/'facts.db'), source_ledger=ledger)
     monkeypatch.setattr(host, '_facts_store', facts)
-    runtime = _attach_p8_runtime(state_dir=tmp_path, facts_store=facts)
-    assert runtime is not None
     keyring = tmp_path/'keys.json'
     principals = [_principal(principal=who, secret=who+'-key', viewer=person,
         scopes=['context:read', 'memory:write', 'memory:search']) for who, person in [('owner','contact-a'), ('other','contact-b')]]
@@ -39,25 +38,21 @@ def contact_context(source_app, tmp_path, monkeypatch):
     # Isolate estimate ranking from the separately tested quotation producer;
     # source membership and current revisions still use the actual ledger.
     origins = []
-    def add(text, *, person='contact-a', enveloped=True, source_lineage=None, source_linked=True):
+    def add(text, *, person='contact-a', source_lineage=None, source_linked=True):
         if source_lineage is None and source_linked:
             turn = 'fact-support-' + str(len(origins))
             origins.append(turn)
             ledger.record_source(turn, contact_id=person, session_id='prior-'+turn,
                 messages=[{'role': 'user', 'content': text}], derive_claims=False)
             source_lineage, _ = facts.source_input(turn, person)
-        row = facts.create_fact(contact_id=person, fact=text, source='inferred',
-                                confidence=.95, source_lineage=source_lineage)
-        if enveloped:
-            viewer = host._p8_viewer_for_request(_request(_authority(person)), person)
-            runtime.append_shared_fact(row, producer=viewer, origin='server')
-        return row
+        return facts.create_fact(contact_id=person, fact=text, source='inferred',
+                                 confidence=.95, source_lineage=source_lineage)
 
     yield SimpleNamespace(app=source_app, ledger=ledger, facts=facts, add=add, keyring=keyring)
     facts.close()
 
 
-async def context(client, query, *, person='contact-a', credential='owner'):
+async def context(client, query, *, person='contact-a'):
     response = await client.post('/v1/host/context/assemble',
         headers={'Authorization':'Bearer ' + KEY}, json={
             'identity': {'host_id':'fixture'},
@@ -113,8 +108,6 @@ async def test_contact_estimates_share_real_selection_abstention_and_budget(cont
     for i in range(8):
         runtime.add(f'The hydrofoil departure desk has neutral marker {i}.')
     rejected = runtime.add('The hydrofoil hull has a cosmetic scratch.')
-    graph = Graph([belief('A hydrofoil departure was reported.')])
-    monkeypatch.setattr(host, '_graph', graph)
     runtime.ledger.record_source('quote', contact_id='contact-a', session_id='earlier',
         messages=[{'role':'user','content':'The hydrofoil departure time is being checked.'}], derive_claims=False)
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
@@ -126,14 +119,13 @@ async def test_contact_estimates_share_real_selection_abstention_and_budget(cont
     estimate = next(line for line in text.splitlines() if '"kind": "contact_knowledge_estimate"' in line)
     assert '"state": "unverified"' in estimate and '"recorded_source": "inferred"' in estimate
     assert '"confidence"' not in estimate and '"source_message_hash"' not in estimate
-    assert all(not key.startswith('shared-fact:') for key in graph.used)
 
 
 @pytest.mark.asyncio
-async def test_other_viewer_and_unenveloped_history_never_reach_reranker(contact_context, monkeypatch):
+async def test_other_contact_and_unlinked_history_never_reach_reranker(contact_context, monkeypatch):
     runtime = contact_context
     own = runtime.add('The hydrofoil departure desk is amber.')
-    unlinked = runtime.add('The hydrofoil departure legacy marker is bronze.', enveloped=False)
+    unlinked = runtime.add('The hydrofoil departure legacy marker is bronze.', source_linked=False)
     foreign = runtime.add('The hydrofoil departure private marker is copper.', person='contact-b')
     reranker = DiscriminatingReranker()
     calibrate(monkeypatch, reranker)
@@ -142,8 +134,10 @@ async def test_other_viewer_and_unenveloped_history_never_reach_reranker(contact
         text = await context(client, 'hydrofoil departure')
         assert own['fact'] in text and foreign['fact'] not in text and unlinked['fact'] not in text
         assert reranker.calls == [[own['fact']]]
-        other = await context(client, 'hydrofoil departure', person='contact-b', credential='other')
-        assert foreign['fact'] in other and own['fact'] not in other and unlinked['fact'] not in other
+        # A guest's contact-scoped context carries no estimates, not even their own.
+        other = await context(client, 'hydrofoil departure', person='contact-b')
+        assert foreign['fact'] not in other and own['fact'] not in other and unlinked['fact'] not in other
+        assert len(reranker.calls) == 1
     assert runtime.facts.get_fact(unlinked['id']) is not None
 
 
@@ -171,9 +165,9 @@ async def test_explicit_search_uses_same_current_contact_projection_and_selector
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     own = runtime.add('The hydrofoil departure desk is amber.')
     foreign = runtime.add('The hydrofoil departure private marker is copper.', person='contact-b')
-    unlinked = runtime.add('The hydrofoil departure marker is bronze.', enveloped=False)
+    unlinked = runtime.add('The hydrofoil departure marker is bronze.', source_linked=False)
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
-        async def search(person='contact-a', credential='owner'):
+        async def search(person='contact-a'):
             response = await client.post('/v1/host/memory/search',
                 headers={'Authorization':'Bearer ' + KEY}, json={
                     'identity': {'host_id':'fixture'}, 'person_id':person,
@@ -186,7 +180,7 @@ async def test_explicit_search_uses_same_current_contact_projection_and_selector
         assert own['fact'] in result['content'] and foreign['fact'] not in result['content']
         assert unlinked['fact'] not in result['content']
         assert result['source_refs'] and result['annotation_checks']
-        other = await search('contact-b', 'other')
-        assert foreign['fact'] in other['content'] and own['fact'] not in other['content']
+        other = await search('contact-b')
+        assert foreign['fact'] not in other['content'] and own['fact'] not in other['content']
         runtime.ledger.erase_sources(contact_id='contact-a', turn_ids=[own['source_lineage']['turn_id']])
         assert (await search())['count'] == 0

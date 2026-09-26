@@ -186,3 +186,59 @@ async def test_context_builder_does_not_present_fallback_as_contact_record(monke
     # The reading rule (a retained clock is history) is the host's system-prompt text, not per turn.
     assert "historical" not in section.body
     assert "your local time" not in section.body and "this is NOW" not in section.body
+
+
+def test_now_follows_the_one_wall_clock(monkeypatch):
+    """``time.time`` is the one wall clock: Hermes' clock, the mind's and every "Now" line the sidecar renders
+    read it, so a host that shifts it (the paired harness's body clock) moves them together. The pilots'
+    prompts said "Now" 14 to 19 hours behind the shifted message stamps, and the model wrote those dates down."""
+    import time
+
+    from protagine.mind.tick import _wall_clock
+
+    shifted = time.time() + 19 * 3600
+    monkeypatch.setattr(time, "time", lambda: shifted)
+    expected = datetime.fromtimestamp(shifted, timezone.utc)
+    assert abs((T.now_utc() - expected).total_seconds()) < 1
+    assert abs((_wall_clock()() - expected).total_seconds()) < 1
+    assert f"Now: {expected.isoformat(timespec='seconds')[:16]}" in T.describe_now("UTC")
+
+
+def test_the_stores_stamp_on_the_clock_the_mind_reads(tmp_path, monkeypatch):
+    """The mind's clock follows ``time.time``, so every stamp it compares with must too. A host that shifts the
+    clock (the paired harness, by 0 to 24 h and then each advance) otherwise gives the mind a shifted "now"
+    against real-clock stamps: an undated obligation (counted as load for 24 h after it was made) looked 18 h
+    old at capture and was gone after one 8 h advance, skewing the load affect measures."""
+    import time
+
+    from protagine.commitments.store import CommitmentStore
+    from protagine.mind.affect import Affect
+    from protagine.mind.tick import _wall_clock
+
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 18 * 3600)
+    store = CommitmentStore(tmp_path / "commitments.db")
+    row = store.create(person_id="p-01", description="Send Dana the signed lease", priority=70)
+    clock = _wall_clock()
+    now = clock()
+    assert abs((now - datetime.fromisoformat(row["made_at"].replace("Z", "+00:00"))).total_seconds()) < 60
+    affect = Affect(None, store=None, commitments=store, owner_id="p-01", clock=clock)
+    for later in (now, now + timedelta(hours=8)):
+        assert [o.description for o in affect._obligations(later, set())] == ["Send Dana the signed lease"]
+
+
+def test_every_now_is_read_from_the_one_clock():
+    """No sidecar or plugin module reads the C clock (``datetime.now``, ``utcnow``, ``today``), which a host's
+    shift of ``time.time`` does not reach: "now" is ``temporal.now_utc`` (``time.time``), or ``time.time``
+    itself in the plugins, which load without the sidecar. The harness keeps the real clock for its own
+    records and is left out."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    pattern = re.compile(r"\b(?:datetime|date|_dt\.datetime|_dt\.date)\.(?:now|utcnow|today)\(")
+    files = [path for base in ("sidecar/protagine", "plugins/hermes-plugin", "plugins/protagine-memory")
+             for path in (root / base).rglob("*.py") if "qualification" not in path.parts]
+    found = [f"{path.relative_to(root)}:{number}" for path in files
+             for number, line in enumerate(path.read_text().splitlines(), 1) if pattern.search(line)]
+    assert len(files) > 100 and found == []

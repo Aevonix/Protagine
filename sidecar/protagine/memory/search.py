@@ -72,15 +72,13 @@ async def collect_sources(ledger, *, query: str, contact_id: str, session_id: st
 async def select_memory(collected: CollectedSources, *, query: str, selector,
                         contact_facts=None, contact_facts_allowed=False,
                         timezone_name=None, current_work_available=False, limit=5,
-                        session_history=None) -> MemoryPacket:
+                        now=None) -> MemoryPacket:
     """Apply the existing projections, corrections, ranking and shared budget once.
 
     The caller supplies an authenticated audience and an optional projected
     contact fact view. All source candidates come from the canonical ledger.
-    ``session_history="intact"`` says the host still shows this session's own
-    turns verbatim: quoting them back is the one recall that can add nothing,
-    so those quotations and conversation pairs are left out (derived claims,
-    media and other sessions' evidence stay).
+    ``now`` pins the time query; the recall benchmark replays fixtures at
+    their recorded date.
     """
     from protagine.beliefs.source_time import interpret_time_query, filter_unstructured
     from protagine.util import temporal
@@ -88,7 +86,7 @@ async def select_memory(collected: CollectedSources, *, query: str, selector,
     scope = {'contact_id': collected.contact_id, 'session_id': collected.session_id}
     beliefs = []
     quotations = source_candidates(collected.hits)
-    time_query = interpret_time_query(query, now=temporal.now_utc(), timezone_name=timezone_name)
+    time_query = interpret_time_query(query, now=now or temporal.now_utc(), timezone_name=timezone_name)
     if ledger is not None:
         from protagine.beliefs.source_projection import SourceClaimProjection
         from protagine.memory.selection import current_work_query
@@ -105,10 +103,6 @@ async def select_memory(collected: CollectedSources, *, query: str, selector,
         quotations.extend(filter_unstructured(list(media_by_id.values()), time_query))
     else:
         beliefs = filter_unstructured(beliefs, time_query)
-    if session_history == 'intact' and collected.session_id:
-        quotations = [row for row in quotations
-                      if not (row.get('session_id') == collected.session_id
-                              and row.get('kind') in ('source_quote', 'conversation_pair'))]
     facts_status = 'not_in_scope' if not contact_facts_allowed else 'unavailable'
     if contact_facts_allowed and contact_facts is not None:
         try:

@@ -69,14 +69,19 @@ def _statistics(value):
     contrasts = []
     for item in value['contrasts']:
         entry = {'treatment': identifier(item['treatment']), 'comparator': identifier(item['comparator']),
-                 'same_profile': bool(item['same_profile']), 'unit': 'scenario',
+                 'same_profile': bool(item['same_profile']), 'unit': item.get('unit', 'scenario'),
                  'declared_units': _count(item['declared_units']),
                  'unavailable_units': _count(item['unavailable_units']),
                  'verdict': item['verdict']}
+        if entry['unit'] not in {'scenario', 'probe'}:
+            raise ValueError('Unknown public unit')
+        if entry['unit'] == 'probe':
+            # Campaign probes are clustered by campaign (paired_report.PROBE_STATISTICS_BASIS).
+            entry.update(cluster='campaign', unavailable_campaigns=_count(item.get('unavailable_campaigns')))
         if entry['verdict'] not in {'demonstrated', 'not_demonstrated', 'unavailable'}:
             raise ValueError('Unknown public verdict')
         if entry['verdict'] != 'unavailable':
-            entry.update({key: _count(item[key]) for key in ('units', 'wins', 'losses', 'ties')},
+            entry.update({key: _count(item.get(key)) for key in ('units', 'clusters', 'wins', 'losses', 'ties')},
                 delta_pp=_signed(item['delta_pp']), mde_pp=number(item['mde_pp']),
                 p_two_sided=number(item['sign_test']['p_two_sided']),
                 p_one_sided=number(item['sign_test']['p_one_sided']),
@@ -84,9 +89,11 @@ def _statistics(value):
                        'level': number(item['ci_pp']['level']), 'samples': _count(item['ci_pp']['samples'])},
                 non_inferior_point_estimate=bool(item['non_inferior_point_estimate']))
         contrasts.append(entry)
+    probes = value['rule'].get('unit') == 'probe'
     return {'protocol': paired_report.STATISTICS_PROTOCOL, 'rule': dict(value['rule']),
             'bootstrap_seed': _count(value['bootstrap_seed']),
-            'basis': paired_report.STATISTICS_BASIS, 'contrasts': contrasts}
+            'basis': paired_report.PROBE_STATISTICS_BASIS if probes else paired_report.STATISTICS_BASIS,
+            'contrasts': contrasts}
 
 
 def _timing(value):

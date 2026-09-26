@@ -8,13 +8,17 @@ import os
 from pathlib import Path
 import re
 import sys
+from urllib.parse import urlsplit
 
-from . import paired_arms
+from . import paired_arms, paired_body
 from .pack_batch import implementation_identity
 from .paired_worker import (ARM_PROFILE_PROTOCOL, EAGER_TOOLS_CONFIG, ENVIRONMENT_NOTE_PROTOCOL,
                             ENVIRONMENT_NOTES, MESSAGE_TIMESTAMP_FORMAT, MESSAGE_TIMESTAMPS_MODES,
-                            MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, PROFILE_SWITCHES,
-                            TOOL_LOADING_MODES, TOOL_LOADING_PROTOCOL)
+                            MESSAGE_TIMESTAMPS_PROTOCOL, MIND_SWITCHES, MIND_TICK_PROTOCOL, OUTBOUND_MODES,
+                            OUTBOUND_PROTOCOL, OUTBOUND_SCHEMA, OUTBOUND_TOOLSET, PEOPLE_FILE,
+                            PEOPLE_INSTRUMENT_PROTOCOL, PLUGIN_TOOL_SETS, PLUGIN_TOOLS_PROTOCOL, PROFILE_SWITCHES,
+                            EMBEDDING_PROTOCOL, QUIET_HOURS_PROTOCOL, SKILL_TOOLS, SKILLS_PROTOCOL, TOOL_LOADING_MODES,
+                            TOOL_LOADING_PROTOCOL)
 from .records import digest, publish, read, write_once
 from .runner import evaluate
 
@@ -40,12 +44,37 @@ PROFILES = {'base_hermes': {'plugin': False, 'overlay': {}},
             'full-curiosity': {'plugin': True, 'overlay': {}, 'full': True, 'minus_curiosity': True},
             'full-mastery': {'plugin': True, 'overlay': {}, 'full': True, 'minus_mastery': True},
             'full-upkeep': {'plugin': True, 'overlay': {}, 'full': True, 'minus_upkeep': True},
-            'full-social': {'plugin': True, 'overlay': {}, 'full': True, 'minus_social': True}}
+            'full-social': {'plugin': True, 'overlay': {}, 'full': True, 'minus_social': True},
+            # One ablation per later faculty, each ``full`` with that faculty's flag off (the
+            # faculty claim of its family's gate); the flag is served whether or not the
+            # faculty's code has landed, so the arm is a no-op contrast until its milestone.
+            'full-people': {'plugin': True, 'overlay': {}, 'full': True, 'minus_people': True},
+            'full-affect': {'plugin': True, 'overlay': {}, 'full': True, 'minus_affect': True},
+            # The affect family's mechanism arm: full-affect with the frozen stateless rules on, so
+            # every affect consumer reads its rule (mind.faculties.affect_rules, evals 6.4).
+            'full-affect-plus-rules': {'plugin': True, 'overlay': {}, 'full': True, 'minus_affect': True,
+                                       'plus_affect_rules': True},
+            'full-opinions': {'plugin': True, 'overlay': {}, 'full': True, 'minus_opinions': True},
+            'full-semantic_recall': {'plugin': True, 'overlay': {}, 'full': True, 'minus_semantic_recall': True},
+            'full-consolidation': {'plugin': True, 'overlay': {}, 'full': True, 'minus_consolidation': True},
+            'full-self_narrative': {'plugin': True, 'overlay': {}, 'full': True, 'minus_self_narrative': True},
+            'full-lessons': {'plugin': True, 'overlay': {}, 'full': True, 'minus_lessons': True},
+            # The skills question of the improve family: full with the one faculty that ships off on.
+            'full-plus-skills': {'plugin': True, 'overlay': {}, 'full': True, 'plus_skills': True},
+            # The owner outreach family (mind-outreach-1): the faculty's ablation, and the product
+            # comparator, stock Hermes with a heartbeat worded to check in with the owner when useful.
+            'full-outreach': {'plugin': True, 'overlay': {}, 'full': True, 'minus_outreach': True},
+            'base-heartbeat-checkin': {'plugin': False, 'overlay': {}, 'heartbeat_checkin': True}}
 ARMS = ('base_hermes', 'protagine')
 BUILT_IN_PAIR = {name: PROFILES[name] for name in ARMS}
 HEARTBEAT = {'prompt_sha256': paired_arms.HEARTBEAT_PROMPT_SHA256,
              'extra_toolsets': list(paired_arms.HEARTBEAT_EXTRA_TOOLSETS),
              'deliver': paired_arms.HEARTBEAT_DELIVER}
+# Recorded only in a plan that selects the check-in heartbeat arm.
+HEARTBEAT_CHECKIN = {'prompt_sha256': paired_arms.HEARTBEAT_CHECKIN_PROMPT_SHA256,
+                     'extra_toolsets': list(paired_arms.HEARTBEAT_EXTRA_TOOLSETS),
+                     'deliver': paired_arms.HEARTBEAT_DELIVER}
+QUIET_WINDOW = re.compile(r'(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d')
 # What a dataset's declared tool loading means inside the image, recorded in the
 # plan when a dataset declares one; the same Hermes config keys in every arm.
 TOOL_LOADING = {'eager': {'protocol': TOOL_LOADING_PROTOCOL, 'mode': 'eager',
@@ -58,10 +87,27 @@ MESSAGE_TIMESTAMPS = {'gateway': {'protocol': MESSAGE_TIMESTAMPS_PROTOCOL, 'mode
 ENVIRONMENT_NOTE = {mode: {'protocol': ENVIRONMENT_NOTE_PROTOCOL, 'mode': mode, 'text': text,
                            'text_sha256': hashlib.sha256(text.encode()).hexdigest()}
                     for mode, text in ENVIRONMENT_NOTES.items()}
+# The outbound path a family declares for every arm: the tool, its toolset and its schema.
+OUTBOUND = {mode: {'protocol': OUTBOUND_PROTOCOL, 'mode': mode, 'toolset': OUTBOUND_TOOLSET,
+                   'tool': OUTBOUND_SCHEMA['name'],
+                   'schema_sha256': hashlib.sha256(json.dumps(OUTBOUND_SCHEMA, sort_keys=True).encode()).hexdigest()}
+            for mode in OUTBOUND_MODES}
+# The body clock's pinned start: every episode of every arm begins at this UTC time of day.
+CLOCK_START = {value: {'protocol': paired_body.CLOCK_START_PROTOCOL, 'utc': value}
+               for value in paired_body.CLOCK_STARTS}
 RULE = {'test': 'sign_exact', 'alpha': 0.05, 'min_wins': 6, 'ci': 'cluster_bootstrap_95',
         'unit': 'scenario', 'non_inferior_pp': -10}
+# A campaign plan (paired_cases.CAMPAIGN_PROTOCOL; the improve family, evals 6.8): the unit is the
+# probe and the bootstrap cluster the campaign, whose probes share its training; the old-family
+# probe is a point-estimate non-inferiority row and cost per success is compared to the comparator.
+CAMPAIGN = {'unit': 'probe', 'cluster': 'campaign', 'old_family': {'non_inferior_pp': -10},
+            'cost_per_success': {'max_increase_pct': 20}}
 PROFILE_NAME = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,39}'
 OVERLAY_DENIED = re.compile(r'URL|MODEL|KEY|TOKEN|CONTACT|PASSPHRASE|WEBHOOK|_DIR$|_DB$|_PATH$')
+# The plan's one embedding endpoint (semantic recall, evals 6.1): the same block in every arm; an arm
+# whose mind section turns faculties.semantic_recall off (full-semantic_recall only) leaves the embedder
+# off (native_memory_worker), and the served host embeds and recalls through it (paired_worker).
+EMBEDDING_KEYS = ('base_url', 'model', 'dimensions')
 ENDPOINT_WARNING = (
     'Benchmark calls may slow a live agent using the same endpoint, and competing traffic '
     'distorts timings. Prefer an idle endpoint when practical; sharing is allowed and '
@@ -79,6 +125,29 @@ def _policy(path):
                          'nonempty budget_policy, and environment.endpoint_usage')
     digest(value)  # Reject nonfinite/unserializable declarations before any execution.
     return value
+
+
+def validate_embedding(embedding, credentials):
+    """``{base_url, model, dimensions, api_key_env?}``: a credential-free URL, a model, a positive width, and
+    a credential name only among those the native config already declares (what the container receives)."""
+    if (not isinstance(embedding, dict) or set(embedding) - {*EMBEDDING_KEYS, 'api_key_env'}
+            or set(EMBEDDING_KEYS) - set(embedding)):
+        raise ValueError('An embedding config declares base_url, model, dimensions and optionally api_key_env')
+    url = urlsplit(str(embedding['base_url']))
+    if (not isinstance(embedding['base_url'], str) or url.scheme not in {'http', 'https'} or not url.hostname
+            or url.username or url.password):
+        raise ValueError('Use an explicit credential-free embedding URL')
+    if not isinstance(embedding['model'], str) or not embedding['model'].strip():
+        raise ValueError('Declare the embedding model')
+    if type(embedding['dimensions']) is not int or embedding['dimensions'] < 1:
+        raise ValueError('Declare positive embedding dimensions')
+    result = {'base_url': embedding['base_url'], 'model': embedding['model'], 'dimensions': embedding['dimensions']}
+    if 'api_key_env' in embedding:
+        name = embedding['api_key_env']
+        if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name) or name not in credentials:
+            raise ValueError('The embedding api_key_env must be a credential name the native config declares')
+        result['api_key_env'] = name
+    return result
 
 
 def validate_profiles(custom):
@@ -106,6 +175,8 @@ def validate_profiles(custom):
                                  'contact and path settings are not arm differences')
             if not isinstance(value, str) or not 1 <= len(value) <= 240 or not value.isprintable():
                 raise ValueError('Overlay values are short, nonempty printable strings')
+        if profile.get('heartbeat') and profile.get('heartbeat_checkin'):
+            raise ValueError('A profile installs one heartbeat: heartbeat or heartbeat_checkin')
         result[name] = {'plugin': profile['plugin'], 'overlay': dict(overlay),
                         **{switch: True for switch in PROFILE_SWITCHES if profile.get(switch)}}
     return result
@@ -135,10 +206,12 @@ def _settings(temperature, seeds):
 
 
 def _task(case):
+    """The task shared by every arm: the case minus its arm label, profile and the plan-level embedding block."""
     value = case.record()
     value = {key: item for key, item in value.items()
              if key not in {'sha256', 'inputs_sha256', 'oracle_sha256'}}
-    value['inputs'] = {key: item for key, item in value['inputs'].items() if key not in {'arm', 'profile'}}
+    value['inputs'] = {key: item for key, item in value['inputs'].items()
+                       if key not in {'arm', 'profile', 'embedding'}}
     return value
 
 
@@ -165,7 +238,7 @@ def _execution_identity(consumers, evaluators):
 def prepare(*, output, native_config, native_binding, comparison_policy, container_image,
             docker_host=None, case_ids=None, dataset_version=None, repetitions=1,
             label='candidate', evidence_mode='actual_inference', arms=None, reference_arm=None,
-            profiles=None, temperature=None, seeds=None, dataset_dir=None):
+            profiles=None, temperature=None, seeds=None, dataset_dir=None, embedding=None):
     """Resolve local recipes and pinned image identity without calling a model."""
     from . import paired_body, paired_cases, paired_container
     from .native_memory_batch import preflight_output
@@ -200,6 +273,8 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         variables.update(provider[key] for key in ('key_env', 'api_key_env') if provider.get(key))
     if any(not os.environ.get(name) for name in variables):
         raise ValueError('Selected native provider references an unset credential environment variable')
+    if embedding is not None:
+        embedding = validate_embedding(embedding, variables)
     legacy_pair = list(labels) == list(ARMS) and all(
         {k: v for k, v in labels[arm].items() if k != 'name'} == BUILT_IN_PAIR[arm] for arm in labels)
     payload = recipe.get('container_payload', {})
@@ -207,19 +282,37 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         raise ValueError('Arm profiles beyond the built-in pair require an image whose worker applies profiles')
     if any(labels[arm].get('heartbeat') for arm in labels) and payload.get('heartbeat_prompt_sha256') != HEARTBEAT['prompt_sha256']:
         raise ValueError('The heartbeat arm requires an image whose worker carries the same heartbeat prompt')
+    checkin = any(labels[arm].get('heartbeat_checkin') for arm in labels)
+    if checkin and payload.get('heartbeat_checkin_prompt_sha256') != HEARTBEAT_CHECKIN['prompt_sha256']:
+        raise ValueError('The check-in heartbeat arm requires an image whose worker carries the same check-in prompt')
     if (any(labels[arm].get(switch) for arm in labels for switch in MIND_SWITCHES)
             and payload.get('mind_tick') != MIND_TICK_PROTOCOL):
         raise ValueError('A mind arm requires an image whose worker serves the mind and ticks it')
+    if any(labels[arm].get('plus_skills') for arm in labels) and payload.get('skills_dir') != SKILLS_PROTOCOL:
+        raise ValueError('A skills arm requires an image whose worker mounts the mind\'s skills directory')
+    if embedding is not None and payload.get('embedding') != EMBEDDING_PROTOCOL:
+        raise ValueError('An embedding endpoint requires an image whose worker serves semantic recall through it')
     dataset_options = ({'dataset_dir': dataset_dir} if dataset_dir is not None
                        else {'dataset_version': dataset_version} if dataset_version is not None else {})
     by_arm = {arm: paired_cases.cases(arm=arm, case_ids=case_ids, profile=labels[arm], **dataset_options)
               for arm in labels}
-    if dataset_version == paired_cases.WORKFLOW_VERSION:
+    if embedding is not None:
+        # One endpoint for the whole plan, written into every case of every arm; the worker turns it into
+        # the arm's embedder through the semantic_recall flag alone.
+        from dataclasses import replace
+        by_arm = {arm: [replace(case, inputs={**case.inputs, 'embedding': deepcopy(embedding)}) for case in cases]
+                  for arm, cases in by_arm.items()}
+    episodes = [case for cases in by_arm.values() for case in cases]
+    if any(case.inputs.get('workflow') is not None for case in episodes):
         from .paired_workflow_runtime import PROTOCOL as workflow_protocol
         if payload.get('workflow_protocol') != workflow_protocol:
-            raise ValueError('Frozen workflows require an image with process-restart workflow support')
+            raise ValueError('Process restarts require an image with process-restart workflow support')
     if dataset_dir is not None and payload.get('body_protocol') != paired_body.PROTOCOL:
         raise ValueError('Generated families require an image whose worker runs the body tick')
+    if any(case.inputs.get('history') for case in episodes):
+        from .paired_history import PROTOCOL as history_protocol
+        if payload.get('history_protocol') != history_protocol:
+            raise ValueError('Seeded history requires an image whose worker imports it before the first turn')
     first = reference
     tool_loading = declared_mode(by_arm, 'tool_loading', TOOL_LOADING_MODES, 'tool loading')
     if tool_loading is not None and payload.get('tool_loading') != TOOL_LOADING_PROTOCOL:
@@ -231,6 +324,33 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
     environment_note = declared_mode(by_arm, 'environment_note', tuple(ENVIRONMENT_NOTES), 'environment note')
     if environment_note is not None and payload.get('environment_note') != ENVIRONMENT_NOTE_PROTOCOL:
         raise ValueError('An environment note requires an image whose worker carries it to every arm')
+    outbound = declared_mode(by_arm, 'outbound', OUTBOUND_MODES, 'outbound path')
+    if outbound is not None and payload.get('outbound') != OUTBOUND_PROTOCOL:
+        raise ValueError('A declared outbound path requires an image whose worker registers it in every arm')
+    skill_tools = declared_mode(by_arm, 'skill_tools', tuple(SKILL_TOOLS), 'skill tools')
+    if skill_tools is not None and payload.get('skills_dir') != SKILLS_PROTOCOL:
+        raise ValueError('Declared skill tools require an image whose worker gives them to every arm')
+    plugin_tool_set = declared_mode(by_arm, 'plugin_tools', tuple(PLUGIN_TOOL_SETS), 'plugin tool set')
+    if plugin_tool_set is not None and payload.get('plugin_tools') != PLUGIN_TOOLS_PROTOCOL:
+        raise ValueError('A declared plugin tool set requires an image whose worker gives it to the plugin arms')
+    # A plugin arm reads the contact records every arm is given only from its people store.
+    people_seeded = any(labels[arm].get('plugin') for arm in labels) and any(
+        PEOPLE_FILE in (case.inputs.get('initial_files') or {}) for case in episodes)
+    if people_seeded and payload.get('people_instrument') != PEOPLE_INSTRUMENT_PROTOCOL:
+        raise ValueError('Contact records require an image whose worker seeds the plugin arm\'s people store')
+    campaigns = {isinstance(case.inputs.get('campaign'), dict) for case in episodes}
+    if len(campaigns) != 1:
+        raise ValueError('Every episode of a plan is a campaign, or none is')
+    campaign = campaigns == {True}
+    quiet_hours = {case.inputs.get('quiet_hours') for case in episodes}
+    if len(quiet_hours) != 1 or (quiet_hours - {None} and not QUIET_WINDOW.fullmatch(str(next(iter(quiet_hours))))):
+        raise ValueError('Every episode of every arm declares the same quiet hours (HH:MM-HH:MM), or none')
+    quiet_hours = next(iter(quiet_hours))
+    if quiet_hours is not None and payload.get('quiet_hours') != QUIET_HOURS_PROTOCOL:
+        raise ValueError('Declared quiet hours require an image whose worker writes them into the mind arms')
+    clock_start = declared_mode(by_arm, 'clock_start', paired_body.CLOCK_STARTS, 'clock start')
+    if clock_start is not None and payload.get('clock_start') != paired_body.CLOCK_START_PROTOCOL:
+        raise ValueError('A pinned clock start requires an image whose worker pins it in every arm')
     identifiers = [case.id for case in by_arm[first]]
     if not 1 <= len(identifiers) <= 128 or len(set(identifiers)) != len(identifiers):
         raise ValueError('Paired plan requires 1..128 distinct episodes')
@@ -273,6 +393,30 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         comparison['message_timestamps'] = deepcopy(MESSAGE_TIMESTAMPS[message_timestamps])
     if environment_note is not None:
         comparison['environment_note'] = deepcopy(ENVIRONMENT_NOTE[environment_note])
+    if outbound is not None:
+        # The path every arm reaches a contact by (families/mind-people-1.md 7.1).
+        comparison['outbound'] = deepcopy(OUTBOUND[outbound])
+    if skill_tools is not None:
+        comparison['skill_tools'] = {'protocol': SKILLS_PROTOCOL, 'mode': skill_tools,
+                                     'tools': list(SKILL_TOOLS[skill_tools])}
+    if plugin_tool_set is not None:
+        # The plugin arms' model tools, part of the series' identity (the comparison key).
+        comparison['plugin_tools'] = {'protocol': PLUGIN_TOOLS_PROTOCOL, 'mode': plugin_tool_set,
+                                      'tools': list(PLUGIN_TOOL_SETS[plugin_tool_set])}
+    if people_seeded:
+        comparison['people_instrument'] = PEOPLE_INSTRUMENT_PROTOCOL
+    if embedding is not None:
+        comparison['embedding'] = deepcopy(embedding)
+    if clock_start is not None:
+        comparison['clock_start'] = deepcopy(CLOCK_START[clock_start])
+    if checkin:
+        comparison['heartbeat_checkin'] = deepcopy(HEARTBEAT_CHECKIN)
+    if quiet_hours is not None:
+        # The window every mind arm is configured with and every base arm reads from the workspace.
+        comparison['quiet_hours'] = {'protocol': QUIET_HOURS_PROTOCOL, 'window': quiet_hours}
+    if campaign:
+        comparison['campaign'] = {'protocol': paired_cases.CAMPAIGN_PROTOCOL, **deepcopy(CAMPAIGN)}
+        comparison['rule'] = {**RULE, 'unit': CAMPAIGN['unit'], 'cluster': CAMPAIGN['cluster']}
     comparison_key = digest(comparison)
     recipe = {**recipe, 'paired_version': VERSION, 'paired_dataset': dataset,
         'paired_policy': policy, 'comparison_key': comparison_key,
@@ -306,7 +450,7 @@ def prepare(*, output, native_config, native_binding, comparison_policy, contain
         'options': {'native_binding': native_binding, 'case_ids': identifiers, 'dataset_version': dataset_version,
                     'dataset_dir': dataset_dir,
                     'arms': list(arms) if arms is not None else list(ARMS), 'reference_arm': reference,
-                    'profiles': profiles, 'temperature': temperature, 'seeds': seeds},
+                    'profiles': profiles, 'temperature': temperature, 'seeds': seeds, 'embedding': embedding},
         'pairs': pairs, 'implementation': implementation,
         'execution_implementation_sha256': _execution_identity(paired_container.CONSUMERS, paired_cases.EVALUATORS),
         'coverage': 'Development pilot episodes; no held-out, deployment or model-tier qualification.'}
@@ -384,6 +528,9 @@ def add_parser(commands):
             item.add_argument('--profiles', type=Path, help='JSON object of additional arm profiles {name: {plugin, overlay}}')
             item.add_argument('--temperature', type=float, help='Pinned sampling temperature for every model call; unset keeps the provider default')
             item.add_argument('--seeds', help='Comma-separated scenario seeds frozen into the plan')
+            item.add_argument('--embedding-config', type=Path,
+                              help='Private JSON {base_url, model, dimensions, api_key_env?}: the one embedding '
+                                   'endpoint every arm may use (semantic_recall off in an arm leaves it unused)')
             item.add_argument('--label', default='candidate')
             item.add_argument('--evidence-mode', choices=['actual_inference', 'controlled'], default='actual_inference')
         elif command == 'run':
@@ -419,6 +566,7 @@ def cli(args):
             profiles=read(args.profiles) if args.profiles else None,
             temperature=args.temperature,
             seeds=[int(value) for value in args.seeds.split(',')] if args.seeds else None,
+            embedding=read(args.embedding_config) if args.embedding_config else None,
             label=args.label, evidence_mode=args.evidence_mode, **resources)
         print(json.dumps(result, indent=2))
         return 0

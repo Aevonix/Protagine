@@ -688,33 +688,52 @@ def projection_timeout_seconds(router):
         router, 'judging', task='source_claim_review')
 
 
-async def _review_claims(router, payload, claims, *, tier, functions, diagnostics):
-    if not claims:
-        return claims
+def review_timeout_seconds(router):
+    """The outer bound of one review call (the judging role's deadline)."""
+    return _role_timeout_seconds(router, 'judging', task='source_claim_review')
+
+
+async def review_proposals(router, payload, proposals, *, system, tier=None, functions=True,
+                           diagnostics=None):
+    """The claim-review pass: one judging call (task ``source_claim_review``) that returns a keep
+    decision and a reason for every supplied proposal, and the call's provenance.
+
+    ``system`` says what is judged; ``payload`` carries the complete source. Memory assertions use
+    ``REVIEW_SYSTEM``; other consumers bring their own question and reuse the same role, schema and
+    validation. A missing decision is unfinished work (``validated_review``), never a rejection.
+    """
     response = await asyncio.wait_for(router.complete(
-        messages=[{'role': 'system', 'content': REVIEW_SYSTEM},
+        messages=[{'role': 'system', 'content': system},
                   {'role': 'user', 'content': json.dumps({**payload, 'proposals': [
-                      {'index': index, 'claim': claim} for index, claim in enumerate(claims)]},
+                      {'index': index, 'claim': claim} for index, claim in enumerate(proposals)]},
                       ensure_ascii=False, sort_keys=True)}],
         force_tier=tier, context={'task': 'source_claim_review',
             'max_output_tokens': 1400, 'allow_fallback': functions,
-            'response_schema': review_response_schema(len(claims))}),
-        timeout=_role_timeout_seconds(router, 'judging', task='source_claim_review'))
+            'response_schema': review_response_schema(len(proposals))}),
+        timeout=review_timeout_seconds(router))
     provenance = {
         'function_role': getattr(response, 'function_role', '') or 'judging',
         'config_revision': getattr(response, 'config_revision', '') or 'unknown',
         'weight_revision': getattr(response, 'model_revision', '') or 'unknown',
         'binding': getattr(response, 'binding', '') or 'unknown',
-        'model_id': response.model_id}
+        'model_id': getattr(response, 'model_id', 'unknown')}
     if diagnostics is not None:
         diagnostics['review_response_count'] += 1
         diagnostics['last_review_provenance'] = provenance.copy()
     try:
-        decisions = validated_review(final_text(response), len(claims))
+        decisions = validated_review(final_text(response), len(proposals))
     except ValueError:
         if diagnostics is not None:
             diagnostics['invalid_review_count'] += 1
         raise
+    return decisions, provenance
+
+
+async def _review_claims(router, payload, claims, *, tier, functions, diagnostics):
+    if not claims:
+        return claims
+    decisions, provenance = await review_proposals(router, payload, claims, system=REVIEW_SYSTEM, tier=tier,
+                                                   functions=functions, diagnostics=diagnostics)
     kept = []
     for index, claim in enumerate(claims):
         decision = decisions[str(index)]

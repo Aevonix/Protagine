@@ -12,6 +12,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,6 @@ def save_last_user_message_at() -> None:
     try:
         _LAST_MSG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_LAST_MSG_PATH, "w") as f:
-            json.dump({"timestamp": datetime.now(timezone.utc).isoformat()}, f)
+            json.dump({"timestamp": now_utc().isoformat()}, f)
     except Exception as exc:
         logger.debug("Failed to save last_user_message_at: %s", exc)

@@ -27,6 +27,7 @@ and can run beside the faculty milestones.
 | **M8** | Memory and identity: consolidation, constitution, self-narrative | `memory`, the LongMemEval_S anchor, `self` | +0.9k / −15k |
 | **M9** | Self-improvement: verification, lessons, mastery reflector, skills (off); campaign mode | `improve` campaigns | +0.9k / −10k |
 | **M10** | Release scorecard, defaults from results, shipped-configuration check, surface cut | Full scorecard (§9-10); stop rule | +0.5k / −7k |
+| **M11** | Owner outreach: the social drive toward the owner, value against interruption, direction from the owner's replies | `outreach` (§6.11); coupled families re-run | +1.6k / 0 |
 
 **Totals.**
 - About 11k lines added: about 9.5k of product code (including the 1.2k plugin) and about 1.2k
@@ -54,6 +55,8 @@ flowchart LR
   M6 --> M10
   M7 --> M10
   M9 --> M10
+  M5 --> M11
+  M9 --> M11
 ```
 
 After M2, the sweep (M3), opinions (M7) and memory and identity (M8) can proceed in parallel with
@@ -438,7 +441,7 @@ permitted and composed privately.
 | Social drive | Uses `evaluate_outreach` (`P/contacts/comms.py:366-427`) as its policy; only contacts with an owner-set cadence or tier `regular` or above; per-contact multipliers `reach_out:<contact>`; the ignored-streak backoff on the cooldown (`:403-411`) |
 | Opt-out | A deterministic phrase match plus the appraisal's `opt_out` flag; lowers `may_contact` only |
 | `P/mind/compose.py` (~120) | Recipient-scoped, tool-less composition from the contact's own `/context/assemble` packet and an enumerated purpose |
-| Contact affect | `their_valence` and `opt_out` in the existing appraisal call; the weighting fix at `P/tom/affect.py:335-358`; back-off through `P/delivery/rate_limiter.py:126-135` |
+| Contact affect | `their_valence` and `opt_out` in the existing appraisal call; the weighting fix at `P/tom/affect.py:335-358`; back-off through the social drive's `evaluate_outreach` (as built: `rate_limiter.py` had no caller and went with `P/delivery/`, so the back-off holds check-ins only) |
 | Link proposals | Exact matches link automatically; name-only matches become an ask |
 | Digest | Per-contact template digest (the LLM digest arrives in M8) |
 | Owner interfaces | The `protagine_people` tool (replacing `protagine_contacts`) and the `protagine people` CLI |
@@ -450,7 +453,7 @@ permitted and composed privately.
 | `P/tom/` except `affect.py` and `facts.py`: ToM2, P8, arcs, recipient simulator, exposure, extractor, engagement/OCEAN | ~6.0k | the appraisal-call writer |
 | `P/identity_bootstrap/` (no importers) | 2,896 | – |
 | `P/intelligence/relationships/scorer.py`, `trust_tiers.py` | ~0.8k | one tier vocabulary; `may_contact` |
-| `P/delivery/` except `rate_limiter.py`: `reachout_policy.py`, `channels.py` and the rest | ~0.8k | outbox |
+| `P/delivery/`: `reachout_policy.py`, `channels.py`, `rate_limiter.py` (no caller) and the rest | ~1.1k | outbox; the social drive's back-off |
 | The legacy `/contacts/merge` and `/contacts/{id}/handles` routes (`P/api/routers/host.py:5864-5882`) | ~0.1k | owner-only merge |
 
 **Acceptance tests:**
@@ -505,8 +508,9 @@ which consumers read rules. Otherwise affect ships off, labelled "present, unpro
 
 ### M7: Opinions
 
-**Frozen before merge.** `mind-opinions-1`, including the pseudo-evidence scenarios, plus the
-SYCON-style anchor subset.
+**Frozen before merge.** `mind-opinions-1`, including the pseudo-evidence scenarios
+([families/mind-opinions-1.md](families/mind-opinions-1.md): dev templates, arms, rule; n after its
+pilot), plus the SYCON-style anchor subset.
 
 **Scope: rewrite.** `P/self_model/judgments.py` becomes the one store:
 - It gains `subject_kind`, `audience`, `premises` and `revise_if`.
@@ -627,6 +631,42 @@ both arms, and `mind-self-1`.
 
 **Size.** +0.9k / −10k; 3 PRs.
 
+**As built.** Where the design above met the code, these decisions were taken (the release
+notes and `docs/MIND.md` describe the behaviour):
+- **Campaign mode** needed no new episode grammar: every generated scenario already runs its
+  episodes in order in one container and one state. What it added is a campaign case's deadline
+  (600 s plus 720 s per day, at most 4 h) and output bound (8 MiB), the probe as the report's unit
+  with the campaign as the bootstrap cluster, the old-family row, cost per success, forbidden hits
+  and lesson diagnostics. The improve family also gives every arm the read-only skill tools
+  (evals section 11, 2026-09-24), since no arm could otherwise see a skill.
+- **Lessons are not `procedure` source claims.** A source claim quotes a person's own message, so
+  a lesson stored as one would read as something the owner said. Lessons are owner-audience
+  entries of the mind's own ledger session with `scope='session'` (architecture 4.8), erased with
+  the turns they quote; there is still no new table.
+- **Where corrections come from.** The correction API has no client, and owner verdicts arrive as
+  ordinary chat turns, so the nightly lesson call reads the owner's multi-turn sessions and the
+  verified intention outcomes; every owner-verified operation quotes the owner's exact words.
+- **Verification.** Only the mind grants `owner` and `check`; the body may claim a Hermes failure,
+  and only with a reason, and a blocked task with a reason is a Hermes failure. For lessons only an
+  external check (`commitment_resolved`, `reply_recorded`) counts: a `result_field` check reads the
+  worker's own report.
+- **The night** runs when `consolidation` or `lessons` is on; each stage checks its own flag, so
+  each ablation stays one faculty.
+- **The lesson line** in an owner turn is its own `protagine-lessons` section (at most 420
+  characters), like the stances; the Mind section takes no query.
+- **The reflector's budget** is the ordinary task budgets and the weekly per-signature re-arm; no
+  new budget key. Only a failure-class investigation is a reflector; a corrections investigation
+  keeps the M8 form, since its lessons would name no task class.
+- **Deletions**, by the grep of callers: `P/toolsmith/` (1,732), the whole `P/skills/` package
+  (3,404: the registry was built empty since M3, so every route answered empty or 404),
+  `P/self_model/experiments.py` (1,101) with its parameter store `params.py` (201),
+  `P/intelligence/cognition/` (1,678), `P/skills_memory/` (551), `P/mining/` (945) with its router
+  (104), `P/sandbox/` (360), and the whole `P/self_model/trust.py` (347) with `supervised.py` (106),
+  plus their routes, schemas, capabilities, server wiring and flags. `protagine upgrade` moves their
+  stores into the backup and drops the trust tables.
+- **Size**: product code +2.1k / -11.7k lines (`lessons.py` 988, `skills.py` 166); tests
+  +2.6k / -3.9k.
+
 ### M10: Scorecard, defaults and surface
 
 **Scope:**
@@ -659,6 +699,50 @@ is non-inferior.
 **Depends on.** All milestones.
 
 **Size.** +0.5k / about −7k (depending on the audit); 2-3 PRs.
+
+### M11: Owner outreach
+
+The owner asked for an assistant that checks in because it has a reason to: that asks whether they
+need something about a thing they mentioned, shows them what it found that bears on what they care
+about, and takes direction from how they react (architecture 4.10).
+
+**Scope (as built):**
+- `P/mind/outreach.py` (pure): the social drive's owner branch with three sources of substance (a
+  finding of the mind's own research, the owner's open loop after a quiet stretch, care for a named
+  thing); a finding that says nothing new (a null report, a repeat of what was sent or listed) is
+  no finding; expected value `relevance × novelty × timeliness` against the interruption cost; the
+  hard holds (quiet hours, the owner's pause, `budgets.outreach_per_day`, two hours after the last
+  outreach, a muted topic, a topic's backoff); template messages that say why, quoting the owner
+  from the ledger and never claiming more than their source.
+- `P/mind/reactions.py` (pure): the owner's words classified (stop, resume, pause for today, not
+  now, negative with or without a topic, positive, welcome, declarations, strain, relief), what in
+  a turn is about a given outreach, and whether a turn is about something else (a request of its
+  own, a redo); a bare "stop" and a vague "not today" act only as a reply.
+- The tick: the snapshot, at most one unprompted outreach a tick, the finding bookkeeping, the
+  digest's "Found for you" and "Offers", silence and the appraisal's dismissal net; `Mind.owner_turn`
+  from `turns/sync`; the follow-up (duty) and its answer; the owner's recovery path
+  (`POST /v1/mind/outreach`, `protagine mind outreach`); the appraisal's `on_owner` opt-out net.
+- Learning where it already lives: the verdict and its feedback (type and topic), `mind_state`
+  interests, mutes, the pause and timing marks, and the night's lessons over rated outreach, which
+  score the next finding.
+- Plumbing that keeps older behaviour: only contact check-ins skip feedback gating; the owner
+  budget stops counting outreach; people off keeps the social drive's weight.
+- Harness: the `sends.windows` oracle form, the family quiet-hours key (`paired-quiet-hours-1`),
+  the family deadline, the arms `full-outreach` and `base-heartbeat-checkin`
+  (`paired-arm-profiles-6`), and the dev family `mind-outreach-1` with its no-model walk
+  (`sidecar/tests/test_outreach_family_walk.py`): `full` passes every dev scenario and
+  `full-outreach` fails exactly the eleven where a message is right. Three of those controls came
+  from the first review (an unrelated short request read as "dig deeper", a repeated report, a
+  day's budget inside an hour), and the code before its fixes fails each.
+- Zero plugin lines: the adapter's line count and its tool schemas are unchanged.
+
+**Eval gate.** `outreach` (evals §6.11) vs `base+heartbeat-checkin` and `full−outreach`, its
+invariants at 0, and the dev pilots of the coupled families (people, initiative, drives, affect)
+non-inferior with outreach on. Until the gate runs, the flag carries its release-candidate value
+(on) so `full` measures it; the release sets it by the gate (off unless `full` beats
+`full-outreach`), and a deployment before the gate sets it in its own config.
+
+**Depends on.** M5 (the social drive), M9 (lessons).
 
 ---
 

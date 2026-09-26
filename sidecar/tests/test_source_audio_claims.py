@@ -244,8 +244,7 @@ async def test_asr_annotation_matches_original_revision_and_fences_recalled_clai
 
 
 @pytest.mark.asyncio
-async def test_only_transcript_preference_read_retains_provenance_without_affect_or_judgment(tmp_path, monkeypatch):
-    monkeypatch.setenv('PROTAGINE_SELF_JUDGMENTS_ENABLED', '1')
+async def test_only_transcript_preference_read_retains_provenance_without_affect_or_opinion(tmp_path):
     from protagine.self_model.appraisals import AppraisalStore
     from protagine.self_model.judgments import SelfJudgments
     ledger = TurnIdempotencyLedger(tmp_path/'sources.db'); projection = SourceClaimProjection(ledger)
@@ -260,7 +259,8 @@ async def test_only_transcript_preference_read_retains_provenance_without_affect
         def function_deadline_seconds(self, **kwargs): return 5
         async def complete(self, **kwargs): pytest.fail('ASR became ordinary emotional or self-judgment evidence')
     await appraisals.process_one(NoEmotionalInference())
-    await SelfJudgments(ledger, owner_id='person').process_one(NoEmotionalInference())
+    # A transcript preference is memory, not an opinion premise.
+    assert SelfJudgments(ledger, owner_id='person').admitted_premises('audio') == []
     with sqlite3.connect(ledger.db_path) as conn:
         assert conn.execute('SELECT count(*) FROM appraisal_records').fetchone()[0] == 0
         assert conn.execute('SELECT count(*) FROM self_judgment_revisions').fetchone()[0] == 0

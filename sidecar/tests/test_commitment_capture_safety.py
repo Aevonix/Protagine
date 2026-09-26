@@ -46,6 +46,12 @@ def _item(description, *, action="create", target=None, due_at=None, priority=70
             "listed_due": listed_due, "counterpart": counterpart, "obligor": obligor}
 
 
+def _review(decisions):
+    content = json.dumps(decisions)
+    choice = SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=content))
+    return SimpleNamespace(raw=SimpleNamespace(choices=[choice]), content=content, model_id="judge")
+
+
 def _reply(*items):
     content = json.dumps(list(items))
     choice = SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=content))
@@ -62,6 +68,10 @@ class _Router:
         return 20
 
     async def complete(self, messages, *, context=None, **_):
+        if (context or {}).get("task") == "source_claim_review":
+            # The claim-review pass on a case-3 message: a correct judge keeps an owner's real ask.
+            count = len(json.loads(messages[1]["content"])["proposals"])
+            return _review({str(index): {"keep": True, "reason": "asked"} for index in range(count)})
         self.calls.append((messages, context))
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -267,7 +277,7 @@ async def test_a_contacts_own_turn_lists_and_moves_the_owners_obligation_to_them
     promise = _item("Send Sam the build recap", due_at=_iso(hours=5), counterpart="Sam")
     assert await extractor.process_one(_Router(_reply(promise))) is True
     row, = _open(cstore, OWNER)
-    assert row["metadata"] == {"counterpart": "Sam"}
+    assert row["metadata"] == {"counterpart": "Sam", "source_turn": "t-1"}
     _turn(ledger, "t-2", "Could I have the recap by noon instead of five?", assistant="I'll let them know.",
           person=SAM, session="sms:c-sam", channel="sms:+15550100")
     earlier = _iso(hours=1)
@@ -424,7 +434,7 @@ def test_reschedule_shifts_an_absolute_heads_up_by_the_same_delta(tmp_path):
                           person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     assert result["updated"] == [row["id"]]
     after = cstore.get(row["id"])
-    assert after["metadata"]["heads_up_at"] == _iso(days=2, minutes=-5)
+    assert after["metadata"]["heads_up_at"] == (datetime.fromisoformat(pushed) - timedelta(minutes=10)).isoformat()
     assert heads_up_at(after) == datetime.fromisoformat(pushed) - timedelta(minutes=10)
     assert [c.type for c in _duty(cstore, _now())] == []
     assert [c.type for c in _duty(cstore, _now() + timedelta(days=2, minutes=-3))] == ["commitment_due_soon"]
@@ -629,12 +639,12 @@ async def test_three_queued_jobs_with_a_backoff_in_the_middle_land_in_order(tmp_
 
 
 async def test_a_head_job_that_exhausts_its_attempts_releases_the_persons_queue(tmp_path):
-    """The earlier job fails for the last time: it is finished as failed, not left pending, so the
-    later job of the same person runs in the same drain."""
+    """The earlier job fails its last scheduled attempt: it is finished as failed, not left pending,
+    so the later job of the same person runs in the same drain."""
     cstore, ledger, extractor = _setup(tmp_path)
     _turn(ledger, "t-1", "I'll send Sam the recap by five.")
     _turn(ledger, "t-2", "Remind me to call the vet at four.", session="s-2")
-    _set_job(ledger, "t-1", attempts=MAX_ATTEMPTS - 1, next_attempt=time.time() + 60,
+    _set_job(ledger, "t-1", attempts=MAX_ATTEMPTS - 1, next_attempt=time.time() - 1,
              hold_until=time.time() + HOLD_RETRY_SECONDS, error="ConnectionError")
 
     def down_once(call):
@@ -770,7 +780,7 @@ def test_a_deadline_pulled_in_past_its_warning_time_keeps_the_heads_up_and_fires
     record_items([_item("Send Kim the invoice", action="reschedule", target=1, due_at=soon)],
                  person_id=PERSON, commitment_store=cstore, existing=_open(cstore), rejections=[])
     after = cstore.get(row["id"])
-    assert after["metadata"]["heads_up_at"] == _iso(minutes=-5)
+    assert after["metadata"]["heads_up_at"] == (datetime.fromisoformat(soon) - timedelta(minutes=10)).isoformat()
     assert [c.type for c in _duty(cstore, _now())] == ["commitment_due_soon"]
 
 
@@ -790,12 +800,13 @@ def test_a_created_item_records_who_owes_it_and_updates_leave_it_alone(tmp_path)
     promised, plain = (cstore.get(ident) for ident in result["created"])
     assert promised["metadata"] == {"counterpart": "owner", "obligor": "assistant"}
     assert plain["metadata"] is None
+    heads_up = _iso(hours=2, minutes=45)            # read once: a second boundary may fall between two reads
     record_items([_item("Send the owner the report", action="reschedule", target=1, due_at=_iso(hours=3),
-                        metadata={"heads_up_at": _iso(hours=2, minutes=45)})],
+                        metadata={"heads_up_at": heads_up})],
                  person_id=OWNER, commitment_store=cstore, existing=_open(cstore, OWNER), rejections=[])
     after = cstore.get(promised["id"])
     assert after["metadata"]["obligor"] == "assistant" and after["metadata"]["counterpart"] == "owner"
-    assert after["metadata"]["heads_up_at"] == _iso(hours=2, minutes=45)
+    assert after["metadata"]["heads_up_at"] == heads_up
 
 
 def test_the_contract_names_the_obligor():
@@ -803,3 +814,111 @@ def test_the_contract_names_the_obligor():
     assert "obligor" in extract.SYSTEM and "assistant" in extract.SYSTEM
     assert extract.ITEM_SCHEMA["properties"]["obligor"]["type"] == ["string", "null"]
     assert "obligor" in extract.ITEM_SCHEMA["required"]
+
+
+# --- the owner-granted message to a third party (case 3) ---------------------------------------
+
+
+def test_the_contract_carries_case_three_and_its_metadata_shapes():
+    from protagine.commitments import extract
+    assert "A MESSAGE TO A THIRD PARTY" in extract.SYSTEM
+    assert '{"kind":"notice","recipient":' in extract.SYSTEM and '{"kind":"check_in","recipient":' in extract.SYSTEM
+    assert extract.ITEM_SCHEMA["properties"]["metadata"]["type"] == ["object", "null"]
+    assert extract.message_metadata({"kind": "check_in", "recipient": "p-05", "topic": "the Q3 figure 4.2m code X7",
+                                     "grant": "owner"}, owner_turn=True, confirmed=True) == \
+        {"kind": "check_in", "recipient": "p-05", "topic": "the figure code", "grant": "owner"}
+    # The grant also needs the owner's confirmed words asking for the message (test_commitment_message_request).
+    assert "grant" not in extract.message_metadata({"kind": "check_in", "recipient": "p-05", "topic": "the lease",
+                                                    "grant": "owner"}, owner_turn=True)
+    assert extract.message_metadata({"kind": "notice", "recipient": "", "content": "hi"}, owner_turn=True) == {}
+    assert extract.message_metadata({"kind": "notice", "recipient": "p-05", "content": "hi", "grant": "owner",
+                                     "recipient_id": "cid-9"}, owner_turn=False) == \
+        {"kind": "notice", "recipient": "p-05", "content": "hi"}
+
+
+async def test_the_job_grants_only_on_the_owners_own_turn(tmp_path, monkeypatch):
+    """The extractor job passes the configured owner: the same case-3 answer is a grant on the owner's
+    turn and an ordinary row, never a relay, on a contact's."""
+    monkeypatch.setenv("PROTAGINE_OWNER_CONTACT_ID", OWNER)
+    cstore, ledger, extractor = _setup(tmp_path)
+    notice = _item("Tell p-05 the venue booking lapses", due_at=_iso(hours=3), counterpart="p-05", obligor="assistant",
+                   metadata={"kind": "notice", "recipient": "p-05", "content": "The booking lapses tonight.",
+                             "asked": "If p-05 has not confirmed by five, tell them", "grant": "owner"})
+    _turn(ledger, "t-owner", "If p-05 has not confirmed by five, tell them the booking lapses tonight.",
+          person=OWNER)
+    _turn(ledger, "t-contact", "If nobody confirms by five, tell p-05 the booking lapses tonight.",
+          person=SAM, session="s-2")
+    router = _Router(_reply(notice))
+    assert await extractor.process_one(router) is True and await extractor.process_one(router) is True
+    owners, = _open(cstore, OWNER)
+    contacts, = _open(cstore, SAM)
+    assert owners["metadata"]["grant"] == "owner" and owners["metadata"]["kind"] == "notice"
+    assert owners["metadata"]["request_review"]["keep"] is True
+    assert "grant" not in contacts["metadata"] and contacts["metadata"]["content"] == "The booking lapses tonight."
+# --- 8. the mind's own self-turns are not the person's conversation ------------------------------
+
+
+def test_the_minds_self_turns_are_not_the_persons_recent_conversation(tmp_path):
+    """The autobiography (``session_id='mind'``, ``turn_id='mind:...'``) is the agent's record, not
+    something the person said: it must neither appear in the extractor's "Recent conversation" nor
+    push the person's real earlier turn out of the window."""
+    from protagine.commitments.extract import CONTEXT_TURNS
+    from protagine.mind.outcomes import Autobiography
+    cstore, ledger, extractor = _setup(tmp_path)
+    _turn(ledger, "t-1", "I'll send Sam the recap by five.")
+    autobiography = Autobiography(ledger, owner_id=PERSON)
+    for index in range(CONTEXT_TURNS):
+        assert autobiography.record(f"i-{index}", "decided_act",
+                                    f"I will act on 'thing {index}' (duty drive, owner class): a reason.")
+    _turn(ledger, "t-2", "Actually make that six.")
+    context = extractor._recent_turns(extractor._source("t-2"))
+    assert "send Sam the recap" in context
+    assert "I will act on" not in context and "decided_act" not in context
+
+
+def test_the_contract_sets_priority_below_50_only_for_what_the_person_calls_optional():
+    """The owed/optional split affect relies on (a nice-to-have nudge may be held after
+    dismissals, a hard promise never is) rides on the stored priority (build plan M6)."""
+    from protagine.commitments import extract
+    system = " ".join(extract.SYSTEM.split())
+    assert ("priority: 70 for an ordinary promise or reminder, 80 or more when someone depends on a hard "
+            "deadline, and below 50 only when the person calls the item optional, a nice-to-have or low "
+            "priority.") in system
+    assert system.index("priority: 70 for an ordinary promise") < system.index('Use "introspection"')
+
+
+def test_a_status_line_about_an_unlisted_obligation_is_its_first_mention():
+    """The stall rule ("not yet" records nothing) is about a numbered open item. The faculty pilots' extractor
+    applied it to the first mention of obligations the owner reported as not started ("This is a pure stall.
+    Record nothing."), so the load never reached the mind or the rules. A status line about an obligation that
+    is not on the list records it, whatever words report how it stands."""
+    from protagine.commitments import extract
+    system = " ".join(extract.SYSTEM.split())
+    assert "about a NUMBERED item is NEITHER: record nothing for it" in system
+    assert "NOT on the numbered list" in system
+    assert "is its first mention: when it is one of 1-4, record it as a NEW item" in system
+    example = system.split("They said: None of it started yet")[1].split("They said:")[0]
+    assert example.count('"action":"create"') == 2 and "first mention" in example
+    assert "[] (a stall on a listed item changes nothing)" in system
+
+
+async def test_the_item_a_turn_is_about_is_listed_when_more_are_open_than_the_prompt_shows(tmp_path):
+    """The prompt numbers at most OPEN_ITEMS_LISTED open items. Chosen by priority and due date alone, a person
+    with more lost the one a turn was about, and the status-line rule then told the model to record it again
+    as new: a duplicate obligation, duplicate nudges and an inflated load. The items that share words with the
+    turn are shown (numbered the same way for the prompt and for the update); the list says how many more are
+    open, and while it does, a status line about an item not on it records nothing."""
+    from protagine.commitments.extract import OPEN_ITEMS_LISTED, SYSTEM
+    cstore, ledger, extractor = _setup(tmp_path)
+    for index in range(1, OPEN_ITEMS_LISTED + 1):
+        cstore.create(person_id=PERSON, description=f"Open item number {index}", priority=90 - index)
+    lease = cstore.create(person_id=PERSON, description="Send Dana the signed lease", priority=60)
+    _turn(ledger, "t-1", "Still haven't started the lease for Dana.")
+    router = _Router(_reply(_item("Send Dana the signed lease", action="complete", target=OPEN_ITEMS_LISTED)))
+    assert await extractor.process_one(router) is True
+    prompt = router.prompt()
+    assert f"[{OPEN_ITEMS_LISTED}] Send Dana the signed lease (no due)" in prompt
+    assert "1 more open item is not listed" in prompt and f"Open item number {OPEN_ITEMS_LISTED} " not in prompt
+    assert cstore.get(lease["id"])["status"] == "fulfilled"          # the update found the item it was shown
+    system = " ".join(SYSTEM.split())
+    assert "when the list says more open items are not listed, record nothing for it" in system

@@ -3,7 +3,7 @@
 `protagine-hermes` is one wheel with two Hermes plugins:
 
 - `protagine` (general): turn capture, the guard, `/mind`, and the self, people,
-  memory and reminder tools
+  opinions, memory and reminder tools
 - `protagine-memory` (memory provider): per-turn recall through
   `/v1/host/context/assemble`, turn sync when the general plugin is absent, and
   the owner's commitment and affect writes
@@ -32,6 +32,8 @@ memory:
   provider: protagine-memory
 kanban:
   dispatch_in_gateway: true         # the plugin's heartbeat is the dispatch tick
+skills:
+  external_dirs: [~/.protagine/skills]   # Protagine's own skills (with faculties.skills on); nothing else writes there
 security:
   protected_instruction_extra_patterns: [protagine.yaml, identity.yaml, api.key]
 ```
@@ -52,9 +54,11 @@ Every request to the sidecar carries `Authorization: Bearer <key>`.
 | Durable work | `hermes_cli.kanban_db.create_task(idempotency_key="mind:<id>", assignee="protagine-act", ...)`; an existing non-archived task with the key is returned, never duplicated |
 | Messages | `tools.send_message_tool.send_message_tool({"action": "send", "target", "message"})`, text verbatim |
 | Task outcomes | the `mind:*` task's status plus its latest `task_runs` row (`kanban_db.latest_run`) |
-| Owner commands | `register_command("mind")`: read-only in chat plus `off` |
+| Owner commands | `register_command("mind")`: read-only in chat plus `off`; `pre_gateway_dispatch` drops a `/mind` whose sender is not the owner, since the command handler gets no sender |
 | Tools | `register_tool`; handlers receive `session_id`, which the session map resolves to a sender |
 | Reminders | stock cron: a one-shot job whose id is the only thing the plugin keeps |
+| Skill loads | `on_skill_lifecycle`: a `loaded` fact for a `protagine-*` skill is queued in the turn outbox as a `skill_use` row, which the body delivers to `POST /v1/mind/skills/used`; every other skill and action is Hermes' own |
+| Skills index | `skills.external_dirs` lists `<instance>/skills`; when `/v1/mind/state` reports a new `skills.generation`, the body calls `agent.prompt_builder.clear_skills_system_prompt_cache()` so the next session lists the change (stock caches the index per process with no file times in its key); without that function a change shows after a restart |
 
 ## Owner and guest
 
@@ -64,8 +68,12 @@ Turns without a sender on the CLI, cron or API lanes are the owner's own for
 memory; a cron run (`platform: cron`) is a stored prompt rather than the
 owner typing, so it cannot answer an ask, rate, change a permission or
 forget. Any other sender is a guest: `session_search` is blocked for guests,
-delivering cron jobs need a permitted recipient, and every mutation through
-`protagine_self`, `protagine_people` and `protagine_memory_forget` is refused.
+delivering cron jobs need a recipient whose `may_contact` is not `never`,
+every mutation through `protagine_self`, `protagine_people` and
+`protagine_memory_forget` is refused, `protagine_people who` without a name is
+refused (a guest may ask who one named person is, never list the contacts), and
+the plugin drops a guest's `/mind` at `pre_gateway_dispatch`, because Hermes
+hands the command itself no sender.
 
 ## Mind-originated runs
 
@@ -88,8 +96,19 @@ run (the dispatcher sets `HERMES_KANBAN_TASK` and `HERMES_PROFILE`). In it:
 The guard asks `POST /v1/mind/guard {tool, args, session, run, task_id, owner,
 contact_id, platform, sender_id, recipients}` with a 2 s timeout when the
 sidecar serves the mind routes and reads `{allow, reason}` (`ask: true` becomes
-Hermes' approval gate); silence blocks effectful tools, a 404 falls back to the
-rules above. Read-only tools never wait on the sidecar.
+Hermes' approval gate in the owner's and the mind's runs); silence blocks effectful tools, a 404 falls back
+to the rules above. Read-only tools never wait on the sidecar.
+
+In a contact's (non-owner) session nothing becomes Hermes' approval gate: in a gateway that gate posts its
+prompt to the session's own chat and waits for `/approve` or a bare "yes" from it, so the contact would be
+the one approving. There an `ask` verdict is refused, and every refusal is the plugin's one final answer
+(`retry: false`), worded for a reply the contact reads. The final response is delivered to the session's
+own chat and nowhere else: the chat the gateway bound for the turn (a group's chat in a group), or, with no
+gateway, the sender's direct chat. A message to that chat is answered with "your final response is
+delivered to this conversation as your reply": the reply already is that message. Anything else, another
+handle of the sender's and a direct message to the sender from a group included, is a recipient for the
+sidecar's verdict; a target no contact is known at is answered "nothing was sent: no contact is known at
+that target".
 
 ## The body: the mind's effects on Hermes
 
@@ -97,7 +116,9 @@ The body thread runs in every Hermes process, but only the one that owns the
 kanban dispatcher writes to the board: stock fires `on_kanban_dispatch_tick`
 from `dispatch_once` in the process holding the singleton dispatcher lock, and
 the body runs steps 2 to 5 only after it has seen that tick. A CLI session, a
-gateway that lost the lock and a kanban worker drain the turn outbox only. While
+gateway that lost the lock and a kanban worker drain the turn outbox only; the
+first two also read `GET /v1/mind/state` on every tick for the skills
+generation (step 1), since Hermes caches the skills index per process. While
 `hermes pause` holds (the stock ESTOP sentinel) steps 2 and 3 wait as well. Once
 the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
 60 s, and at once when the dispatch tick or a captured turn wakes it):
@@ -105,7 +126,9 @@ the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
 1. `GET /v1/mind/state`. With `enabled: false` there, or `mind.enabled: false`
    in `protagine.yaml`, steps 2 and 3 are skipped and every unstarted `mind:*`
    task is archived; running workers end on their own. None of this needs a
-   model endpoint.
+   model endpoint. When `skills.generation` moved since the last tick (the
+   sidecar wrote or removed one of its skills), Hermes' skills prompt cache is
+   cleared; the first value a process sees is only recorded.
 2. `GET /v1/mind/dispatch` → for each `kind: task` intention one
    `kanban_db.create_task(title, body, assignee="protagine-act",
    idempotency_key=dedup_key or "mind:<id>", workspace_kind="scratch",
@@ -116,7 +139,9 @@ the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
    task with the key that was archived in between (stock's lookup skips
    archived tasks) is bound and settled as `cancelled` rather than recreated.
    Messages and notices never travel through dispatch. Runtime and retries
-   fall back to `mind.budgets.task_max_runtime_s` / `task_max_retries`.
+   are the task kind's (`mind.budgets.task_types`, else
+   `task_max_runtime_s` / `task_max_retries`), and fall back to that flat
+   pair when a payload carries none.
 3. `GET /v1/mind/outbox` → for each message, in order: skip it if the body's
    own ledger has begun it before; `POST /v1/mind/outbox/{id}/sending {target,
    at}` (any non-2xx: not ours); record `sending` locally; send **verbatim**
@@ -149,7 +174,9 @@ the sidecar serves `/v1/mind/*`, the body does this on every tick (about every
    `done | blocked | review | archived` or its latest run has ended, one
    `POST /v1/mind/outcome {id, hermes_ref, hermes_kind, status, outcome:
    done|blocked|failed|cancelled|uncertain, final, summary, error, verified:
-   "hermes_failure"|null, run: {id, outcome, status, profile, started_at,
+   "hermes_failure"|null (the sidecar honours the claim only for a failure
+   with a reason, and never takes `owner` or `check` from the body),
+   run: {id, outcome, status, profile, started_at,
    ended_at}, block_kind, consecutive_failures, completed_at, observed_at}` per
    state change (a failed run that Hermes requeues is one `failed`, `final:
    false` outcome; a task parked `blocked` with its failed run once
@@ -185,27 +212,86 @@ plugin sends `POST /v1/mind/decide {code, answer, session_id, contact_id,
 message}` only when the session's sender is the owner, the turn is not a kanban
 worker, and the owner's own message for that turn contains the code as a whole
 word; the sidecar checks the contact and the message again and answers
-`{ok, id, status, ...}` (404: no open ask with that code, 403: not the owner).
+`{ok, id, status, ...}` (404: no open ask with that code, 403: not the owner). A code the owner's message
+does not carry is never a guess away: with no ask open, or none typed, the answer is final; a miscopied code
+on a message that carries an open ask's code names that code.
 A guest, a worker whose task body quotes the code, or a page injected into an
 owner session cannot approve. `protagine_self rate {id, verdict}` posts
-`POST /v1/mind/rate` for the owner only.
+`POST /v1/mind/rate` for the owner only. `log` and `why` are the owner's too,
+and a guest's `state` says only whether the mind is on and at what level: the
+log and the asks name what the owner asked about other people.
+
+## People
+
+`protagine_people` is the model's view of the people store over `/v1/mind/people`
+(the sidecar side is `sidecar/protagine/api/routers/people.py`):
+
+| Operation | Who | Route |
+|---|---|---|
+| `who {contact_id}` | everyone (listing: the owner) | `GET /v1/mind/people?q=` (a name, handle or id; empty lists the newest, for the owner only) |
+| `inspect {contact_id}` | everyone | `GET /v1/mind/people/{who}` |
+| `propose_link {contact_id, handle: gateway:address}` | everyone | `POST /v1/mind/people/link`: a candidate the owner confirms as an ask |
+| `set_permission {contact_id, permission}` | owner | `POST /v1/mind/people/{who}/permission {may_contact: never\|ask\|auto}` |
+| `set_cadence {contact_id, minutes}` | owner | `POST /v1/mind/people/{who}/cadence {minutes}` (0 clears) |
+| `merge {contact_id, drop}` | owner | `POST /v1/mind/people/merge {keep, drop}`: `drop` folds into `contact_id`; handles, sources, comms and affect follow the person |
+
+A guest sees who someone is (`contact_id`, `display_name`, `trust_tier`) and
+nothing else: the plugin names the guest as the viewer (`contact_id`) on its
+reads and the sidecar answers with only those fields, and only for the one
+person the reference names exactly (no listing, no partial matches, no 404
+candidates), so a guest cannot browse the contact list. The owner also sees
+`may_contact`, `cadence_minutes`, `last_interaction_at`, the per-contact
+`digest` and the handles. The three mutations are refused in the plugin
+outside the owner's own interactive session (a guest, a kanban worker, a cron
+run) and are sent with the owner as `contact_id`, which the sidecar checks
+again (403 `not_owner`). `protagine people who|inspect|permit|cadence|merge|link|proposals`
+is the same interface from the CLI. `may_contact` is raised nowhere else; a
+contact's opt-out ("STOP", "don't text me", ...) only lowers it to `never`.
+
+`protagine_self` also carries the agent's recorded opinions (one tool, not a
+separate one, so the tool schemas stay within their budget): `opinions` with an
+optional `query` and `why <number>` read `GET /v1/mind/opinions` with the session's
+contact, so a guest sees only everyone-audience views (an intention id is never all
+digits, so `why` on any other id is still the owner's record); `withdraw` and
+`reconsider <number>` with the owner's `reason` post
+`POST /v1/mind/opinions/{id}/withdraw|reconsider` from the owner's own interactive
+session only, never a guest, a kanban worker or a cron run (docs/OPINIONS.md). The
+guard treats the tool as read-only.
 
 ## Memory provider
 
 `prefetch` assembles context for the turn's participant. A guest request sets
-`audience: viewer` and `projection_policy: scoped_viewer_required`, so the
-sidecar never returns owner-only sections to a guest. The request also says
-whether Hermes still shows this session's earlier turns (`session_history:
-intact`, `compressed` after a checkpoint), so recall never quotes back what the
-model is already reading. The provider's direct tools are offered on the
-owner's own lane only: a guest session or a channel
-with no sender binding gets none of them, and a call that still arrives, like
-`protagine_memory_search` for a turn with no resolved participant, is answered
-once with `{"unavailable": true, "retry": false, "reason": ...}` rather than
-an error the model retries. `sync_turn` is active
-only when the general plugin is not enabled; otherwise the outbox owns
-capture. `on_pre_compress` writes a checkpoint through the same outbox before
-Hermes compresses a session.
+`audience: viewer`, and the sidecar returns a guest only that contact's scoped
+sections, never an owner-only one. A kanban worker's prefetch names its task
+(`context.metadata.kanban_task`): its task body already carries its lessons, so
+the sidecar adds no turn lesson and logs no lesson use for it. The scoping
+fails closed: anyone the sidecar cannot show to be the owner, a caller without
+the key included, gets the contact-scoped set. Recall includes this session's
+own earlier turns: Hermes compacts sessions in place, rebuilds agents after an
+idle eviction or a restart and compacts on detached agents, so no provider
+instance knows whether the model still reads them verbatim. The provider's
+direct tools are offered on the owner's own lane only: a guest session or a
+channel with no sender binding gets none of them, and a call that still
+arrives, like `protagine_memory_search` for a turn with no resolved
+participant, is answered once with `{"unavailable": true, "retry": false,
+"reason": ...}` rather than an error the model retries. `sync_turn` is active
+only when the general plugin is not enabled; otherwise the outbox owns capture.
+`on_pre_compress` writes a checkpoint through the same outbox before Hermes
+compresses a session.
+
+Hermes appends each turn's recalled context to that turn's user message and
+replays it byte for byte on every later turn (the `api_content` sidecar). The
+provider keeps a fingerprint of each context section it showed, per session, and
+a section unchanged since the session's last shown turn is one line in the new
+turn's context: `unchanged since your last turn: <section>`. Only the new turn
+changes; earlier turns are never touched, so the cached prompt prefix holds.
+Current Time is always sent. A prefetch counts as shown only once its turn
+completed (`sync_turn`, called whoever writes the turn), only when Hermes waited
+for it (its 8 s external prefetch bound) and only when it went inline whole
+(under Hermes' spill cap). The fingerprints reset on every session switch
+(including `/undo`), before compression (`on_pre_compress`) and on restart; the
+gateway's detached compaction evicts the live agent, whose provider starts
+empty.
 
 ## Tests
 

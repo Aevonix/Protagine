@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
+from protagine.util.temporal import now_utc
 
 
 class FederationSessionState(str, Enum):
@@ -43,7 +44,7 @@ class FederationSession:
     mentioned_entities: set = field(default_factory=set)
     shared_memory_ids: list = field(default_factory=list)  # explicitly consented objects
     trust_attestations: list = field(default_factory=list)  # on-chain, read-only
-    last_active: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    last_active: datetime = field(default_factory=lambda: now_utc())
 
     @classmethod
     def create(
@@ -64,7 +65,7 @@ class FederationSession:
             turn_id=str(uuid.uuid4()),
             role=role,
             content=content,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=now_utc(),
             gate_decision=gate_decision,
         )
         self.history.append(turn)

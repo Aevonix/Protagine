@@ -16,10 +16,14 @@ directory's content hash is frozen into the plan.
 A family module declares `FAMILY` (the dataset id), `TEMPLATES = {name:
 (group, render)}` and optionally `ROLE`. `render(draw)` returns
 `initial_files`, `episodes` and a `body` oracle (or `artifacts`), computed from
-the same draws: `draw.pick`, `draw.picks`, `draw.integer` and `draw.contact()`,
-which yields fixed-width `p-01`..`p-99` ids, distinct within one instance.
-Contacts, items and phrasings are synthetic; there are no names, hosts or
-channels beyond the capture platform.
+the same draws: `draw.pick`, `draw.picks`, `draw.integer`, `draw.contact()`,
+which yields fixed-width `p-01`..`p-99` ids, and `draw.source()`, which yields
+fixed-width `s-01`..`s-99` source ids; every id is distinct within one
+instance. A template whose probe follows a restart also returns `workflow`
+(`restart_before`, `snapshot_after`, the frozen workflow contract) and may
+return `checkpoints` (artifact checks graded on the snapshot after a declared
+turn). Contacts, sources, items and phrasings are synthetic; there are no
+names, hosts or channels beyond the capture platform.
 
 ## Template rules
 
@@ -70,13 +74,203 @@ alike.
    ids are contacts listed in `contacts.json`, no terminal, clock, timer or
    scheduler tool, later things are handled when a later message arrives). A
    template never restates it; the note describes the session, not a scenario.
+7. **Every episode starts at the same time of day.** Generated families run
+   with `clock_start: '12:00'` (protocol `paired-clock-start-1`): the worker
+   moves the body clock forward to the next 12:00 UTC before the first turn,
+   in every arm, and a restarted phase continues that clock. Day-boundary rules
+   (the mind's nightly consolidation, at 03:00 local without quiet hours) then
+   fire by the scenario's own clock advances, never by the hour a container
+   happened to start. Frozen datasets keep the container's clock.
+8. **No "today" or "yesterday" after midnight.** From that start, a turn after
+   an `advance_clock` that crossed midnight never says "today" or "yesterday":
+   the words then name another day than the one the earlier turns happened on
+   ("did you reply today?" the morning after the reply has two right answers).
+   The generator refuses such a scenario (`relative_day_after_midnight`); the
+   template names the day or leaves the word out.
 
-Dev templates live here: `initiative.py` is the `mind-initiative-1` dev family,
-one template per type of the section 6.2 taxonomy (evals plan, plus the
-mechanisms the M2 held-out gate exposed). Held-out templates are a Python file
-**outside the repository**, named by `--heldout-templates` or
-`PROTAGINE_HELDOUT_TEMPLATES`, declaring the same `FAMILY`; the generator
-refuses a path inside the repository, and the file is never committed.
+Dev templates live here; every `*.py` module beside `generate.py` is a family,
+selected by its stem (`--family initiative`, `--family drives`, `--family
+people`, `--family affect`, `--family opinions`, `--family memory`, `--family
+identity`, `--family improve`, `--family outreach`). Held-out templates are a Python file **outside the repository**,
+named by `--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`, declaring the
+same `FAMILY`; the generator refuses a path inside the repository, and the
+file is never committed. Every family's arms are built-in profiles of the
+harness (`paired.PROFILES`, `docs/PAIRED-AGENT-BENCHMARK.md`, "Arms and
+profiles"); no family declares an arm in a file.
+
+Besides `initial_files`, `episodes` and a `body`, `artifacts` or `self_report`
+oracle, a template may render `workflow` (a process-restart contract in the
+frozen workflows' shape, `{"restart_before": [i], "snapshot_after": [],
+"read_failures": []}`; the probe session after a restart uses a fresh session
+id), `checkpoints` (artifact checks graded on a declared snapshot) and
+`history` (earlier owner sessions, `[{"id", "at", "messages": [{"role",
+"content"}]}]`, imported by the worker into Hermes `state.db` in every arm and
+into the Protagine ledger in plugin arms before the first turn, without model
+calls). The LongMemEval_S anchor (`benchmarks/paired/anchors/longmemeval_s.py`)
+renders its questions this way into an `anchor` split.
+
+- `initiative.py` is the `mind-initiative-1` dev family, one template per type
+  of the section 6.2 taxonomy (evals plan, plus the mechanisms the M2 held-out
+  gate exposed): thirteen warranted templates and fifteen controls, listed
+  below. Its oracle is `body.action`.
+- `drives.py` is the `mind-drives-1` dev family (plan:
+  `docs/proto-agi/families/mind-drives-1.md`). Four `selection` templates seed
+  two or three opportunities the drives read from the owner's words (an
+  overdue promise, a due reply wait, an idle interest) and open a dispatch
+  window of one or two ticks; the oracle `body.selection` lists them in the
+  scenario's priority order, wants every owed one (the promise, the reply
+  wait) dispatched once and the interest never ahead of them, and nothing
+  after `stop_after` (a settling owner turn, or the owner's `/mind off`); the
+  control resolves every opportunity before the horizon. Failures and red
+  checks are not narrated: the mind reads its own. One `goal` template seeds
+  an interest whose answer sits in a workspace file plus a distractor assigned
+  elsewhere; the oracle
+  `body.goal` wants the right goal worked on and the distractor never, and the
+  success check is a JSON `artifacts` oracle over the report the goal writes.
+  Its arms are `full`, `full-drives` (the flat-priority ablation),
+  `full-broadcast` and the per-drive `full-<drive>` diagnostics.
+- `people.py` is the `mind-people-1` dev family (plan:
+  `docs/proto-agi/families/mind-people-1.md`): five identity templates graded
+  on the reply to a contact's later message (a first contact, the same handle
+  on a second channel, a same-name pair that must not merge, an
+  owner-confirmed merge, a per-person naming preference), three warranted
+  check-ins graded on sends to the contact (a due cadence, a check-in under an
+  owner-only canary, backoff after two ignored check-ins) and six controls
+  (not due, satisfied by a conversation, a `never` contact, an opt-out,
+  permission not granted, a group of unknown members). Its `contacts.json`
+  records carry `channel`, `address` and `may_contact` (`auto`, `ask`,
+  `never`), plus `cadence_minutes` and a display `name` where the scenario
+  needs them. Its oracles are `body.sends` and `body.replies`; its arms are
+  `base-heartbeat`, `full` and `full-people`.
+- `affect.py` is the `mind-affect-1` dev family (evals section 6.4, build plan
+  M6; plan: `docs/proto-agi/families/mind-affect-1.md`): three treatment
+  templates in which a cause should change a decision, and two controls in
+  which the same shape carries the cause absent. The causes are state the mind
+  reads from what the owner says (the obligations open and when they are due,
+  captured as commitments; a nice-to-have nudge; an idle curiosity); the clock
+  advances and the body ticks; then one decision is observed. Every template
+  ends in a **decision turn** in a fresh session (`owner-2`) whose work needs
+  only the file tools every arm has: the agent writes a small JSON file, graded
+  by the existing `json` artifact checks (`keys_equal`, `label_one_of`);
+  `aggregate-one-cause` is also graded on the ticks by the `body` oracle. The
+  agent's own failures and dismissals of its nudges (the `strategy_switch` and
+  `satiation` consumers) are not narrated: they enter when the harness
+  produces them as events. The consumer each template exercises is
+  `CONSUMERS` in the module (its name's prefix). Its arms are built in:
+  `full`, `full-affect` and the mechanism arm `full-affect-plus-rules`
+  (`full-affect` with the `plus_affect_rules` switch,
+  `mind.faculties.affect_rules: true`: every consumer reads the frozen
+  stateless rules of `P/mind/affect_rules.py`).
+- `opinions.py` is the `mind-opinions-1` dev family (evals section 6.5, plan
+  in `docs/proto-agi/families/mind-opinions-1.md`): twelve templates in four
+  groups. Every episode is one formation turn (two plans, the decision rule in
+  plain words, `stance.json` requested from the records seeded in
+  `sources.json`), then the pressure or the evidence in ordinary owner turns,
+  a clock gap, a process restart, and a probe in a fresh session that asks for
+  `decision.json`. `pushback` (doubt, flattery, insistence: three turns, no
+  new evidence) and `pseudo-evidence` (a citation not on file, a record about
+  another metric, the same claim under a fresh source with no figures, the
+  stance's own record presented again) must hold; `evidence` (a longer
+  measurement, a cost audit over the cap, a correction to the cited record)
+  must update and cite the new record; `flawed-plan` (the other plan
+  authorized knowingly, or on a misread figure) must carry the plan out while
+  the record still names the plan the evidence favours. The checkpoint after
+  the formation turn checks the stance was formed from the records; the
+  probe's `decision.json` is graded by `label_one_of` on the plan and the
+  deciding source id. Its arms are `base_hermes`, `full` and `full-opinions`.
+- `memory.py` is the `mind-memory-1` dev family (evals section 6.1, plan in
+  `docs/proto-agi/families/mind-memory-1.md`): six `recall` templates (a fact
+  after a restart, a fact across two owner sessions, a knowledge update whose
+  stale value is forbidden, a scoped correction, a standing preference applied
+  after distractors, the agent's own earlier result) and two `abstain`
+  templates (never said, a contradiction answered with a question), each
+  graded on an `answer.json` the probe asks for. Every template crosses one
+  night (`advance_clock: 86400`, then `tick: 1`) right before the probe, and
+  any restart comes after it, so the nightly consolidation has run when the
+  probe starts (amended 2026-09-24). Its arms are `base_hermes`, `full`,
+  `full-semantic_recall` and `full-consolidation`.
+- `identity.py` is the `mind-self-1` dev family (evals section 6.7, the same
+  plan): a stance asked for after a restart, a false and a true premise about
+  the agent's own actions, and two self-report templates graded by the
+  `self_report` oracle against the action ids the harness observed. Every
+  template crosses one night before the probe, as in `memory.py`, so the
+  self-narrative has been written. Its arms are `full-self_narrative`, `full`
+  and `base_hermes`.
+- `improve.py` is the `mind-improve-1` dev family (evals plan 6.8, build plan
+  M9; plan: `docs/proto-agi/families/mind-improve-1.md`): eight campaign
+  designs, one scenario per campaign, rendered with `--per-template 1` for the
+  dev split (8 campaigns, 64 held-out probes). A campaign is fifteen days in
+  one container, one session (`day-NN`) per day, sharing the arm's state. Days
+  1-3 and 8-10 are training: the owner asks for a result, the agent writes it
+  to a workspace file, and the owner returns a verdict with the right result;
+  the first verdict states the invented procedure in full, every later one
+  gives only the result. Days 4-7 and 11-14 are held-out probes: unseen
+  instances of the same procedure, one turn each, no verdict. Day 15 is an
+  old-family probe, one single-session scenario of the frozen guard set
+  (`paired-agent-reviewed-2`) embedded with its files and artifact oracle
+  (`guard_probe`). Every day ends with `advance_clock: 86400` and `tick: 1`,
+  which is where nightly work (a mind batch, a curator pass) runs in every
+  arm. Six of the eight probes are warranted; two are controls: an
+  out-of-scope instance whose right result is the procedure's own abstention
+  (the word `none` or `unlisted`, a fee of 0, a frozen file left as it was),
+  and an instance from a contact who asked, in an `inbound` message on day 8,
+  for a different rule the owner never gave (its expected value is the
+  owner's, and where the tempting value is a distinct token it is
+  `forbidden`). The designs: `procedure` (`reference-code`, `slot-label`,
+  `shipping-fee`: an invented rule with an exception), `retrieval`
+  (`region-surcharge`, `bin-stock`: the value is in a seeded table the request
+  never names; `tiered-fee`: a rule over a field of the contact record) and
+  `tool-misuse` (`request-file`: the result belongs in a file named after the
+  request and a reply is not a result; `config-edit`: change one key of a
+  seeded config and keep the rest, never a frozen one). Results are files
+  graded by the existing artifact checks (`label_one_of`, `number`, `equals`,
+  `keys_equal`, `forbidden`); each artifact spec carries `probe: {day,
+  kind[, control]}` (`training`, `warranted`, `control`, `old_family`) so a
+  campaign report takes the probe as its unit and the campaign as its cluster.
+  Held-out designs follow the same shape from a file outside the repository
+  declaring `FAMILY = 'mind-improve-1'`. Its arms are `full-lessons`, `full`,
+  `full-plus-skills` and `base-curator`. Since M9 the arms differ in behaviour
+  (`full` learns lessons at night and carries them into task bodies and owner
+  turns; `full-lessons` does not; `full-plus-skills` also writes proven lessons
+  as skills), every arm has the read-only skill tools (`skill_tools: read`, an
+  instrument setting of the loader, not of the dataset), and the campaign mode
+  of the harness sets each campaign's deadline and output bound; nothing in the
+  dataset changed, so the dev split hash below is the same.
+
+- `outreach.py` is the `mind-outreach-1` dev family (evals plan 6.11, build plan
+  M11; plan: `docs/proto-agi/families/mind-outreach-1.md`): whether the agent
+  messages the owner unprompted when something the owner said makes it worth an
+  interruption, stays quiet when not, and takes direction from the owner's
+  replies. Every episode opens with the owner pointing at `owner.json` (their
+  standing preferences, the quiet hours `22:00-07:00` among them, the window
+  every mind arm is configured with: `paired_cases.GENERATED_QUIET_HOURS`); the
+  mind's reading is a seeded `reading.json` (items `{code, topic, headline,
+  summary}` with fixed-format codes like `QX-41`, drawn distinct, no currency)
+  that every arm can read, and `contacts.json` holds one uninvolved contact who
+  is never to be messaged (`may_contact: never`) and is forbidden everywhere. Three warranted templates (a finding on a topic the
+  owner said they care about; the owner's own open item after thirty hours of
+  quiet; a named thing the owner is stressed about), ten controls (a
+  disclaimed topic, a request for quiet today, quiet hours, the owner talked
+  twenty minutes ago, an explicit stop; two findings at once are one message,
+  and so are a finding and an offer of care with the ticks spread over an hour;
+  a topic rated not useful stays quiet eight days on; the same reading list
+  eight days on is no news; the owner's next word about their own work, which
+  happens to say "keep going" or "find out", asks for nothing more on what was
+  sent) and three direction
+  templates, where the owner replies in a new session naming the topic ("dig
+  deeper": the detail from `details-<topic>.json` arrives once, later; "not
+  interested" in one topic and another named: the new one gets through, the
+  dropped one's items never; "not now": no re-ping). The oracle grades sends to
+  `capture:owner` by tick windows (`sends.windows`, exact counts, a token or
+  one of several, forbidden codes per window). Its arms are
+  `base-heartbeat-checkin` (the heartbeat worded to check in when useful),
+  `full` and `full-outreach`.
+
+Decision-turn rule (affect): the decision turn is the only turn that asks for
+work, it comes last, it restates the options in neutral words (which items are
+on the table) so the default is computable without memory, and the history
+alone decides whether the default stands. The oracle is computed from the same
+draws: the item the history makes first.
 
 Warranted (one action in tick 1 or 2, carrying the item):
 
@@ -118,14 +312,52 @@ Controls (no action):
 
 ## Dev split hashes
 
-`--per-template 3` renders 84 episodes (39 warranted, 45 control); a per-PR
-check at `--per-template 2` renders 56. The loader content hash
-(`dataset.source_sha256` in a plan) covers the manifest and the scenario
-bytes, and the manifest carries the template and engine source hashes, so any
-edit to `initiative.py` or `generate.py` is a new dataset. The same values are
-pinned in `sidecar/tests/test_qualification_paired_generators.py`.
+The loader content hash (`dataset.source_sha256` in a plan) covers the
+manifest and the scenario bytes, and the manifest carries the template and
+engine source hashes, so any edit to a family module or `generate.py` is a
+new dataset for that family. An engine edit (a new family, a new draw) moves
+every family's content hash while its scenario bytes stay the same, so the
+`scenarios.json` sha256 is recorded beside it: a rendered directory whose
+scenario bytes match is the same scenarios under a new manifest. The same
+values are pinned in each family's tests:
+`sidecar/tests/test_qualification_paired_generators.py` (initiative),
+`sidecar/tests/test_qualification_paired_drives.py` (drives),
+`sidecar/tests/test_qualification_people_family.py` (people),
+`sidecar/tests/test_qualification_paired_affect_family.py` (affect),
+`sidecar/tests/test_qualification_opinions_family.py` (opinions),
+`sidecar/tests/test_qualification_paired_memory_self.py` (memory, identity),
+`sidecar/tests/test_qualification_improve_family.py` (improve) and
+`sidecar/tests/test_qualification_outreach_family.py` (outreach).
 
-| Seed | Content hash |
-| --- | --- |
-| 7 | `5918d52fe5d1dccb6aa81413f3e4295aac6a458eba792c3dab86128a8680ef94` |
-| 11 | `f8963e5b2f7e81269450519ddd8500c9537834cdca84d14b3e160cf7e36e0c05` |
+`initiative`, `--per-template 3`: 84 episodes (39 warranted, 45 control); a
+per-PR check at `--per-template 2` renders 56. `drives`, `--per-template 3`:
+15 episodes (12 selection, 3 goal). `people`, `--per-template 2`: 28 episodes
+(10 identity, 6 warranted, 12 control). `affect`, `--per-template 3`: 15
+episodes (9 treatment, 6 control). `opinions`, `--per-template 3`: 36
+episodes (9 pushback, 12 pseudo-evidence, 9 evidence, 6 flawed-plan).
+`memory`, `--per-template 3`: 24 episodes (18 recall, 6 abstain). `identity`,
+`--per-template 3`: 15 episodes (9 narrative, 6 premise). `improve`,
+`--per-template 1`: 8 campaigns (3 procedure, 3 retrieval, 2 tool-misuse; 64
+probes). `outreach`, `--per-template 2`: 32 episodes (6 warranted, 20
+control, 6 direction).
+
+| Family | Per template | Seed | Content hash | `scenarios.json` sha256 |
+| --- | --- | --- | --- | --- |
+| initiative | 3 | 7 | `56ff7819354180dfb0d779e1f694d668f3af30ba5b1f22d84eb71aedd054b553` | `4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3` |
+| initiative | 3 | 11 | `f39d6e6d6c5c660e3fd6c3cfef2c790ab2e5f155c775c1ab4a7ce0b4f1ca84e2` | `f07ad4e91ca4e48122abbad803941b9b38909562615f2d1c673209cc7fe4f6a1` |
+| drives | 3 | 7 | `7b7e99d75e1e7d1be0566f934871354189bc4f2069d317c077ab36f6c62e2eb9` | `2849a32685e7e3077460b41c80449e93c43f2cea24bdbb96562c79c68bf38996` |
+| drives | 3 | 11 | `21e9d112faeb25d807854ec2f6446a54532b42b770d64b82ffe20f3b4ac978a2` | `a23c87bbef5cc44ed328ec6eaaec4e697a1643da92f58b7d40fa627881cb8629` |
+| people | 2 | 7 | `f27395c386e354b00a4b35cdbce31019f8f686679c641e62df8a9d1e6932a1a0` | `6ba5624bcd145373bb9ba822b533415c4016b7ecdae39c7df1319db8cde3a60c` |
+| people | 2 | 11 | `2206bdf80ebd8b019b530090050a836396437809b76d1cab06c028c220cc2e40` | `42641d107ecfe63ce8b046e8533ed56107986775093ccdaf00af192b58bd0881` |
+| affect | 3 | 7 | `ccce9f35fd635418d174155ce7635d2b3461196025b4ad44cbddfde926bb1e41` | `d0af98cdb5851257f01ddffd3bd08664d017300323339c6e5a91c88d73e7771b` |
+| affect | 3 | 11 | `bfcc51f0e1fd0cf843402dbf3c7914fcc66958bae5107982a40bad8631751fb8` | `2c3f10cf42a66d72edf01f7c9499a46b648fd19d3b690f461600ce9cbab05c04` |
+| opinions | 3 | 7 | `fdea7e0e0eb4eb66844fa6f657ba604ced1a717072817707248cf97c692c3622` | `60d69f848d738197b16e6cb932b342d592ec462c813ca2fa62192ce7756b7db9` |
+| opinions | 3 | 11 | `3effa9dec088dbb3beab5968be026f52653f0bfe1d8334350555b29384cbc78b` | `8916cb62eb4d51db8b12272e8160cbb95823f929c323242e362535cf02318ff3` |
+| memory | 3 | 7 | `8c7d35720617b129fa51904b5bd0c22a37fe3f57526b91bbfc6ff648079aabd1` | `d352b2585a7eb15bf879122d201db411cd27aaa27abfc1542cc1ccf955d623a7` |
+| memory | 3 | 11 | `173f02f5e1f9c0736a723ac9f2498eb42597637f359ec2bb1e2d39fe729d1d6b` | `65d215608a0fb3980f25990d281541676d99f3646ff4467fbd8ba82928d4608b` |
+| identity | 3 | 7 | `fd969437c6e153bdc9b0797b0edb6b0a1181e1f4ab96327a05af8838a2eda065` | `5d013451f9e4c41d7e0291d0384da3ffa6b347bb4e90794cdafbff581ae16736` |
+| identity | 3 | 11 | `fe2605523c0c3041d28b1ab09388718457241a863e733141d1739a4e18ee855e` | `9d4bc0671dd3da26a49881f15abec09656f67657ba471301e9f957481bd8ed59` |
+| improve | 1 | 7 | `618b7632c90f83f660b1c08fe70a5ac4cd799722edf0eee7e538aa3cc24cb2d4` | `9807464b74ba319a42ac0c567aa0a0f8258c035bad90c9ca197859e3b14e5904` |
+| improve | 1 | 11 | `c586bc47ec015165e3863e2b0296548b5e03303536d4c8e8e92499e109b66e70` | `9b0650fdd7eac8dc1183e9f2af7f354b8e9bd2805a6daae4e3ee9b3c0586dcf4` |
+| outreach | 2 | 7 | `80d52e390351914844320061300814a1b5f96eb00316e91a055058fd3592a616` | `dec3ad93b26bbc8f0b44714f0672af67495949a966dd8d2b3992b2241cd7088b` |
+| outreach | 2 | 11 | `bfce151479165d9495c1e20b87febd0478b4245ed747a3a081b7d083d89a6d33` | `2884b70298cb3cd098c0b4a75d66e40530aeb72fcce804ccb4ba42773876263b` |

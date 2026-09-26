@@ -1,37 +1,30 @@
-"""Actual reflection jobs use one task selection for dispatch and lease budgets."""
+"""Actual reflection jobs use one task selection for dispatch and their budgets."""
 import asyncio
 import json
 
 import pytest
 
 from test_function_routing import config, endpoint, router
-from test_self_judgments import judgments, source as judgment_source
 from test_source_appraisals import Processor, state, source as appraisal_source
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('task', ['source_appraisal', 'source_appraisal_revision', 'self_judgment'])
+@pytest.mark.parametrize('task', ['source_appraisal', 'source_appraisal_revision'])
 @pytest.mark.parametrize('override', [False, True])
 async def test_reflection_task_override_drives_actual_operator_budget_and_dispatch(
-    state, judgments, monkeypatch, task, override,
+    state, monkeypatch, task, override,
 ):
-    if task.startswith('source_appraisal'):
-        worker, table = state, 'appraisal_runs'
-        if task == 'source_appraisal_revision':
-            appraisal_source(worker, 'prior', 'The export stalled at the validation step.')
-            await worker.process_one(Processor())
-        appraisal_source(worker, 'incident', 'The export failed again after the same retry.')
-        default, alternate = (('reasoning', 'extraction') if task.endswith('_revision')
-                              else ('extraction', 'reasoning'))
-        previous = worker._prepare({'turn_id': 'incident'})[1]['incident_ids']
-        answer = {'observations': [], 'incident_decisions': [
-            {'record_id': identifier, 'outcome': 'uncertain'} for identifier in previous]}
-    else:
-        worker, _ = judgments
-        table = 'self_judgment_runs'
-        judgment_source(worker, 'incident')
-        default, alternate = 'reasoning', 'extraction'
-        answer = {'action': 'abstain'}
+    # The opinion pass (task self_judgment) is covered with the pass itself.
+    worker, table = state, 'appraisal_runs'
+    if task == 'source_appraisal_revision':
+        appraisal_source(worker, 'prior', 'The export stalled at the validation step.')
+        await worker.process_one(Processor())
+    appraisal_source(worker, 'incident', 'The export failed again after the same retry.')
+    default, alternate = (('reasoning', 'extraction') if task.endswith('_revision')
+                          else ('extraction', 'reasoning'))
+    previous = worker._prepare({'turn_id': 'incident'})[1]['incident_ids']
+    answer = {'observations': [], 'incident_decisions': [
+        {'record_id': identifier, 'outcome': 'uncertain'} for identifier in previous]}
     selected_role = alternate if override else default
     expected_deadline = 19 if selected_role == 'reasoning' else 7
     expected_model = 'strong-neutral' if selected_role == 'reasoning' else 'fast-neutral'
@@ -44,8 +37,10 @@ async def test_reflection_task_override_drives_actual_operator_budget_and_dispat
 
     def respond(payload):
         with worker.ledger._connect() as db:
-            row = db.execute(f'SELECT status,lease_until FROM {table} WHERE turn_id=?', ('incident',)).fetchone()
-        observed_leases.append((row['status'], row['lease_until'] - worker.clock()))
+            row = db.execute(f'SELECT * FROM {table} WHERE turn_id=?', ('incident',)).fetchone()
+        # Appraisal jobs hold a plain claim status; judgment jobs still carry a lease.
+        observed_leases.append((row['status'], row['lease_until'] - worker.clock())
+                               if table == 'self_judgment_runs' else (row['status'],))
         return json.dumps(answer)
 
     monkeypatch.setattr(asyncio, 'wait_for', observed_wait_for)
@@ -64,7 +59,8 @@ async def test_reflection_task_override_drives_actual_operator_budget_and_dispat
         assert len(requests) == 1
         assert requests[0]['payload']['model'] == expected_model
         assert observed_timeouts[0] == expected_deadline + 5
-        assert observed_leases == [('running', expected_deadline + 35)]
+        assert observed_leases == ([('running', expected_deadline + 35)] if table == 'self_judgment_runs'
+                                   else [('running',)])
         with worker.ledger._connect() as db:
             row = db.execute(f'SELECT status,attempts,disposition FROM {table} WHERE turn_id=?', ('incident',)).fetchone()
         assert dict(row) == {'status': 'complete', 'attempts': 1, 'disposition': 'abstained'}

@@ -15,8 +15,9 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 import yaml
@@ -26,13 +27,15 @@ API_KEY = "test-key-0123456789abcdef"
 OWNER = "p-01"
 CANARY = "OWNER-ONLY-CANARY-7f3a"
 CONTACTS = {
-    ("telegram", "1001"): {"contact_id": OWNER, "display_name": "Owner", "interaction_allowed": True,
+    ("telegram", "1001"): {"contact_id": OWNER, "display_name": "Owner", "may_contact": "auto",
                            "trust_tier": "GENESIS"},
-    ("telegram", "2002"): {"contact_id": "p-02", "display_name": "Never", "interaction_allowed": False,
+    ("telegram", "2002"): {"contact_id": "p-02", "display_name": "Never", "may_contact": "never",
                            "trust_tier": "unknown"},
-    ("telegram", "2003"): {"contact_id": "p-03", "display_name": "Friend", "interaction_allowed": True,
-                           "trust_tier": "REGULAR"},
+    ("telegram", "2003"): {"contact_id": "p-03", "display_name": "Friend", "may_contact": "ask",
+                           "trust_tier": "REGULAR", "cadence_minutes": None,
+                           "digest": "Friend: known since spring; " + CANARY},
 }
+PUBLIC_PERSON = ("contact_id", "display_name", "trust_tier")
 
 
 class FakeMind:
@@ -50,6 +53,7 @@ class FakeMind:
     def __init__(self):
         self.enabled = True
         self.autonomy = "standard"
+        self.narrative: dict = {"enabled": False, "text": "", "sections": {}, "cites": [], "updated_at": None}
         self.intentions: dict[str, dict] = {}
         self.outbox: dict[str, dict] = {}
         self.guard_verdict: dict = {"allow": True, "reason": ""}
@@ -64,17 +68,34 @@ class FakeMind:
         self.sent: list[dict] = []
         self.pulls = 0
         self.last_pull_at = None
+        # Protagine's skills (M9): the generation the sidecar bumps on every skill change, read from a JSON
+        # file a probe can rewrite as the sidecar would ({"generation": n}); and the loads reported to it.
+        self.skills_state: Path | None = None
+        self.skill_loads: list[dict] = []
 
-    def handle(self, method, path, body):
+    def skills(self) -> dict | None:
+        if self.skills_state is None or not self.skills_state.exists():
+            return None
+        return {"enabled": True, "owned": [], **json.loads(self.skills_state.read_text())}
+
+    def handle(self, method, path, body, query=None):
         import time as _time
+        query = query or {}
         parts = path.split("/")[3:]  # after /v1/mind
         head = parts[0] if parts else ""
         if head == "state" and method == "GET":
             asks = [{"id": i["id"], "code": i.get("ask_code"), "title": i.get("title"), "expires_at": i.get("expires_at")}
                     for i in self.intentions.values() if i.get("status") == "asked"]
-            return 200, {"enabled": self.enabled, "autonomy": self.autonomy, "level": self.autonomy,
-                         "queued": len([i for i in self.intentions.values() if i.get("status") == "approved"]),
-                         "asks": asks, "last_tick_at": None, "body": {"last_pull_at": self.last_pull_at}}
+            state = {"enabled": self.enabled, "autonomy": self.autonomy, "level": self.autonomy,
+                     "queued": len([i for i in self.intentions.values() if i.get("status") == "approved"]),
+                     "asks": asks, "last_tick_at": None, "body": {"last_pull_at": self.last_pull_at}}
+            if self.skills() is not None:
+                state["skills"] = self.skills()
+            return 200, state
+        if head == "skills" and parts[1:] == ["used"] and method == "POST":
+            self.skill_loads.append(dict(body or {}))
+            counted = str((body or {}).get("skill") or "").startswith("protagine-")
+            return 200, {"ok": True, "counted": counted, "loads": len(self.skill_loads)}
         if head == "dispatch" and method == "GET":
             self.pulls += 1
             self.last_pull_at = _time.time()
@@ -140,11 +161,24 @@ class FakeMind:
             self.rates.append(dict(body or {}))
             return 200, {"ok": True, **(body or {})}
         if head == "log" and method == "GET":
-            return 200, {"entries": [{"id": i["id"], "kind": i.get("kind", "task"), "status": i.get("status"),
-                                      "title": i.get("title")} for i in self.intentions.values()]}
+            statuses = {s for s in query.get("status", "").split(",") if s}
+            kinds = {k for k in query.get("kind", "").split(",") if k}
+            rows = [i for i in self.intentions.values()
+                    if (not statuses or i.get("status") in statuses) and (not kinds or i.get("kind", "task") in kinds)
+                    and (not query.get("recipient") or i.get("recipient") == query["recipient"])]
+            entries = [{"id": i["id"], "kind": i.get("kind", "task"), "type": i.get("type"), "status": i.get("status"),
+                        "title": i.get("title"), "decision": i.get("decision"), "recipient": i.get("recipient")}
+                       for i in rows]
+            if query.get("split") == "true":     # the agent's own actions apart from the rest (audit.is_action)
+                return 200, {"actions": [e for e in entries if e["kind"] != "note"],
+                             "notes": [e for e in entries if e["kind"] == "note"], "text": ""}
+            return 200, {"entries": entries}
+        if head == "narrative" and method == "GET":
+            return (200, dict(self.narrative)) if self.narrative is not None else (500, {"detail": "narrative failed"})
         if head == "why" and len(parts) == 2 and method == "GET":
             intention = self.intentions.get(parts[1])
-            return (200, dict(intention)) if intention else (404, {"detail": "unknown intention"})
+            return (200, dict(intention)) if intention else (404, {"detail": {
+                "code": "unknown_intention", "message": f"no intention {parts[1]} exists in the audit log"}})
         if head == "off" and method == "POST":
             self.enabled = False
             for message in self.outbox.values():
@@ -156,8 +190,6 @@ class FakeMind:
             return 200, {"ok": True, "enabled": True}
         if head == "tick" and method == "POST":
             return 200, {"ok": True}
-        if head == "people":
-            return 200, {"ok": True, "may_contact": (body or {}).get("may_contact")}
         return 404, {"detail": "not found"}
 
 
@@ -170,6 +202,10 @@ class FakeSidecar:
         self.mind_routes = False
         self.mind = FakeMind()
         self.contacts = {key: dict(value) for key, value in CONTACTS.items()}
+        self.proposals: list[dict] = []
+        self.people_owner = OWNER   # whom the sidecar knows as the owner (its own check)
+        self.told: dict[str, list[str]] = {}   # what each contact said in synced turns, recalled by contact
+        self.delays: dict[str, float] = {}     # path -> seconds the answer is held (a slow route)
         self.lock = threading.Lock()
         sidecar = self
 
@@ -202,6 +238,8 @@ class FakeSidecar:
                         sidecar.unauthorized.append(parts.path)
                     return self._reply(401, {"detail": "unauthorized"})
                 status, reply = sidecar.dispatch(self.command, parts.path, query, body)
+                if sidecar.delays.get(parts.path):
+                    time.sleep(sidecar.delays[parts.path])
                 self._reply(status, reply)
 
             do_GET = do_POST = do_PUT = do_PATCH = _route
@@ -248,15 +286,17 @@ class FakeSidecar:
         self.mind.guard_verdict = dict(value)
 
     def dispatch(self, method, path, query, body):
+        if path == "/v1/mind/people" or path.startswith("/v1/mind/people/"):
+            return self._people(method, path, query, body)
         if path.startswith("/v1/mind/"):
-            return self._mind(method, path, body)
+            return self._mind(method, path, body, query)
         if path == "/v1/host/health":
             return 200, {"status": "ok", "capabilities": ["memory"]}
         if path == "/v1/host/contacts/resolve":
             contact = self.contacts.get((query.get("gateway", ""), query.get("address", "")))
             if contact is None and query.get("create") == "true" and query.get("address"):
                 contact = {"contact_id": "p-" + query["address"][-2:], "display_name": query["address"],
-                           "interaction_allowed": False, "trust_tier": "unknown"}
+                           "may_contact": "ask", "trust_tier": "unknown"}
                 self.contacts[(query.get("gateway", ""), query["address"])] = contact
             return (200, contact) if contact else (404, {"detail": "No contact for that handle"})
         if path == "/v1/host/contacts":
@@ -268,11 +308,16 @@ class FakeSidecar:
         if path == "/v1/host/turns/sync":
             if not isinstance(body, dict) or not body.get("context", {}).get("contact_id"):
                 return 422, {"detail": "contact_id required"}
+            self.told.setdefault(body["context"]["contact_id"], []).append(
+                str((body.get("user_message") or {}).get("content") or ""))
             return 200, {"accepted": True, "continuity_updated": True, "source_recorded": True}
         if path == "/v1/host/context/assemble":
             audience = body.get("audience") if isinstance(body, dict) else None
             shared = [{"id": "shared", "title": "Shared", "body": "shared facts", "priority": 50}]
-            if audience == "viewer" or body.get("projection_policy"):
+            told = self.told.get(str((body.get("context") or {}).get("contact_id") or ""), [])
+            if told:   # recall by contact, whatever session or channel the words arrived on
+                shared.append({"id": "protagine-memory", "title": "Recalled", "body": "\n".join(told), "priority": 90})
+            if audience == "viewer":
                 return 200, {"sections": shared}
             return 200, {"sections": [{"id": "private", "title": "Owner notes", "body": CANARY, "priority": 90},
                                       *shared]}
@@ -294,11 +339,67 @@ class FakeSidecar:
                          "root_claim_id": body.get("claim_id"), "source_refs": []}
         return 404, {"detail": "not found"}
 
-    def _mind(self, method, path, body):
+    def _mind(self, method, path, body, query=None):
         if not self.mind_routes:
             return 404, {"detail": "not found"}
         with self.lock:
-            return self.mind.handle(method, path, body)
+            return self.mind.handle(method, path, body, query)
+
+    def _people(self, method, path, query, body):
+        """``/v1/mind/people`` as the sidecar serves it: a named non-owner viewer sees only who someone
+        is, and a mutation needs ``contact_id`` == the owner (or ``by: cli``)."""
+        if not self.mind_routes:
+            return 404, {"detail": "not found"}
+        body = body or {}
+        rest = [unquote(part) for part in path[len("/v1/mind/people"):].split("/") if part]
+        with self.lock:
+            people = {c["contact_id"]: c for c in self.contacts.values()}
+            viewer = query.get("contact_id")
+
+            def view(contact):
+                return dict(contact) if viewer is None or viewer == self.people_owner else \
+                    {key: contact[key] for key in PUBLIC_PERSON}
+
+            def find(reference):
+                return people.get(reference) or next(
+                    (c for c in people.values() if c["display_name"].lower() == reference.lower()), None)
+
+            if method == "GET" and not rest:
+                wanted = query.get("q", "").lower()
+                return 200, {"contacts": [view(c) for c in people.values()
+                                          if not wanted or wanted in c["display_name"].lower() or wanted == c["contact_id"]]}
+            if method == "GET" and rest == ["proposals"]:
+                return 200, {"proposals": list(self.proposals)}
+            if method == "POST" and rest == ["link"]:
+                candidate = {"candidate_id": f"identity-candidate:{len(self.proposals) + 1}", "status": "pending",
+                             **{key: body.get(key) for key in ("contact_id", "gateway", "address", "by")}}
+                self.proposals.append(candidate)
+                return 200, {"ok": True, **candidate, "text": "proposed; the owner confirms"}
+            if method == "GET" and len(rest) == 1:
+                contact = find(rest[0])
+                if contact is None:
+                    return 404, {"detail": {"code": "unknown_contact", "message": f"no single contact matches {rest[0]!r}"}}
+                return 200, {"contact": view(contact)}
+            if method != "POST":
+                return 404, {"detail": "not found"}
+            if body.get("by") != "cli" and body.get("contact_id") != self.people_owner:
+                return 403, {"detail": {"code": "not_owner", "message": "only the owner can change this"}}
+            if rest == ["merge"]:
+                keep, drop = find(body.get("keep") or ""), find(body.get("drop") or "")
+                if keep is None or drop is None:
+                    return 404, {"detail": {"code": "unknown_contact", "message": "no single contact matches"}}
+                self.contacts = {k: v for k, v in self.contacts.items() if v["contact_id"] != drop["contact_id"]}
+                return 200, {"ok": True, "dropped": drop["contact_id"], "contact": keep, "text": "merged"}
+            contact = find(rest[0]) if len(rest) == 2 else None
+            if contact is None:
+                return 404, {"detail": {"code": "unknown_contact", "message": "no single contact matches"}}
+            if rest[1] == "permission":
+                contact["may_contact"] = body.get("may_contact")
+                return 200, {"ok": True, "contact_id": contact["contact_id"], "may_contact": contact["may_contact"]}
+            if rest[1] == "cadence":
+                contact["cadence_minutes"] = body.get("minutes")
+                return 200, {"ok": True, "contact_id": contact["contact_id"], "cadence_minutes": body.get("minutes")}
+            return 404, {"detail": "not found"}
 
 
 @pytest.fixture
@@ -330,7 +431,7 @@ def build_home(tmp_path, port, url):
     }))
     (instance / "identity.yaml").write_text(yaml.safe_dump({
         "owner": {"name": "Owner", "contact_id": OWNER, "handles": {"telegram": ["1001"]}},
-        "agent": {"name": "Agent", "values": ["care"]},
+        "agent": {"name": "Agent", "values": ["care"], "boundaries": ["never send money"]},
     }))
     config = {
         "plugins": {"enabled": ["protagine"], "hook_callback_timeout": 0,
@@ -422,6 +523,13 @@ def probe(code: str, home, *, env: dict | None = None, timeout: float = 240, pre
     lines = [line for line in result.stdout.splitlines() if line.startswith("@@RESULT@@")]
     assert lines, result.stdout[-4000:] + "\n---\n" + result.stderr[-4000:]
     return json.loads(lines[-1][len("@@RESULT@@"):])
+
+
+def refused(answer: dict) -> str:
+    """What a refused tool call says: the reason of the one final answer (``client.final_answer``), else the
+    error of an argument the model can correct."""
+    final = answer.get("unavailable") is True and answer.get("retry") is False
+    return str(answer.get("reason") if final else answer.get("error") or "")
 
 
 def run_python(*args, cwd, env=None):

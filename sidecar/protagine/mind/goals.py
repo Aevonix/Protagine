@@ -20,6 +20,7 @@ from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
 from .drives import slug
 from .rank import Candidate
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class Goals:
                  enabled: bool = True) -> None:
         self.store = store
         self.budgets = budgets
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self.enabled = enabled
 
     # -- reads -----------------------------------------------------------------------

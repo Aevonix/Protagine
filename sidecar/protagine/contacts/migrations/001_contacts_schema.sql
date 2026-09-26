@@ -82,38 +82,9 @@ CREATE TABLE IF NOT EXISTS contact_audit (
 CREATE INDEX IF NOT EXISTS idx_contact_audit_contact
   ON contact_audit(contact_id, created_at DESC);
 
--- ─── Merge Proposals ─────────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS contact_merge_proposals (
-  id              TEXT PRIMARY KEY,            -- cmp-<timestamp_ms>-<random7>
-  contact_id_a    TEXT NOT NULL REFERENCES contacts(contact_id),
-  contact_id_b    TEXT NOT NULL REFERENCES contacts(contact_id),
-  confidence      REAL NOT NULL,
-  reason          TEXT NOT NULL,
-  status          TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','approved','rejected','auto_merged')),
-  proposed_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-  resolved_at     TEXT,
-  UNIQUE(contact_id_a, contact_id_b)
-);
-
-CREATE INDEX IF NOT EXISTS idx_merge_proposals_pending
-  ON contact_merge_proposals(status)
-  WHERE status = 'pending';
-
--- ─── Merge Audit ─────────────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS contact_merge_audit (
-  id                   TEXT PRIMARY KEY,       -- cma-<timestamp_ms>-<random7>
-  canonical_id         TEXT NOT NULL,
-  absorbed_id          TEXT NOT NULL,
-  confidence           REAL NOT NULL,
-  merge_reason         TEXT NOT NULL,
-  triggered_by         TEXT NOT NULL,          -- 'auto' | 'manual'
-  contact_a_snapshot   TEXT NOT NULL,          -- JSON snapshot of canonical before merge
-  contact_b_snapshot   TEXT NOT NULL,          -- JSON snapshot of absorbed before merge
-  merged_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
+-- The merge-proposal, merge-audit and confirmed-distinct tables were retired by the people
+-- milestone: a merge is a set of identity-link receipts now. A fresh store never creates them;
+-- an upgrade drops them from an older one after its backup (init.RETIRED_TABLES).
 
 -- ─── Blocklist ───────────────────────────────────────────────────────────────
 
@@ -128,14 +99,3 @@ CREATE TABLE IF NOT EXISTS contact_blocklist (
 CREATE INDEX IF NOT EXISTS idx_blocklist_active
   ON contact_blocklist(contact_id)
   WHERE unblocked_at IS NULL;
-
--- ─── Confirmed Distinct Pairs ────────────────────────────────────────────────
--- Prevents re-proposing merges that have been explicitly rejected.
-
-CREATE TABLE IF NOT EXISTS contact_confirmed_distinct (
-  id           TEXT PRIMARY KEY,
-  contact_id_a TEXT NOT NULL,
-  contact_id_b TEXT NOT NULL,
-  confirmed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-  UNIQUE(contact_id_a, contact_id_b)
-);

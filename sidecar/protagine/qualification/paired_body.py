@@ -4,9 +4,12 @@ One tick runs the arm's own step first (the Protagine tick in plugin arms,
 making the heartbeat job due or the curator pass in the comparator arms, nothing
 in base), then Hermes cron ``tick()``, then kanban ``dispatch_once`` with the
 ready workers run in-process and awaited up to a bound. ``advance_clock`` shifts the two wall
-clocks Hermes reads, faketime-style, without touching monotonic clocks.
+clocks Hermes reads, faketime-style, without touching monotonic clocks; every "now" in the sidecar
+and the plugins reads ``time.time`` (``temporal.now_utc``) and moves with them. A generated
+family also pins the clock's start (``start_offset``): every episode of every arm begins
+at the same UTC time of day.
 """
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 import os
@@ -26,6 +29,12 @@ DISPATCH_FIELDS = ('spawned', 'promoted', 'reclaimed', 'crashed', 'timed_out', '
                    'skipped_unassigned', 'skipped_nonspawnable', 'respawn_guarded')
 _ORIGINAL = {}
 _OFFSET = [0.0]
+# A generated family starts every episode's body clock at one UTC time of day, in every arm
+# (paired_cases declares it, the plan records it): day-boundary rules such as the mind's
+# nightly consolidation then fire, or not, by the scenario's clock advances alone, never by
+# the hour a container happened to start. Forward only: the clock never runs back.
+CLOCK_START_PROTOCOL = 'paired-clock-start-1'
+CLOCK_STARTS = ('12:00',)
 
 
 def plugin_source():
@@ -107,6 +116,18 @@ def install_clock(offset_seconds=0):
     _OFFSET[0] = float(offset_seconds)
     _rebind_clock_aliases()
     return _OFFSET[0]
+
+
+def start_offset(clock_start, now=None):
+    """Seconds from the real clock (``now``, epoch seconds) forward to the next ``clock_start`` UTC."""
+    if clock_start not in CLOCK_STARTS:
+        raise ValueError('Unknown clock start')
+    hour, minute = (int(part) for part in clock_start.split(':'))
+    real = datetime.fromtimestamp(_ORIGINAL.get('time', time.time)() if now is None else now, timezone.utc)
+    start = real.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if start < real:
+        start += timedelta(days=1)
+    return (start - real).total_seconds()
 
 
 def advance_clock(seconds):

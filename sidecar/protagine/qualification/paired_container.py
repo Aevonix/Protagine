@@ -98,9 +98,10 @@ def context(config, recipe):
 
 
 def _result_from_log(path):
-    # Worker limits its artifact snapshot; logs are private diagnostics only.
+    # Worker limits its artifact snapshot; logs are private diagnostics only. The tail holds a
+    # campaign's one result line (records.MAX_CAMPAIGN_OUTPUT_BYTES) with room to spare.
     with path.open('rb') as stream:
-        stream.seek(max(0, path.stat().st_size - 4 * 1024 * 1024))
+        stream.seek(max(0, path.stat().st_size - 16 * 1024 * 1024))
         lines = stream.read().splitlines()
     rows = [line[len(RESULT_MARKER):] for line in lines if line.startswith(RESULT_MARKER.encode())]
     if len(rows) != 1:
@@ -223,8 +224,11 @@ async def consume(inputs, context):
         context.state_cleanup_safe = removed
         requests = result.get('tool_evidence', {}).get('model_requests', [])
         returned = {m for row in requests for m in row.get('returned_models', [])}
+        # A response cut before it finished (a kanban worker interrupted at the tick's deadline mid-stream)
+        # is unfinished work whatever its status: like auxiliary work still in flight, it establishes its
+        # requested model only.
         successful = [row for row in requests if isinstance(row.get('status'), int)
-                      and 200 <= row['status'] < 300]
+                      and 200 <= row['status'] < 300 and row.get('response_complete') is not False]
         # Auxiliary work can still be in flight when an episode ends. Its
         # dispatched model is known, but its output/usage is not. Do not invent
         # a response, or require unfinished background work to supply one to

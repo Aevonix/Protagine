@@ -24,6 +24,7 @@ from protagine.goals.models import (
     GoalStatus,
     GoalTransitionRecord,
 )
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ _goal_store_instance: Optional["GoalStore"] = None
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return now_utc().isoformat()
 
 
 def _parse_dt(s: Optional[str]) -> Optional[datetime]:
@@ -171,7 +172,7 @@ class GoalStore:
 
     def save_goal(self, goal: Goal) -> None:
         """Insert or update a goal record."""
-        goal.updated_at = datetime.now(timezone.utc)
+        goal.updated_at = now_utc()
         outcome_json = None
         if goal.outcome:
             outcome_json = json.dumps({
@@ -314,8 +315,8 @@ class GoalStore:
             parent_goal_id=row["parent_goal_id"],
             tags=json.loads(row["tags_json"] or "{}"),
             context=json.loads(row["context_json"] or "{}"),
-            created_at=_parse_dt(row["created_at"]) or datetime.now(timezone.utc),
-            updated_at=_parse_dt(row["updated_at"]) or datetime.now(timezone.utc),
+            created_at=_parse_dt(row["created_at"]) or now_utc(),
+            updated_at=_parse_dt(row["updated_at"]) or now_utc(),
             accepted_at=_parse_dt(row["accepted_at"]),
             completed_at=_parse_dt(row["completed_at"]),
             abandoned_at=_parse_dt(row["abandoned_at"]),
@@ -367,7 +368,7 @@ class GoalStore:
                 from_status=r["from_status"],
                 to_status=r["to_status"],
                 trigger=r["trigger"],
-                created_at=_parse_dt(r["created_at"]) or datetime.now(timezone.utc),
+                created_at=_parse_dt(r["created_at"]) or now_utc(),
                 metadata=json.loads(r["metadata_json"] or "{}"),
             )
             for r in rows
@@ -407,8 +408,8 @@ class GoalStore:
         hours = min(hours, 168)  # Cap at 1 week
 
         goal.snooze_count += 1
-        goal.snoozed_until = datetime.now(timezone.utc) + timedelta(hours=hours)
-        goal.updated_at = datetime.now(timezone.utc)
+        goal.snoozed_until = now_utc() + timedelta(hours=hours)
+        goal.updated_at = now_utc()
         self.save_goal(goal)
         return True
 
@@ -421,10 +422,10 @@ class GoalStore:
 
         previous_status = goal.status
         goal.status = GoalStatus.ABANDONED
-        goal.abandoned_at = datetime.now(timezone.utc)
+        goal.abandoned_at = now_utc()
         goal.abandon_reason = reason
         goal.dismissal_reason = reason
-        goal.updated_at = datetime.now(timezone.utc)
+        goal.updated_at = now_utc()
         self.save_goal(goal)
         self.log_transition(
             goal_id, previous_status, GoalStatus.ABANDONED,
@@ -440,7 +441,7 @@ class GoalStore:
         - Snoozed goals (snoozed_until > now)
         - Goals that had an initiative within cooldown period
         """
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         cooldown_delta = timedelta(hours=cooldown_hours)
 
         candidates = []
@@ -465,8 +466,8 @@ class GoalStore:
             goal = self.get_goal(goal_id)
         except GoalNotFoundError:
             return False
-        goal.last_initiative_at = datetime.now(timezone.utc)
-        goal.updated_at = datetime.now(timezone.utc)
+        goal.last_initiative_at = now_utc()
+        goal.updated_at = now_utc()
         self.save_goal(goal)
         return True
 
@@ -480,7 +481,7 @@ class GoalStore:
 
         old_status = goal.status
         goal.status = GoalStatus.ABANDONED
-        goal.abandoned_at = datetime.now(timezone.utc)
+        goal.abandoned_at = now_utc()
         goal.abandon_reason = reason
         self.save_goal(goal)
         self.log_transition(goal_id, old_status, GoalStatus.ABANDONED, "user_abandoned",

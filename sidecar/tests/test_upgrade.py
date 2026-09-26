@@ -104,7 +104,7 @@ def test_upgrade_reconciles_a_changed_worker_toolset(installed, capsys):
     output = capsys.readouterr().out
     assert f"profiles/{WORKER_PROFILE} written" in output and "nothing to do" not in output
     profile = yaml.safe_load((hermes_home / "profiles" / WORKER_PROFILE / "config.yaml").read_text())
-    assert profile["toolsets"] == ["web", "file"]
+    assert profile["platform_toolsets"] == {"cli": ["web", "file"]}
     assert profile["approvals"] == {"deny": ["shutdown*"]}
     assert init.run_upgrade(_upgrade_args(home)) == 0
     assert "nothing to do" in capsys.readouterr().out
@@ -208,3 +208,116 @@ def test_upgrade_retires_the_drives_milestone_stores_and_tables(installed, capsy
     assert init.retired_tables_present(home) == [] and init.retired_state_present(home) == []
     assert init.run_upgrade(_upgrade_args(home)) == 0
     assert "nothing to do" in capsys.readouterr().out
+
+
+def test_upgrade_retires_the_people_milestone_stores(installed, capsys):
+    """The theory-of-mind stores the per-contact digest replaced (second-order inferences,
+    their exposure ledger, the engagement profiles, the relationship briefs and the P8
+    shadow stores), the conversation presence census and the identity bootstrap report
+    move into the backup instead of staying behind as orphans; the contact store's
+    provisioning and merge-proposal tables are dropped after the backup (audit M12)."""
+    import sqlite3
+    home, _ = installed
+    names = ("protagine-tom2.db", "protagine-tom2-exposure.db", "protagine-engagement.db",
+             "protagine-relationships.db", "protagine-p8-visibility.db", "protagine-p8-arcs.db",
+             "protagine-p8-recipient-audit.db", "protagine-presence.db", "bootstrap.db")
+    for name in names:
+        with sqlite3.connect(home / name) as db:
+            db.execute("CREATE TABLE t (x TEXT)")
+            db.execute("INSERT INTO t VALUES ('row')")
+    # The contact store's provisioning receipts and the merge tables no code reads any more.
+    contact_tables = ("contact_provision_operations", "contact_merge_proposals", "contact_merge_audit",
+                      "contact_confirmed_distinct")
+    with sqlite3.connect(home / "protagine-contacts.db") as db:
+        db.execute("CREATE TABLE IF NOT EXISTS contacts (contact_id TEXT PRIMARY KEY)")
+        for table in contact_tables:
+            db.execute(f"CREATE TABLE IF NOT EXISTS {table} (x TEXT)")
+        kept = db.execute("SELECT count(*) FROM contacts").fetchone()[0]
+    assert set(names) <= set(init.retired_state_present(home))
+    assert {f"protagine-contacts.db:{table}" for table in contact_tables} <= set(init.retired_tables_present(home))
+
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    out = capsys.readouterr().out
+    for name in names:
+        assert f"retired {name}" in out and not (home / name).exists()
+    with sqlite3.connect(next((home / "backups").rglob("retired/protagine-engagement.db"))) as db:
+        assert db.execute("SELECT x FROM t").fetchone()[0] == "row"
+    with sqlite3.connect(home / "protagine-contacts.db") as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "contacts" in tables and not set(contact_tables) & tables
+        assert db.execute("SELECT count(*) FROM contacts").fetchone()[0] == kept
+    assert init.retired_state_present(home) == [] and init.retired_tables_present(home) == []
+
+
+def test_upgrade_adopts_the_ingress_rows_of_retired_producers(installed, capsys):
+    """An earlier line stamped durable intake rows with its client principals; this line
+    authenticates one key, so the upgrade re-scopes those rows to the instance producer and
+    the transport can read, hand off and settle the receipts it journaled. The backup keeps
+    the rows as they were; a second upgrade finds nothing to do."""
+    import sqlite3
+    from protagine.api.auth import KEY_PRINCIPAL
+    from protagine.contacts.transport_ingress import TransportIngress, ensure_schema
+    home, _ = installed
+    path = home / "protagine-comms.db"
+
+    def opened():
+        connection = sqlite3.connect(path)
+        connection.row_factory = sqlite3.Row
+        return connection, TransportIngress(connection)
+
+    def admit(store, producer, sequence, **changes):
+        return store.admit(**(dict(producer=producer, account_id="account", epoch="epoch", sequence=sequence,
+            event_id="event-" + str(sequence), contact_id="contact", occurred_at=100, journal_ref="journal:" + str(sequence),
+            payload_digest="a" * 64, media_available=True, metadata={"channel": "whatsapp", "sender_ref": "fixture"},
+            now=200) | changes))
+
+    conn, store = opened()
+    ensure_schema(conn)
+    old = [admit(store, "legacy-outreach", n) for n in (1, 2, 3)]
+    other = admit(store, "legacy-bridge", 1, account_id="second-account")
+    store.handoff(producer="legacy-outreach", receipt_ids=[old[1]["receipt_id"]], batch_id="old-batch")
+    for producer, account, watermark in (("legacy-outreach", "account", 3), ("legacy-bridge", "second-account", 1)):
+        store.observe_coverage(producer=producer, account_id=account, epoch="epoch", connected_since=50,
+                               observed_at=201, watermark=watermark, connected=True, unavailable=0, now=201)
+    conn.close()
+    assert init.pending_ingress_adoption(home) == [
+        "protagine-comms.db:transport_ingress (4 receipts from 2 retired producers)",
+        "protagine-comms.db:transport_ingress_coverage (2 rows)"]
+
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    out = capsys.readouterr().out
+    assert "backup taken" in out
+    assert ("migration applied: protagine-comms.db: 4 transport ingress receipts and 2 coverage rows re-scoped "
+            "from retired producers (legacy-bridge, legacy-outreach) to the instance key") in out
+    conn, store = opened()
+    assert {row[0] for row in conn.execute("SELECT DISTINCT producer FROM transport_ingress")} == {KEY_PRINCIPAL}
+    assert {row[0] for row in conn.execute("SELECT DISTINCT producer FROM transport_ingress_coverage")} == {KEY_PRINCIPAL}
+    ids = [row["receipt_id"] for row in old]
+    assert [row["state"] for row in store.receipts(producer=KEY_PRINCIPAL, receipt_ids=ids)] == ["admitted", "handed_off", "admitted"]
+    assert store.handoff(producer=KEY_PRINCIPAL, receipt_ids=[ids[0]], batch_id="new-batch")["may_dispatch"] is True
+    assert store.receipts(producer=KEY_PRINCIPAL, receipt_ids=[other["receipt_id"]])[0]["state"] == "admitted"
+    assert store.coverage(producer=KEY_PRINCIPAL, account_id="account", contact_id="nobody", since=150, now=203)["observed"]
+    conn.close()
+    backup = next(p for p in (home / "backups").iterdir() if (p / "protagine-comms.db").exists())
+    with sqlite3.connect(backup / "protagine-comms.db") as db:
+        assert db.execute("SELECT COUNT(*) FROM transport_ingress WHERE producer='legacy-outreach'").fetchone()[0] == 3
+    assert init.pending_ingress_adoption(home) == []
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    assert "nothing to do" in capsys.readouterr().out
+
+
+def test_upgrade_says_when_a_recorded_endpoint_is_switched_off(installed, capsys):
+    """Releases before the switch was live wrote ``semantic_recall: false`` whenever init found no endpoint;
+    upgrading such an install with an endpoint recorded says recall is keyword-only and how to turn it on,
+    and leaves the owner's value as it is."""
+    from protagine.config import load_config, save_config
+    home, _ = installed
+    data = yaml.safe_load((home / "protagine.yaml").read_text())
+    data["router"]["embed_url"] = "http://127.0.0.1:9/v1"
+    data["mind"]["faculties"]["semantic_recall"] = False
+    save_config(data, home)
+    capsys.readouterr()
+    assert init.run_upgrade(_upgrade_args(home)) == 0
+    output = capsys.readouterr().out
+    assert "semantic recall is off" in output and "mind.faculties.semantic_recall: true" in output
+    assert load_config(home, environ={}).get("mind.faculties.semantic_recall") is False

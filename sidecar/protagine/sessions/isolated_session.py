@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
+from protagine.util.temporal import now_utc
 
-from protagine.intelligence.relationships.trust_tiers import TrustTier
 
 
 class SessionState(str, Enum):
@@ -37,18 +37,18 @@ class IsolatedSession:
     session_id: str
     contact_id: str
     gateway: str
-    trust_tier: TrustTier
+    trust_tier: str  # one of contacts.models.TRUST_TIERS
     state: SessionState = SessionState.ACTIVE
     history: list = field(default_factory=list)
     active_topics: set = field(default_factory=set)
     mentioned_entities: set = field(default_factory=set)
-    context_start: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    context_start: datetime = field(default_factory=lambda: now_utc())
     context_token_count: int = 0
-    last_active: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    last_active: datetime = field(default_factory=lambda: now_utc())
     relationship_score: float = 0.0
     owner_guidance: dict = field(default_factory=dict)
     expires_at: datetime = field(
-        default_factory=lambda: datetime.now(tz=timezone.utc) + timedelta(hours=_DEFAULT_TTL_HOURS)
+        default_factory=lambda: now_utc() + timedelta(hours=_DEFAULT_TTL_HOURS)
     )
     model_override: Optional[str] = None
     model_provider_override: Optional[str] = None
@@ -58,7 +58,7 @@ class IsolatedSession:
         cls,
         contact_id: str,
         gateway: str,
-        trust_tier: TrustTier,
+        trust_tier: str,
         ttl_hours: int = _DEFAULT_TTL_HOURS,
     ) -> "IsolatedSession":
         return cls(
@@ -66,16 +66,16 @@ class IsolatedSession:
             contact_id=contact_id,
             gateway=gateway,
             trust_tier=trust_tier,
-            expires_at=datetime.now(tz=timezone.utc) + timedelta(hours=ttl_hours),
+            expires_at=now_utc() + timedelta(hours=ttl_hours),
         )
 
     def is_expired(self) -> bool:
-        return datetime.now(tz=timezone.utc) >= self.expires_at
+        return now_utc() >= self.expires_at
 
     def extend(self, ttl_hours: int = _DEFAULT_TTL_HOURS) -> None:
         """Reset expiry on activity (token rotation equivalent for stateful sessions)."""
-        self.expires_at = datetime.now(tz=timezone.utc) + timedelta(hours=ttl_hours)
-        self.last_active = datetime.now(tz=timezone.utc)
+        self.expires_at = now_utc() + timedelta(hours=ttl_hours)
+        self.last_active = now_utc()
 
     def add_entity(self, entity: str) -> None:
         """Add an entity to this session's mention set."""
@@ -90,7 +90,7 @@ class IsolatedSession:
             turn_id=str(uuid.uuid4()),
             role=role,
             content=content,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=now_utc(),
             gate_decision=gate_decision,
         )
         self.history.append(turn)

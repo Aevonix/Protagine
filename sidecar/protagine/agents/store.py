@@ -22,12 +22,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .models import Agent, AgentMetadata, AgentStatus
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
-
-# Type alias for Protagine key manager (avoid circular import)
-LocalKeyManager = Any
-
 
 def get_state_dir() -> Path:
     """Get Protagine state directory."""
@@ -59,16 +56,11 @@ def hash_setup_code(code: str) -> str:
 class AgentStore:
     """Manages agent registry with SQLite persistence and CRL support."""
 
-    def __init__(
-        self,
-        state_dir: Optional[Path] = None,
-        protagine_key_manager: Optional[LocalKeyManager] = None,
-    ):
+    def __init__(self, state_dir: Optional[Path] = None):
         self._state_dir = Path(state_dir) if state_dir else get_state_dir()
         self._state_dir.mkdir(parents=True, exist_ok=True)
         self._db_path = self._state_dir / "agents.db"
         self._backup_path = self._state_dir / "agents.db.backup"
-        self._protagine_km = protagine_key_manager
 
         # In-memory CRL for fast lookup
         self._revoked_node_ids: set = set()
@@ -197,7 +189,7 @@ class AgentStore:
     def create(self, data: Dict[str, Any]) -> Agent:
         """Create a new agent."""
         agent_id = data.get("agent_id") or str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
 
         cursor = self._db.execute(
             """
@@ -365,7 +357,7 @@ class AgentStore:
         """Mark agent as online."""
         updates = {
             "status": AgentStatus.ONLINE.value,
-            "last_seen_at": datetime.now(timezone.utc),
+            "last_seen_at": now_utc(),
             "websocket_connected": websocket_connected,
         }
         if metadata:
@@ -525,44 +517,6 @@ class AgentStore:
         return [dict(row) for row in cursor.fetchall()]
 
     # ------------------------------------------------------------------
-    # Certificate Signing
-    # ------------------------------------------------------------------
-
-    async def sign_node_certificate(
-        self,
-        node_id: str,
-        node_public_key: str,
-        expires_days: int = 365,
-    ) -> Dict[str, Any]:
-        """Sign a node certificate for remote agent."""
-        if not self._protagine_km:
-            raise ValueError("Protagine key not available for signing")
-
-        # Import here to avoid circular dependency
-        from protagine.chain.identity import get_or_create_protagine_id
-
-        protagine_id = get_or_create_protagine_id(self._state_dir)
-
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(days=expires_days)
-
-        cert = {
-            "protagine_id": protagine_id,
-            "node_id": node_id,
-            "node_public_key_ed25519": node_public_key,
-            "issued_at": now.isoformat(),
-            "expires_at": expires_at.isoformat(),
-        }
-
-        # Sign with Protagine private key
-        # The LocalKeyManager should have a sign() method
-        payload = json.dumps(cert, sort_keys=True).encode()
-        signature = self._protagine_km.sign(payload)
-        cert["signature"] = signature.hex()
-
-        return cert
-
-    # ------------------------------------------------------------------
     # Backup/Recovery
     # ------------------------------------------------------------------
 
@@ -656,7 +610,7 @@ class InviteStore:
         code = generate_setup_code()
         code_hash = hash_setup_code(code)
 
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         expires_at = now + timedelta(seconds=expires_seconds or self.DEFAULT_EXPIRY_SECONDS)
 
         self._db.execute(
@@ -699,7 +653,7 @@ class InviteStore:
         Raises ValueError if invalid, expired, used, or locked.
         """
         code_hash = hash_setup_code(code)
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         cursor = self._db.execute(
             "SELECT * FROM agent_invites WHERE code_hash = ?",
@@ -732,7 +686,7 @@ class InviteStore:
     def record_failed_attempt(self, code: str) -> None:
         """Record failed validation attempt and check lockout."""
         code_hash = hash_setup_code(code)
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         # Increment failed attempts
         cursor = self._db.execute(
@@ -780,7 +734,7 @@ class InviteStore:
         Raises ValueError if already used or invalid.
         """
         code_hash = hash_setup_code(code)
-        now = datetime.now(timezone.utc)
+        now = now_utc()
 
         # Atomic UPDATE with WHERE conditions
         cursor = self._db.execute(

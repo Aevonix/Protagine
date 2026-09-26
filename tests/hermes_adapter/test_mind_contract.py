@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from conftest import API_KEY, MIND_PRELUDE, OWNER, build_home, probe
+from conftest import API_KEY, MIND_PRELUDE, OWNER, build_home, probe, refused
 from test_tools_commands import TOOL_CODE
 
 pytest.importorskip("protagine.mind", reason="the sidecar package is not installed here")
@@ -29,8 +29,8 @@ class Contacts:
     """The contact store the Mind asks about recipients and their handles."""
 
     def __init__(self, owner):
-        self.records = {owner: {"contact_id": owner, "interaction_allowed": True},
-                        "p-03": {"contact_id": "p-03", "interaction_allowed": True}}
+        self.records = {owner: {"contact_id": owner, "may_contact": "auto"},
+                        "p-03": {"contact_id": "p-03", "may_contact": "ask"}}
 
     async def get(self, contact_id):
         record = self.records.get(contact_id)
@@ -84,9 +84,9 @@ def real_sidecar(tmp_path, monkeypatch):
     async def resolve(gateway: str = "", address: str = ""):
         from fastapi import HTTPException
         if gateway == "telegram" and address == "1001":
-            return {"contact_id": OWNER, "display_name": "Owner", "interaction_allowed": True}
+            return {"contact_id": OWNER, "display_name": "Owner", "may_contact": "auto"}
         if gateway == "telegram" and address == "2003":
-            return {"contact_id": "p-03", "display_name": "Friend", "interaction_allowed": True}
+            return {"contact_id": "p-03", "display_name": "Friend", "may_contact": "ask"}
         raise HTTPException(status_code=404, detail="No contact for that handle")
 
     mind_router.set_mind(mind)
@@ -216,10 +216,10 @@ emit(guest=call("protagine_self", {"operation": "yes", "code": "%(code)s"}, g),
      approved=call("protagine_self", {"operation": "yes", "code": "%(code)s"}, o_with),
      repeat=call("protagine_self", {"operation": "yes", "code": "%(code)s"}, o_with))
 ''' % {"code": code}, real_home, prelude=PRELUDE)
-    assert "owner" in second["guest"]["error"] and "own message" in second["without"]["error"]
+    assert "owner" in refused(second["guest"]) and "own message" in refused(second["without"])
     assert second["approved"]["ok"] is True and second["approved"]["status"] == "approved"
     assert second["approved"]["id"] == asked[0].id
-    assert "not found" in second["repeat"]["error"]
+    assert "no ask is open" in refused(second["repeat"])
     third = probe(TICK + "emit(tick=result, tasks=tasks())", real_home, prelude=PRELUDE)
     assert list(third["tasks"]) == [f"mind:{asked[0].id}"] and third["tick"]["dispatched"] == 1
     assert real.store.get(asked[0].id).status == "dispatched"

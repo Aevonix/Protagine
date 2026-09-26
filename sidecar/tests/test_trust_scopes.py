@@ -33,10 +33,10 @@ async def test_scope_membership_authorizes_in_scope_only(store):
 
     # Guest is authorized INSIDE the scope...
     assert await store.is_authorized_in_scope(guest.contact_id, scope.scope_id) is True
-    # ...but their global standing is untouched — still no 1:1 interaction.
+    # ...but their global standing is untouched: no permission to be contacted 1:1.
     g = await store.get(guest.contact_id)
     assert g.trust_tier == "acquaintance"
-    assert g.interaction_allowed is False
+    assert g.may_contact == "ask"
     # And not authorized in a scope they're not a member of.
     other = await store.create_scope(platform="rcs", external_id="conv-99")
     assert await store.is_authorized_in_scope(guest.contact_id, other.scope_id) is False

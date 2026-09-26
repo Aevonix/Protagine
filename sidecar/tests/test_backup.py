@@ -19,14 +19,12 @@ def protagine_state(tmp_path):
     state = tmp_path / "state"
     state.mkdir()
 
-    (state / "protagine-id").write_text("test-protagine-abc123")
-
-    keys = state / "protagine-keys"
-    keys.mkdir()
-    (keys / "private.pem").write_text("FAKE_PRIVATE_KEY")
-    (keys / "public.pem").write_text("FAKE_PUBLIC_KEY")
-
-    (state / "genesis.json").write_text(json.dumps({"genesis": True}))
+    (state / "instance-id").write_text("test-instance-abc123\n")
+    (state / "identity.yaml").write_text("owner: {name: Owner}\nagent: {name: Agent}\n")
+    (state / "api.key").write_text("fixture-key\n")
+    (state / "protagine.yaml").write_text(
+        "owner: {contact_id: p-01}\n"
+        "environment: {PROTAGINE_RERANKER_API_KEY: rerank-secret, PROTAGINE_RECALL_RERANK: 'on'}\n")
 
     conn = sqlite3.connect(str(state / "protagine-contacts.db"))
     conn.execute("CREATE TABLE contacts (id TEXT PRIMARY KEY, name TEXT)")
@@ -41,8 +39,8 @@ def protagine_state(tmp_path):
 
     (state / ".env").write_text(
         "PROTAGINE_API_KEY=super-secret-key\n"
-        "NEO4J_URI=bolt://localhost:7687\n"
-        "NEO4J_PASSWORD=neo4j-secret\n"
+        "PROTAGINE_EMBED_BASE_URL=http://embed.local/v1\n"
+        "PROTAGINE_EMBED_API_KEY=embed-secret\n"
         "PROTAGINE_SIDECAR_PORT=7777\n"
     )
 
@@ -105,7 +103,7 @@ class TestDatabaseSnapshot:
     def test_backup_creates_archive(self, protagine_state, output_dir):
         archive = create_full_backup(
             protagine_state, output_dir,
-            include_graph=False, include_vectors=False,
+            include_vectors=False,
         )
         assert archive.exists()
         assert archive.suffix == ".gz"
@@ -113,16 +111,22 @@ class TestDatabaseSnapshot:
     def test_restore_recovers_state(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
             protagine_state, output_dir,
-            include_graph=False, include_vectors=False,
+            include_vectors=False,
         )
 
         restore_dir = tmp_path / "restored"
         summary = restore_full_backup(archive, restore_dir)
 
-        assert summary["protagine_id"] == "test-protagine-abc123"
+        assert summary["instance_id"] == "test-instance-abc123"
         assert "protagine-contacts.db" in summary["databases"]
-        assert (restore_dir / "protagine-id").read_text().strip() == "test-protagine-abc123"
-        assert (restore_dir / "protagine-keys" / "public.pem").exists()
+        assert (restore_dir / "instance-id").read_text().strip() == "test-instance-abc123"
+        assert (restore_dir / "identity.yaml").read_text().startswith("owner:")
+        # An unencrypted archive carries no secret: the bearer key stays behind (init writes a new one)
+        # and protagine.yaml's credential settings are redacted.
+        assert not (restore_dir / "api.key").exists() and summary["api_key"] is False
+        restored = (restore_dir / "protagine.yaml").read_text()
+        assert "rerank-secret" not in restored and "PROTAGINE_RERANKER_API_KEY: <REDACTED>" in restored
+        assert "PROTAGINE_RECALL_RERANK: 'on'" in restored and "contact_id: p-01" in restored
 
         conn = sqlite3.connect(str(restore_dir / "protagine-contacts.db"))
         cur = conn.execute("SELECT name FROM contacts WHERE id = 'c1'")
@@ -132,35 +136,76 @@ class TestDatabaseSnapshot:
     def test_restore_rejects_identity_mismatch(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
             protagine_state, output_dir,
-            include_graph=False, include_vectors=False,
+            include_vectors=False,
         )
 
         restore_dir = tmp_path / "other"
         restore_dir.mkdir()
-        (restore_dir / "protagine-id").write_text("different-protagine-xyz")
+        (restore_dir / "instance-id").write_text("different-instance-xyz")
 
-        with pytest.raises(ValueError, match="force-identity"):
+        with pytest.raises(ValueError, match="fresh directory"):
             restore_full_backup(archive, restore_dir)
+        assert (restore_dir / "instance-id").read_text() == "different-instance-xyz"
 
-    def test_restore_with_force_identity(self, protagine_state, output_dir, tmp_path):
-        archive = create_full_backup(
-            protagine_state, output_dir,
-            include_graph=False, include_vectors=False,
-        )
+    def test_backup_adopts_a_chain_era_protagine_id(self, tmp_path, output_dir):
+        """A state directory from before the instance id backs up under the id it already had."""
+        state = tmp_path / "legacy"
+        state.mkdir()
+        (state / "protagine-id").write_text("11111111-2222-3333-4444-555555555555")
+        archive = create_full_backup(state, output_dir, include_vectors=False)
 
-        restore_dir = tmp_path / "other"
-        restore_dir.mkdir()
-        (restore_dir / "protagine-id").write_text("different-protagine-xyz")
+        import tarfile
+        with tarfile.open(archive, "r:gz") as tar:
+            meta_member = next(m for m in tar.getmembers() if m.name.endswith("meta.json"))
+            meta = json.load(tar.extractfile(meta_member))
+        assert meta["instance_id"] == "11111111-2222-3333-4444-555555555555"
+        assert "protagine_id" not in meta
+        assert (state / "instance-id").read_text().strip() == "11111111-2222-3333-4444-555555555555"
+        restore_dir = tmp_path / "restored"
+        assert restore_full_backup(archive, restore_dir)["instance_id"] == meta["instance_id"]
+        assert (restore_dir / "instance-id").read_text().strip() == meta["instance_id"]
 
-        summary = restore_full_backup(
-            archive, restore_dir, force_identity=True,
-        )
-        assert summary["protagine_id"] == "test-protagine-abc123"
+    def test_restore_leaves_the_retired_state_of_an_old_archive_behind(self, protagine_state, output_dir, tmp_path):
+        """An archive taken before the graph, world model and chain went still carries their files; restoring
+        it must not put them back (``protagine upgrade`` retired them: init.RETIRED_STATE)."""
+        import io
+        import tarfile
+
+        archive = create_full_backup(protagine_state, output_dir, include_vectors=False)
+        old = tmp_path / "old-archive.tar.gz"
+        with tarfile.open(archive, "r:gz") as source, tarfile.open(old, "w:gz") as target:
+            root = next(m for m in source.getmembers() if m.name.endswith("meta.json")).name.rsplit("/", 1)[0]
+            for member in source.getmembers():
+                target.addfile(member, source.extractfile(member) if member.isfile() else None)
+
+            def add(name, data=b"retired"):
+                info = tarfile.TarInfo(f"{root}/{name}")
+                info.size = len(data)
+                target.addfile(info, io.BytesIO(data))
+
+            for name in ("identity/protagine-id", "identity/genesis.json", "identity/protagine-keys/private.pem",
+                         "identity/node-cert.json", "config/protagine-manifest.json"):
+                add(name)
+            chain = tmp_path / "chain.db"
+            with sqlite3.connect(chain) as conn:
+                conn.execute("CREATE TABLE blocks (id INTEGER)")
+            add("databases/chain.db", chain.read_bytes())
+
+        restore_dir = tmp_path / "restored-old"
+        summary = restore_full_backup(old, restore_dir)
+        restored = {path.relative_to(restore_dir).as_posix() for path in restore_dir.rglob("*")}
+        assert not {"protagine-id", "genesis.json", "protagine-keys", "node-cert.json", "protagine-manifest.json",
+                    "chain.db"} & restored
+        assert "chain.db" not in summary["databases"] and "protagine-contacts.db" in summary["databases"]
+        assert sorted(summary["retired_skipped"]) == ["chain.db", "genesis.json", "node-cert.json",
+                                                      "protagine-id", "protagine-keys", "protagine-manifest.json"]
+        assert (restore_dir / "instance-id").read_text().strip() == "test-instance-abc123"
+        assert (restore_dir / "identity.yaml").is_file() and not (restore_dir / "api.key").exists()
 
     def test_env_file_is_scrubbed_in_backup(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
             protagine_state, output_dir,
-            include_graph=False, include_vectors=False,
+            include_vectors=False,
         )
 
         restore_dir = tmp_path / "restored"
@@ -168,14 +213,15 @@ class TestDatabaseSnapshot:
 
         env_content = (restore_dir / ".env").read_text()
         assert "super-secret-key" not in env_content
-        assert "neo4j-secret" not in env_content
+        assert "embed-secret" not in env_content
+        assert "PROTAGINE_EMBED_BASE_URL=http://embed.local/v1" in env_content
         assert "PROTAGINE_API_KEY=<REDACTED>" in env_content
         assert "PROTAGINE_SIDECAR_PORT=7777" in env_content
 
     def test_meta_json_in_archive(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
             protagine_state, output_dir,
-            include_graph=False, include_vectors=False,
+            include_vectors=False,
         )
 
         import tarfile
@@ -193,7 +239,7 @@ class TestEncryption:
         archive = create_full_backup(
             protagine_state, output_dir,
             passphrase=passphrase,
-            include_graph=False, include_vectors=False,
+            include_vectors=False,
         )
         assert archive.suffix == ".enc"
 
@@ -201,14 +247,26 @@ class TestEncryption:
         summary = restore_full_backup(
             archive, restore_dir, passphrase=passphrase,
         )
-        assert summary["protagine_id"] == "test-protagine-abc123"
+        assert summary["instance_id"] == "test-instance-abc123"
         assert "protagine-contacts.db" in summary["databases"]
+        # Encrypted, the archive is complete: the key and the configuration come back verbatim.
+        assert (restore_dir / "api.key").read_text().strip() == "fixture-key" and summary["api_key"] is True
+        assert "rerank-secret" in (restore_dir / "protagine.yaml").read_text()
+
+    def test_an_unencrypted_archive_holds_no_secret(self, protagine_state, output_dir):
+        import tarfile
+        archive = create_full_backup(protagine_state, output_dir, include_vectors=False)
+        with tarfile.open(archive, "r:gz") as tar:
+            names = [member.name for member in tar.getmembers()]
+            assert not [name for name in names if name.endswith("/api.key")]
+            blob = b"".join(tar.extractfile(member).read() for member in tar.getmembers() if member.isfile())
+        assert b"fixture-key" not in blob and b"rerank-secret" not in blob and b"super-secret-key" not in blob
 
     def test_wrong_passphrase_fails(self, protagine_state, output_dir, tmp_path):
         archive = create_full_backup(
             protagine_state, output_dir,
             passphrase=b"correct-pass",
-            include_graph=False, include_vectors=False,
+            include_vectors=False,
         )
 
         restore_dir = tmp_path / "restored"
@@ -221,7 +279,7 @@ class TestEncryption:
         archive = create_full_backup(
             protagine_state, output_dir,
             passphrase=b"correct-pass",
-            include_graph=False, include_vectors=False,
+            include_vectors=False,
         )
 
         restore_dir = tmp_path / "restored"

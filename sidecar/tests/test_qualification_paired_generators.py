@@ -70,8 +70,12 @@ MINUTES = re.compile(r'\b(\d+) minutes\b')
 # The dev split, per-template 3, for the two recorded seeds. The manifest hashes the template
 # and engine sources, so any edit to initiative.py or generate.py is a new dataset: update
 # these deliberately, together with benchmarks/paired/generators/README.md.
-PINNED_DEV_SPLITS = {7: '5918d52fe5d1dccb6aa81413f3e4295aac6a458eba792c3dab86128a8680ef94',
-                     11: 'f8963e5b2f7e81269450519ddd8500c9537834cdca84d14b3e160cf7e36e0c05'}
+PINNED_DEV_SPLITS = {7: '56ff7819354180dfb0d779e1f694d668f3af30ba5b1f22d84eb71aedd054b553',
+                     11: 'f39d6e6d6c5c660e3fd6c3cfef2c790ab2e5f155c775c1ab4a7ce0b4f1ca84e2'}
+# The scenario bytes of those splits: an engine edit (a new family, a new draw) moves the
+# manifest's engine hash and with it the content hash, never the scenarios.
+PINNED_DEV_SCENARIOS = {7: '4adbd021482a4f4c0da2738cc01a9aa98a5268028d823ab0d884adcf407d71d3',
+                        11: 'f07ad4e91ca4e48122abbad803941b9b38909562615f2d1c673209cc7fe4f6a1'}
 
 
 def initiative(generate, seed=11, per_template=3):
@@ -241,12 +245,36 @@ def test_oracles_come_from_the_same_draws_as_the_turns(generate):
                 assert len(turns) == 3 and re.search(r'sent the|went to', turns[2])
 
 
+def test_a_turn_after_the_clock_crossed_midnight_never_says_today_or_yesterday(generate):
+    """"Did you reply today?" asked the morning after the reply has two right answers; the self family's
+    true-premise probe did (re-pilot r2b). From the pinned noon start, a turn after an ``advance_clock`` that
+    crossed midnight may not say "today" or "yesterday": the generator refuses the scenario."""
+    before = [{'session_id': 'owner-1', 'user': 'p-05 may ask about the lease today.'}]
+    night = [*before, {'advance_clock': 86400}, {'tick': 1}]
+    assert generate.relative_day_after_midnight([*night, {'session_id': 'owner-2', 'user': 'Did you reply today?'}]) == 3
+    assert generate.relative_day_after_midnight([*night, {'session_id': 'contact-1', 'inbound': {
+        'contact': 'p-05', 'text': 'Yesterday you said it was on.'}}]) == 3
+    assert generate.relative_day_after_midnight([*night, {'session_id': 'owner-2', 'user': 'Did you reply?'}]) is None
+    same_day = [*before, {'advance_clock': 1500}, {'session_id': 'owner-1', 'user': 'Anything else today?'}]
+    assert generate.relative_day_after_midnight(same_day) is None
+    assert generate.relative_day_after_midnight(same_day, start=23 * 3600 + 50 * 60) == 2   # from 23:50, 00:15
+
+    class Late:
+        FAMILY = 'late-night-1'
+        TEMPLATES = {'late': ('premise', lambda draw: {
+            'initial_files': {}, 'body': {'action': 'none', 'forbidden': []},
+            'episodes': [*night, {'session_id': 'owner-2', 'user': 'Have you answered p-05 today?'}]})}
+    with pytest.raises(ValueError, match='turn 3 says "today" or "yesterday" after the clock crossed midnight'):
+        generate.render(Late, 7, 1)
+
+
 def test_dev_split_content_hashes_are_pinned(generate, tmp_path):
     module = generate.load_templates(GENERATORS / 'initiative.py')
     for seed, expected in PINNED_DEV_SPLITS.items():
         content = generate.write(tmp_path / str(seed), module, seed, 'dev', 3, GENERATORS / 'initiative.py')
         assert content == expected, f'dev split seed {seed} changed; a template edit is a new dataset'
         manifest = json.loads((tmp_path / str(seed) / 'manifest.json').read_text())
+        assert manifest['files']['scenarios.json']['sha256'] == PINNED_DEV_SCENARIOS[seed]
         assert manifest['families'] == {'warranted': 39, 'control': 45}
         assert manifest['generator'] == {**manifest['generator'], 'seed': seed, 'split': 'dev', 'per_template': 3}
 
@@ -313,6 +341,16 @@ def test_heldout_templates_must_live_outside_the_repository(generate, tmp_path, 
     assert 'heldout_initiative' not in (tmp_path / 'held' / 'manifest.json').read_text()
 
 
+def test_draws_give_fixed_width_ids_distinct_across_contacts_and_sources(generate):
+    assert {'initiative', 'drives', 'people', 'affect', 'opinions', 'memory', 'identity'} <= set(generate.FAMILIES)
+    draw = generate.Draw(3)
+    identities = [draw.contact() for _ in range(40)] + [draw.source() for _ in range(40)]
+    assert len(set(identities)) == 80
+    assert all(re.fullmatch(r'p-\d\d', item) for item in identities[:40])
+    assert all(re.fullmatch(r's-\d\d', item) for item in identities[40:])
+    assert generate.Draw(3).contact() == identities[0], 'the same seed draws the same ids'
+
+
 def test_family_module_contract_is_checked(generate, tmp_path):
     bad = tmp_path / 'bad.py'
     bad.write_text("FAMILY = 'x'\nTEMPLATES = {'t': ('group', 'not callable')}\n")
@@ -322,6 +360,12 @@ def test_family_module_contract_is_checked(generate, tmp_path):
     wrong.write_text("FAMILY = 'x-1'\nTEMPLATES = {'t': ('g', lambda draw: {'episodes': []})}\n")
     with pytest.raises(ValueError, match='renders initial_files'):
         generate.render(generate.load_templates(wrong), 1, 1)
+    # Checkpoints grade snapshots, so they need the workflow that declares them.
+    orphan = tmp_path / 'orphan.py'
+    orphan.write_text("FAMILY = 'x-1'\nTEMPLATES = {'t': ('g', lambda draw: {'initial_files': {}, 'episodes': [],"
+                      " 'artifacts': [{'path': 'a.json'}], 'checkpoints': []})}\n")
+    with pytest.raises(ValueError, match='renders initial_files'):
+        generate.render(generate.load_templates(orphan), 1, 1)
     module = generate.load_templates(GENERATORS / 'initiative.py')
     with pytest.raises(ValueError, match='32-bit'):
         generate.render(module, -1, 1)

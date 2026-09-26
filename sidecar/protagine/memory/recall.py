@@ -62,6 +62,10 @@ def pair_conversation_candidates(rows, pairs, sources):
     Pair identity establishes who replied to what, not factual support. Claims,
     corrected fragments, media and tool observations retain their own forms.
     The complete pair enters the existing relevance pass and character budget.
+    A reply whose input was found but cannot stand beside it as a plain
+    quotation (its words are recalled as claims, or were not recalled) is not
+    shown by itself: the agent's restatement never stands in for what the
+    person said.
     """
     from protagine.turns.idempotency import canonical_turn_digest
 
@@ -105,7 +109,12 @@ def pair_conversation_candidates(rows, pairs, sources):
             **{name: response[name] for name in ('contact_id', 'session_id', 'scope', 'relevance', 'retrieval_method')},
         }
         inputs.add(input_key)
-    return [replacements.get(identity(row), row) for row in rows if identity(row) not in inputs]
+    def unpaired_reply(row):
+        return (identity(row) in pairs and identity(row) not in replacements and row.get('kind') == 'source_quote'
+                and row.get('role') == 'assistant')
+
+    return [replacements.get(identity(row), row) for row in rows
+            if identity(row) not in inputs and not unpaired_reply(row)]
 
 
 def render_memory_context(memories: list[dict[str, Any]]) -> str:

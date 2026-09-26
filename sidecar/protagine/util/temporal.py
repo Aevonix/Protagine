@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -43,6 +44,21 @@ UTC = timezone.utc
 # --------------------------------------------------------------------------- #
 # State (editable agent / default-contact timezone)                           #
 # --------------------------------------------------------------------------- #
+
+# A host's arrival stamp in front of a message (Hermes gateway message timestamps: ``[Tue 2026-04-28
+# 13:40:53 CEST]``, or the older ``[2026-04-13T17:02:06+0200]``) says when the message came. It is not
+# a date the message asks about, nor words to search for: every stamped message carries it.
+ARRIVAL_STAMP = re.compile(
+    r"^\s*\[(?:[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?: [A-Za-z0-9_+\-/:]+)?"
+    r"|\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*")
+
+
+def strip_arrival_stamps(text: str) -> str:
+    """``text`` without its leading arrival stamps (several in a row are all removed)."""
+    while (match := ARRIVAL_STAMP.match(text)) is not None:
+        text = text[match.end():]
+    return text
+
 
 def _state_dir() -> Path:
     return Path(os.environ.get("PROTAGINE_STATE_DIR", os.path.expanduser("~/.protagine")))
@@ -172,7 +188,22 @@ def _zone(tz: str):
 
 
 def now_utc() -> datetime:
-    return datetime.now(UTC)
+    """The one wall clock: ``time.time``, which Hermes' clock and the mind's read too. Every "now" in the
+    sidecar, a stamp a store writes or a comparison the mind makes, reads it (never ``datetime.now``, which
+    a host's shift of ``time.time`` does not reach), so a host that shifts it (the paired harness's body
+    clock) moves them all together."""
+    return datetime.fromtimestamp(time.time(), UTC)
+
+
+def ledger_stamp() -> str:
+    """``now_utc`` in the format of the ledger's SQLite stamps (``strftime('%Y-%m-%dT%H:%M:%fZ', 'now')``), for
+    a stamp the mind compares with its clock (a turn's ``ingested_at``): SQLite reads the real clock."""
+    return now_utc().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def now_local() -> datetime:
+    """Naive local time from the same clock, for the older components that keep naive stamps."""
+    return datetime.fromtimestamp(time.time())
 
 
 def now_in(tz: str) -> datetime:

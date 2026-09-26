@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from protagine.util.temporal import now_utc
 
 
 class GoalStatus(str, Enum):
@@ -86,8 +87,8 @@ class Goal:
     parent_goal_id: Optional[str] = None
     tags: Dict[str, str] = field(default_factory=dict)
     context: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: now_utc())
+    updated_at: datetime = field(default_factory=lambda: now_utc())
     accepted_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     abandoned_at: Optional[datetime] = None
@@ -111,10 +112,10 @@ class Goal:
     def is_overdue(self) -> bool:
         if self.deadline is None:
             return False
-        return datetime.now(timezone.utc) > self.deadline
+        return now_utc() > self.deadline
 
     def age_hours(self) -> float:
-        return (datetime.now(timezone.utc) - self.created_at).total_seconds() / 3600.0
+        return (now_utc() - self.created_at).total_seconds() / 3600.0
 
 
 @dataclass

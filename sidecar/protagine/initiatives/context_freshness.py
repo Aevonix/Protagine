@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Dict, Optional
+from protagine.util.temporal import now_utc
 
 DURABLE = "durable"
 VOLATILE = "volatile"
@@ -99,5 +100,5 @@ def is_context_fresh(
         return False
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=timezone.utc)
-    now = now or datetime.now(timezone.utc)
+    now = now or now_utc()
     return 0 <= (now - stamp).total_seconds() <= ttl

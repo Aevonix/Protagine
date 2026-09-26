@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 
@@ -50,32 +49,6 @@ def test_emit_swallows_broadcaster_exceptions(collector):
         raise RuntimeError("sink dead")
     reset_broadcaster_for_tests(_boom)
     emit("custom", {"foo": 1})  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_consolidator_emits_memory_consolidated(collector):
-    from protagine.intelligence.graph.consolidator import MemoryConsolidator
-
-    class _FakeGraph:
-        async def execute(self, *_args, **_kwargs):
-            return []
-
-    consolidator = MemoryConsolidator(graph_client=_FakeGraph())
-    # Override the private helper to return an empty candidate list so the
-    # consolidator takes the no-merge path but still broadcasts on exit.
-    consolidator._fetch_recent_memories = lambda: _empty_list()
-    consolidator._detect_conflicts = lambda: _empty_list()
-
-    await consolidator.run()
-    types = [e["type"] for e in collector.events]
-    assert "memory_consolidated" in types
-    event = next(e for e in collector.events if e["type"] == "memory_consolidated")
-    assert "examined" in event["payload"]
-    assert "merged" in event["payload"]
-
-
-async def _empty_list():
-    return []
 
 
 def test_briefing_save_broadcasts_briefing(collector, tmp_path, monkeypatch):
@@ -131,63 +104,3 @@ def test_goal_save_broadcasts_goal_update(collector, tmp_path):
     assert payload["goal_id"] == "g1"
     assert payload["status"] == "active"
     assert payload["progress_pct"] == 0.5
-
-
-@pytest.mark.asyncio
-async def test_world_model_upsert_entity_broadcasts(collector):
-    from protagine.world_model.store import WorldModelStore
-
-    class _FakeBackend:
-        async def upsert_entity(self, e):
-            return e
-
-    store = WorldModelStore()
-    store._backend = _FakeBackend()
-    entity = SimpleNamespace(id="ent-1", name="Alice")
-    await store.upsert_entity(entity)
-    types = [e["type"] for e in collector.events]
-    assert "world_model_changed" in types
-    payload = next(e for e in collector.events if e["type"] == "world_model_changed")["payload"]
-    assert payload["change_type"] == "entity_upsert"
-    assert payload["entity_id"] == "ent-1"
-
-
-@pytest.mark.asyncio
-async def test_skill_approve_broadcasts_skill_draft_approved(collector):
-    from fastapi import FastAPI
-    from httpx import ASGITransport, AsyncClient
-    from protagine.api.routers import host as host_mod
-
-    class _FakeRegistry:
-        def __init__(self):
-            self._skills = {
-                "s1": SimpleNamespace(skill_id="s1", name="MySkill"),
-            }
-
-        async def get(self, sid):
-            return self._skills.get(sid)
-
-        async def activate(self, _sid):
-            return None
-
-    prev = host_mod._skills_registry
-    host_mod._skills_registry = _FakeRegistry()
-    app = FastAPI()
-    app.include_router(host_mod.router)
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-        ) as client:
-            resp = await client.post("/v1/host/skills/s1/approve")
-        assert resp.status_code == 200
-    finally:
-        host_mod._skills_registry = prev
-
-    types = [e["type"] for e in collector.events]
-    assert "skill_draft_approved" in types
-    payload = next(
-        e for e in collector.events if e["type"] == "skill_draft_approved"
-    )["payload"]
-    assert payload["skill_id"] == "s1"
-    assert payload["name"] == "MySkill"

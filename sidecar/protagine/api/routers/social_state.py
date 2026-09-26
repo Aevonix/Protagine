@@ -172,17 +172,15 @@ async def reconcile_identity_sources(store, ledger, operation):
         evidence_refs=operation['evidence_refs'])
     from protagine.api.routers import host
     affected = result['affected_source_ids']
-    for projection in (host._facts_store, host._affect_store, host._engagement_store):
+    if str(operation['operation_id']).startswith('merge:'):
+        # A merge moves the dropped record's sourced rows once their sources moved (they waited,
+        # valid, under the dropped record), before the purge below could read them as erased.
+        for projection in (host._comms_log, host._affect_store):
+            if projection is not None and hasattr(projection, 'reattribute'):
+                projection.reattribute(operation['old_contact_id'], operation['contact_id'])
+    for projection in (host._facts_store, host._affect_store):
         if projection is not None:
             projection.purge_erased_sources(affected)
-    if host._graph is not None:
-        await host._graph.delete_source_memories(affected)
-    if host._world_store is not None:
-        try:
-            await host._world_store.erase_property_evidence(['source:'+sid for sid in affected],
-                subject_person_id=operation['old_contact_id'])
-        except NotImplementedError:
-            pass  # Alternate backends cannot contain this typed projection.
     return await store.mark_sources_reconciled(operation['operation_id'], result)
 
 

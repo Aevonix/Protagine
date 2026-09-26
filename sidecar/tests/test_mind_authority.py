@@ -88,6 +88,18 @@ def test_decision_invariants(level, cls, may_contact, floor, deny, budget, break
         assert decision != "act"                       # suggest: digest only
 
 
+def test_suggest_holds_initiative_not_what_the_owner_asked_to_be_told():
+    """A requested word to the owner (a reminder, a heads-up, the mind's own reports) acts at
+    suggest; everything above the level table still applies to it."""
+    assert decide_table(level="suggest", cls="owner", requested=True) == "act"
+    assert decide_table(level="suggest", cls="contact", requested=True) == "ask"
+    assert decide_table(level="suggest", cls="owner", requested=True, floor=True) == "ask"
+    assert decide_table(level="suggest", cls="owner", requested=True, breaker_tripped=True) == "ask"
+    assert decide_table(level="suggest", cls="owner", requested=True, budget_exhausted=True) == "defer"
+    for blocked in ({"level": "off"}, {"deny": True}, {"enabled": False}):
+        assert decide_table(**{"level": "suggest", "cls": "owner", "requested": True, **blocked}) == "drop"
+
+
 # ---------------------------------------------------------------------------
 # Classes, the floor and codes
 # ---------------------------------------------------------------------------
@@ -178,12 +190,16 @@ def test_ask_codes_avoid_ambiguous_letters_and_taken_codes():
     assert not set("0O1IL") & set(code)
 
 
-def test_may_contact_derivation_until_the_column_arrives():
+def test_may_contact_comes_from_the_column_and_the_owner_is_auto_by_identity():
     assert may_contact_of("p-01", owner_id="p-01") == "auto"
-    assert may_contact_of({"contact_id": "p-02", "interaction_allowed": False}, owner_id="p-01") == "never"
-    assert may_contact_of({"contact_id": "p-03", "interaction_allowed": True}, owner_id="p-01") == "ask"
+    assert may_contact_of({"contact_id": "p-01", "may_contact": "never"}, owner_id="p-01") == "auto"
+    assert may_contact_of({"contact_id": "p-02", "may_contact": "never"}, owner_id="p-01") == "never"
     assert may_contact_of({"contact_id": "p-04", "may_contact": "auto"}, owner_id="p-01") == "auto"
-    assert may_contact_of(None, owner_id="p-01") == "ask"
+    # No column value, an unknown value or a legacy flag: ``ask``, never a tier- or flag-derived grant.
+    assert may_contact_of({"contact_id": "p-03"}, owner_id="p-01") == "ask"
+    assert may_contact_of({"contact_id": "p-03", "may_contact": "maybe"}, owner_id="p-01") == "ask"
+    assert may_contact_of({"contact_id": "p-05", "interaction_allowed": False}, owner_id="p-01") == "ask"
+    assert may_contact_of(None, owner_id="p-01") == "ask" and may_contact_of("p-09", owner_id="p-01") == "ask"
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +253,18 @@ def test_breaker_trips_after_three_failures_and_resets(clocked_store):
     assert authority.decide(kind="task", recipient="p-01", text="owner work", may_contact="auto").decision == "act"
     now[0] += timedelta(hours=73)
     assert authority.breaker_state("owner")["tripped"] is False
+
+
+def test_suggest_sends_the_question_an_owner_request_raises(clocked_store):
+    """At suggest the owner's own request is not held for the digest: the question it raises (who is
+    the recipient they named) goes out, while the mind's own word to the owner waits as a suggestion."""
+    store, now = clocked_store
+    authority = Authority(_policy(autonomy="suggest"), store, owner_id="p-01", clock=lambda: now[0])
+    asked = authority.decide(kind="message", recipient="p-01", type="recipient_unknown",
+                             text="You asked me to reach Sam about the lease; I do not know who that is.")
+    assert asked.decision == "act"
+    own = authority.decide(kind="message", recipient="p-01", type="research_report", text="I found a paper.")
+    assert own.decision == "ask" and not own.notice
 
 
 def test_breaker_demotion_expires_on_its_own(clocked_store):

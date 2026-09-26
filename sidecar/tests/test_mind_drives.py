@@ -53,7 +53,7 @@ def test_duty_rises_with_overdue_commitments_reply_waits_stale_tasks_and_stalled
     assert set(by_type) == {"commitment_overdue", "commitment_deliverable", "reply_wait", "stale_task", "goal_stalled"}
     overdue = by_type["commitment_overdue"]
     assert overdue.kind == "task" and overdue.salience == pytest.approx(0.9)
-    assert overdue.dedup_key == schedule_key("c-1", "overdue", NOW - timedelta(hours=3))
+    assert overdue.dedup_key == "commitment:c-1:task"          # one task per schedule the person set
     assert overdue.success_check == {"kind": "commitment_resolved", "commitment_id": "c-1"}
     assert overdue.invalidates_if == "commitment:c-1:resolved" and "Report what you did" in overdue.text
     deliverable = by_type["commitment_deliverable"]
@@ -70,7 +70,7 @@ def test_duty_skips_settled_keys_and_counts_duty_misses_in_its_level():
     state = inputs(commitments=[{"id": "c-1", "person_id": OWNER, "description": "x", "priority": 50,
                                  "due_at": (NOW - timedelta(hours=1)).isoformat(), "status": "overdue"}],
                    expectation_misses=[{"domain": "commitment", "subject": "commitment:c-7", "expectation": "kept"}],
-                   settled={schedule_key("c-1", "overdue", NOW - timedelta(hours=1))})
+                   settled={"commitment:c-1:task"})
     level, candidates = duty(state)
     assert candidates == [] and level == pytest.approx(min(1.0, 0.8 / 2 + 0.1))
 
@@ -162,8 +162,9 @@ def test_upkeep_notices_a_failing_store_after_three_strikes_and_a_backlog():
     assert held == []
 
 
-def test_social_proposes_nothing_until_the_people_milestone():
+def test_social_proposes_nothing_without_contact_rows():
     assert social(inputs(interests=[{"topic": "x"}])) == (0.0, [])
+    assert inputs().contacts == [] and inputs().people_on is True
 
 
 # ---------------------------------------------------------------------------
@@ -337,17 +338,15 @@ def test_an_owner_commitment_from_conversation_is_a_reminder_message_not_a_worke
     due = NOW - timedelta(hours=2, minutes=5)
     reminder = commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER)
     assert reminder.kind == "message" and reminder.type == "commitment_reminder" and reminder.recipient == OWNER
-    assert reminder.dedup_key == schedule_key("c-7", "overdue", due)          # the same key as the task form has
+    assert reminder.dedup_key == schedule_key("c-7", "overdue", due)          # keyed by its deadline
     assert "send the report" in reminder.text and due.strftime("%Y-%m-%d %H:%M UTC") in reminder.text
     assert reminder.text.endswith("2 h ago.") and "Report what you did" not in reminder.text
     assert reminder.invalidates_if == "commitment:c-7:resolved" and reminder.source_id == "c-7"
     assert reminder.success_check == {"kind": "commitment_resolved", "commitment_id": "c-7"}
     assert reminder.salience == pytest.approx(0.8) and reminder.cost == pytest.approx(0.05)
     assert commitment_candidate(_owner_row(priority=90), due, NOW, owner_id=OWNER).salience == pytest.approx(0.9)
-    # Work the agent itself must do (a row not spoken by the owner) and a contact's row stay tasks.
+    # Work the agent itself must do (a row not spoken in a conversation) stays a task.
     assert commitment_candidate(_owner_row(source_type="manual"), due, NOW, owner_id=OWNER).kind == "task"
-    contact = commitment_candidate(_owner_row(person_id="p-02"), due, NOW, owner_id=OWNER)
-    assert contact.kind == "task" and contact.type == "commitment_overdue" and contact.recipient == "p-02"
     # A deliverable keeps its own message form.
     deliverable = commitment_candidate(_owner_row(metadata={"kind": "deliverable", "content": "Here."}), due, NOW,
                                        owner_id=OWNER)
@@ -369,9 +368,30 @@ def test_who_owes_the_work_decides_between_a_reminder_and_a_task():
     promised = commitment_candidate(_owner_row(metadata={"obligor": "assistant"}), due, NOW, owner_id=OWNER)
     assert promised.kind == "task" and promised.type == "commitment_overdue" and promised.recipient == OWNER
     assert "Fulfil the overdue commitment to the owner: send the report" in promised.text
-    assert promised.dedup_key == commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER).dedup_key
+    # The reminder is keyed by its deadline (a moved deadline earns a new word); the task by the schedule
+    # the person set (a deadline the worker moves never tasks it again): test_obligation_effects.
+    assert promised.dedup_key == "commitment:c-7:task"
+    assert commitment_candidate(_owner_row(), due, NOW, owner_id=OWNER).dedup_key.startswith("commitment:c-7:overdue:")
     _, candidates = duty(inputs(commitments=[_owner_row(metadata={"obligor": "assistant"})]))
     assert [c.type for c in candidates] == ["commitment_overdue"]
+
+
+def test_a_row_from_a_contacts_turn_is_routed_by_its_obligor_not_by_whose_turn_it_was():
+    """Capture files a row under the speaker, so a contact's turn yields rows the contact owes, rows
+    the owner owes and rows the assistant took on. Only the assistant's own work is a task (owed to
+    that contact); a promise anyone else made comes back to the owner as a reminder, never as a
+    worker task to "fulfil" someone else's promise."""
+    due = NOW - timedelta(hours=2, minutes=5)
+    for metadata in (None, {"obligor": "p-02"}, {"obligor": "owner"}, {"obligor": OWNER}, {"obligor": "Kim"}):
+        candidate = commitment_candidate(_owner_row(person_id="p-02", description="p-02 sends the signed form",
+                                                    metadata=metadata), due, NOW, owner_id=OWNER)
+        assert (candidate.type, candidate.kind, candidate.recipient) == ("commitment_reminder", "message", OWNER), \
+            metadata
+        assert "Fulfil" not in candidate.text and "p-02 sends the signed form" in candidate.text
+    owed = commitment_candidate(_owner_row(person_id="p-02", metadata={"obligor": "assistant"}), due, NOW,
+                                owner_id=OWNER)
+    assert (owed.type, owed.kind, owed.recipient) == ("commitment_overdue", "task", "p-02")
+    assert "Fulfil the overdue commitment to contact p-02: send the report" in owed.text
 
 
 def test_due_intentions_are_keyed_by_the_schedule_so_a_moved_deadline_earns_one_more():

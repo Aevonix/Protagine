@@ -1,5 +1,907 @@
 # Changelog
 
+## Unreleased - a fast decision layer
+
+Short typed decisions may ask a non-generative decision model (`protagine.decisions`,
+[docs/DECISIONS.md](docs/DECISIONS.md)): one forward pass, a probability per answer, tens of milliseconds.
+Five points can ask it (the owner's reply to an outreach, a contact's opt-out, a first mention the person wants
+no reminders about, a settled interest, whether an owner message is a verdict on the agent's work), each
+keeping its existing path and letting the model act only where that path had nothing, in one direction. No
+endpoint, a disabled point, an input over the model's 512-token context, a timeout (250 ms), any failure or an
+answer inside the point's calibrated abstain band keeps the existing path. `protagine.yaml` gains a `decisions`
+section (url, timeout, per point enabled, temperature and abstain band). Measured against the existing paths on
+345 labelled items from the repository's own generators and tests (`benchmarks/decisions`), only
+`owner_verdict` is on by default: the night's lesson call took five owner requests after an agent reply for
+verdicts, and the model withdrew all five and no real verdict, held out. The phrase tables stay ahead of the
+model where they speak; the other four points ship off with their numbers.
+
+## Unreleased - per-turn context selection, superseded values
+
+The per-turn context is chosen, not concatenated: `/context/assemble` pools the items of every lane,
+has the recall reranker score them against the message and keeps the best within 3,000 characters,
+with the current time, the open asks, the owner's standing instructions and corrections and the
+commitments due within a day pinned (`PROTAGINE_CONTEXT_SELECTION*`; any reranker trouble returns the
+assembled context, logged). A line stating a value the record has superseded (a changed or corrected
+claim, a moved deadline) is annotated with the current value and date, never removed, and a value the
+conversation was served before it was superseded is corrected in the next turn. The paired report
+counts, as a secondary, forbidden values the model was shown as current. See
+[docs/RECALL-HYBRID.md](docs/RECALL-HYBRID.md), Per-turn context selection.
+
+## Unreleased - self log, owner decisions, settled interests, held first mentions, unchanged sections
+
+From the re-pilot's self, opinions and drives diagnosis and the prompt-cache check. `protagine_self log`
+lists the agent's actions (`audit.is_action`) apart from its notes and notices, with whole ids, so the
+nightly consolidation is never cited as something the agent did; the self family's grader tells a cited
+note (`self_report:no_non_action_ids`) from a made-up id (`no_fabricated_ids`). An owner's decision is
+authority, never evidence: on no route (a revise, a form on the same topic or another) does it change or
+support a view; it is kept beside the view it bears on (`owner_decision`) and shown on its own line, and
+the standing sentence has the agent give its recorded view when asked what it recommends. Capture lists
+the owner's open interests after the open items, so "my curiosity is satisfied" settles one in the pass
+that closes commitments (`Mind.settle_interest`), and the tick holds optional work while capture still
+owes any of the owner's new turns. A first mention the owner wants no reminder about is created held.
+The memory provider sends a context section once per session while it stays the same ("unchanged since
+your last turn: <section>" in the new turn only; reset on a session switch, before compression and on
+restart). The dev generator refuses "today" or "yesterday" in a turn after the clock crossed midnight;
+the engine edit moves every generated dataset's content hash, and only the identity family's scenarios
+change.
+
+## Unreleased - owner outreach (M11)
+
+The mind can now reach out to the owner unprompted, because it has a reason to,
+not on a timer ([docs/MIND.md](docs/MIND.md), Outreach to the owner;
+architecture 4.10). The social drive turns toward the owner
+(`mind/outreach.py`): it proposes a message only from something concrete, a
+finding of its own research that bears on what the owner said they care about,
+the owner's own open item after a quiet stretch, or care for a named thing the
+owner said is stressing them. There is no empty check-in, and a report that
+found nothing, or only what was already sent or listed, is no finding. A message's value
+(relevance x novelty x timeliness) is weighed against the interruption (the
+last outreach's recency, the owner's ignored streak, the day's unprompted
+messages, a "not now" mark on the hour) by the one ranker; quiet hours, a
+pause, a daily budget (`mind.budgets.outreach_per_day: 3`, counted apart from
+the reminders the owner asked for), two hours after the last outreach, a muted
+topic and a topic's backoff hold it, and at most one goes out a tick; one quiet
+stretch is one check-in. Every message says why, quoting the owner, and never
+claims more than its source.
+What was worth it but not sent lands in the digest ("Found for you", "Offers").
+
+The owner's replies steer it (`mind/reactions.py`, read in the turn path):
+"dig deeper" rates it useful and starts a follow-up whose answer comes back;
+"not interested" mutes the topic; "not now" pauses for four hours; "leave me
+alone today" until tomorrow; "stop checking in" until the owner resumes it
+(`protagine mind outreach on|off|status`, `POST /v1/mind/outreach`); silence
+for a day is a weak "ignored". A reply that does not name the topic counts
+only when it plainly answers the outreach (the owner's first turn after it, not
+mid-conversation, no request of its own), and only what in it is about the
+outreach counts; a bare "stop" or "not today" means something only as such a
+reply. What it learns lives where the mind already
+learns: the verdict and its feedback (per type and per topic), interests,
+mutes, the pause and timing marks, and the night's lessons over rated
+messages. The appraisal backs the phrases with two nets (the owner's opt-out,
+a dismissal after a send). `mind.faculties.outreach` (on) removes all of it.
+
+Behaviour kept: only contact check-ins skip feedback gating; people off keeps
+the social drive's weight and retires waiting check-ins. The plugin is
+unchanged.
+
+Benchmark: the `sends` oracle takes tick windows; a family may declare quiet
+hours (`paired-quiet-hours-1`) and a deadline; the arms `full-outreach` and
+`base-heartbeat-checkin` (a heartbeat worded to check in when useful, hashed on
+its own; `paired-arm-profiles-6`); and the dev family `mind-outreach-1`
+(`benchmarks/paired/generators/outreach.py`, plan in
+`docs/proto-agi/families/mind-outreach-1.md`), walked through the code by
+`sidecar/tests/test_outreach_family_walk.py`.
+
+## Unreleased - capture safety, obligations that reach their person, the owner's words in recall
+
+From the second re-pilot's diagnosis of the 1.10 line (initiative 19/28 against 23-25/28 before,
+memory 20/24 against the comparator's 22/24).
+
+**A message to a third party only on the owner's confirmed words (safety).** Capture's case 3 (a
+notice or check-in the mind later sends to a contact with the owner's grant) had become the reading of
+"tell me / flag it to me if it lapses", so the mind messaged contacts the owner never asked it to
+contact, and asked "I do not know who owner is" when the recipient was the owner. Such an item now
+exists only when the owner's own words ask the assistant to contact that person: the extractor quotes
+them (`asked`, naming the recipient), code checks the quote is a passage of the owner's turn that names
+the recipient, and the claim-review pass (`source_claims.review_proposals`, the same judging task,
+schema and validation) confirms against the owner's whole message that the words ask the assistant
+itself to tell, ask or chase them. The grant is that confirmation; the row keeps the quote and the
+decision. Anything short of it is the owner's own reminder: an unsaid quote, one that does not name the
+recipient, a refused or failed review, a review the model wrote itself, and a recipient that is the owner
+(never reviewed, never asked about). Words that refer back ("if they have not sent them, chase them
+yourself") stand on a recipient named in the recent conversation or a listed open item: the code check and
+the review both get that conversation and those items, only to show whom the words mean. A confirmed message
+is a duplicate only of a message to the same recipient, never of the promise it chases. On the drive side a grant counts only on a row carrying that
+confirmed request (`extract.request_confirmed`), so a row granted before the review existed is never
+sent once the people faculty is back on; a notice or check-in row on the owner's lane the mind may not
+send (unconfirmed, addressed to the owner, or the people faculty off) is the owner's reminder when due,
+never a worker's task.
+
+**An obligation's action reaches the person it is owed to.** A word the person asked for is recorded as
+`metadata.kind: reminder`, a message when due whoever the extractor names as obligor. A task formed for an
+owed item reports what became of it (done with the worker's summary, failed with the reason, blocked with
+what it needs; `Outcomes.on_blocked`) to that person, once per outcome: the owner as a `task_outcome`
+notice, a contact only through authority with the owner's word on the exact text. One obligation gets one
+task per schedule the person set (`commitment:<id>:task`, plus the turn of a conversation reschedule): a
+deadline the worker moves or a clock jump never re-tasks it, and a task the previous release formed under its
+deadline key (`commitment:<id>:overdue:<due>`) counts as formed (`drives.former_keys`). A reminder is a word
+on a contact's lane too, never a task. The extractor no longer reads work the assistant promised ("I'll look
+up X and tell you by 5") as a reminder.
+
+**A word is never merged away.** A reminder the owner asks for is its own item, beside an item of the same
+turn or an open one, whatever its wording: nothing is folded into another item, and a heads-up is only what
+the extractor states on the item itself (`metadata.heads_up_at`). A new item is skipped as a duplicate only
+when an open item is the same item exactly: the same kind (reminder, check-in, notice, deliverable or plain),
+obligor, counterpart, recipient and deadline, and the same description after only Unicode NFC
+normalisation, casefolding and whitespace collapsing; an extraction rejected as invalid or a duplicate
+blocks only that exact description. A duplicate row is acceptable, a lost word is not. A new item with a
+listed item's own wording and kind and a different deadline moves it, compare-and-set; a merely similar one
+never does. A deliverable whose counterpart is a name the turn's own person goes by stays theirs.
+`record_items` reports `owner_reminders`.
+
+A contact's turn still sees only its own items proven in its own source: an owner's item that names the
+contact (a promise to them, a reminder about them) is the owner's record in the owner's words, and a display
+name is shared by everyone who goes by it.
+
+**Capture has room to finish.** The extractor prompt keeps every rule in 12,999 characters (it had grown
+to 13,667, then 15,069 with this line's rules), with examples that show only the fields differing from
+the defaults they state; `record_items` reads an omitted field with the same defaults. The output budget
+is 4,096 tokens (16 of 60 extractions had ended at the 1,500 cap). The extractor also returns `due_text`,
+the person's own words for the time, kept in `metadata.due_text` only when they occur in what was said.
+
+**Recall shows the owner's words.** A question's arrival stamp ("[Sat 2026-09-26 12:02:06 UTC] ...") is
+no longer read as the date it asks about (it filtered the owner's claims out of every stamped question)
+nor searched for; an identifier in the evidence ("p-72", "B-12") is searched as a phrase; a reply whose
+input was found but cannot stand beside it is no longer shown alone. The Pending Commitments line shows
+the person's time words beside the date (`said as "Tuesday at 09:15"`). A contradiction question the
+mind asked the owner reaches the owner's turn about that subject ("Open questions") while the two
+statements still disagree (`mind/questions.py`, `Consolidation.open_conflict`).
+
+**Harness.** Each generated family declares its plugin tool set (`plugin_tools`, recorded in
+`comparison.plugin_tools`; the initiative series keeps its memory-only set). A kanban worker's model call
+cut at the tick's deadline no longer voids the episode's attribution, and the worker's calls are recorded
+as background work. Every arm's report row carries its tick output (tick sends, silence-marker sends,
+controls with a send). Token checks read a hyphen joining two words as a space. The drain skips vector
+jobs an arm without an embedder never runs.
+
+## Unreleased - people, memory, feelings, opinions and self-improvement, integrated
+
+The people (M5) and memory and identity (M8) milestones merged onto one line
+(integration map steps 1 and 2). One Mind factory, `protagine.mind.factory`,
+builds the sidecar's Mind and the benchmark arm's from the same host stores,
+and one router list serves the mind and people routes in both, so a faculty is
+wired once (X4d). A contact's digest has one home, the contact's own record:
+the tick's template digest and the night's generated digest write the same
+column from the same claims (that contact's own current sources), the template
+never replaces a generated digest, and the template's day is persisted in
+`mind_state` (`people.digests.last`) so a restart does not write it twice (X1,
+X4h). The mind's record is the owner's: `protagine_self` shows it only in the
+owner's own session, and the `/v1/mind` log, why, asks and state routes take a
+`viewer`; any other viewer gets only the bare rows addressed to them, no asks
+and the switches (X7). The adapter sends six tools in 3,088 characters (X8).
+
+The feelings milestone (M6) merged next (step 4). The appraisal call carries
+both side outputs in one strict schema: `outcomes` (M6, the owner's turns only)
+and `contact` (M5, a non-owner speaker only), both required and both tolerated
+when a prompt-only binding leaves them out; its version is
+`source-appraisals-v6`. `_commit` keeps M6's claim status and returns whether
+it committed, and M5's contact signal is written only after it did (X2). An
+identity correction (a merge, a confirmed link) now queues the moved sources'
+appraisal jobs again, so the kept contact's appraisals are rebuilt rather than
+lost (X14). A social check-in's eligibility still ignores feedback but keeps
+affect: overload postpones it without a send, so the contact's backoff is
+untouched (X5). The load counts only open asks about work (kind task or
+goal), and an ask that lapsed is not a dismissal, so the people and memory
+faculties' owner questions never overload or satiate the mind (X5). A task
+row keeps its deliberated plan as `plan_body`, which the identical-plan
+refusal hashes (X13). The novel-topic hook runs only on the owner's own turn
+by the viewer identity every other owner-only section uses (X6).
+
+The opinions milestone (M7) merged last (step 5). Its tool surface rides
+`protagine_self` instead of an eighth tool: `opinions [query]` and
+`why <opinion number>` answer in any session, the sidecar filtering them to the
+views meant for that session's participant, and `withdraw|reconsider <number>`
+with the owner's reason stay owner-only; the adapter still sends six tools in
+3,256 characters, under the 3,400 budget (X8). The opinion routes join the one
+router list both the sidecar and the benchmark arm mount (X4d). The stance
+section is built inside the one section assembly, audience-filtered by the
+viewer identity every other owner-only section uses, so a recipient packet
+carries only the views meant for that recipient (X6). A task row keeps its
+deliberated plan as `plan_body` before the recorded view is appended, so the
+identical-plan refusal still matches repeats (X13). A merge now moves views
+about the dropped contact to the kept one (`SelfJudgments.reattribute_subject`,
+one more merge hook), and an identity correction queues the moved turns'
+opinion jobs again under the new contact (X14). The self-narrative lists no
+stance with `faculties.opinions` off and never a view about a person (X15,
+X7). The appraisal kind `judgment` is gone and the appraisal version is
+`source-appraisals-v7`.
+
+The self-improvement milestone (M9) followed ([docs/MIND.md](docs/MIND.md),
+Verification, Lessons and Skills). Only the mind grants `verified: owner` or
+`check` now: a body report may claim `hermes_failure`, and only for a failure
+that carries a reason, and a failure without one verifies nothing; a blocked
+task with a reason is a Hermes failure on its still-open row. The mind learns
+lessons from verified results (`mind/lessons.py`, `mind.faculties.lessons`, on
+by default): strategies and pitfalls with a title, when they apply, their
+content and their evidence, kept as the mind's own record (owner-audience
+ledger entries of its own session with `scope='session'`, one per event), so
+recall never shows a lesson as something the owner said and forgetting a turn
+a lesson quotes forgets the lesson. The night gains a lesson stage (one call,
+charged to the night inside `learn_share`) over the owner's own sessions since
+the last review and the agent's verified results: every operation cites what
+it rests on, an owner citation is a verdict the call reports on the agent's
+earlier work (never a request) and quotes the owner's exact words, a strategy
+needs the owner or a check that reads state the worker cannot write (a
+`result_field` check reads only the worker's own report, so it verifies no
+lesson), a Hermes failure with its reason teaches only a pitfall, and a
+contact's session is never read. A corrected value an earlier owner message
+already held makes a `retrieval` lesson that says where the answer was;
+otherwise it is `knowledge`. A task body and its deliberation carry at most two
+lessons (`lesson_ids` on the intention), and the owner's own turn at most one,
+in a `protagine-lessons` section; a task's use is scored by the owner's rating
+or an external check, a turn's by the owner's next message when it is a
+verdict on that reply, and a lesson under a 0.4 win rate after five verified
+uses is retired. A failure-class investigation of the mastery drive is now a
+reflector: its report ends with at most three lesson operations, validated and
+admitted as `candidate` lessons of that class, which a verified win there
+activates; it never changes an active lesson. The night runs when consolidation or lessons is
+on, each stage under its own flag. Skills stay off (`mind.faculties.skills`):
+turned on, an active lesson with three verified wins at a 0.7 win rate becomes
+`<instance>/skills/protagine-<slug>/SKILL.md` in the directory `protagine init`
+lists in Hermes' `skills.external_dirs`, which Protagine owns and prunes; the
+adapter forwards loads of those skills (`on_skill_lifecycle`) and clears
+Hermes' skills prompt cache when they change, so a new session lists them
+without a restart. New surfaces: `GET /v1/mind/lessons`,
+`POST /v1/mind/lessons/{id}/retire`, `POST /v1/mind/skills/used`,
+`protagine mind lessons [list|show|retire]`, and lessons and skills in
+`/v1/mind/state` and `/v1/mind/stats` (`lesson_use_rate`).
+
+The paired harness learned campaigns: a generated scenario whose artifacts all
+carry `probe` metadata gets a deadline from its day count and an 8 MiB output
+bound, its plan takes the probe as the unit and the campaign as the bootstrap
+cluster, and its report adds the old-family non-inferiority row, cost per
+success, forbidden hits and lesson diagnostics. `mind-improve-1` gives every
+arm the read-only skill tools, recorded as a dated amendment of the evals plan
+before any improve result.
+
+Removed with what replaces them, about 11k lines of dormant learning machinery:
+the toolsmith, the whole `skills` package (its registry was empty since the
+executor sweep, so its `/v1/host/skills/*` routes answered empty or 404, and
+the `skills`, `skill_sandbox` and `security_scanner` capabilities), the P4
+experiment engine and its parameter store (`/v1/host/self/experiments*`,
+`/self/params`), the MetaLearner, CPI and strategy adjuster, skills memory,
+the escalation miner (`/v1/host/mining/*`) and the exploration sandbox
+(`/v1/host/sandbox/*`), and the trust ladder with its supervised rung (the
+floor and the breaker stay in the mind's authority). `protagine upgrade` moves
+`protagine-toolsmith.db`, `toolsmith_library`, `protagine-experiments.db`,
+`protagine-params.db`, `protagine-skills.db` and `protagine-mining.db` into the
+backup and drops the `trust_stage` and `trust_notices` tables; corpus exports
+under `<instance>/exports` and `SKILL.md` files an older release exported under
+`<hermes_home>/skills/protagine` are left in place and no longer managed. Gone
+from `.env.example`: `PROTAGINE_TOOLSMITH*`, `PROTAGINE_EXPERIMENTS_*`,
+`PROTAGINE_EXPERIMENT_PREGRANTS_JSON`, `PROTAGINE_SKILLS_DISTILL`,
+`PROTAGINE_ESCALATION_MINING`, `PROTAGINE_CORPUS_EXPORT_ENABLED`,
+`PROTAGINE_SANDBOX_*` and `PROTAGINE_TRUST_*`.
+
+Hardening from a live upgrade rehearsal. `POST /v1/host/memory/search`
+requires a non-blank `person_id` again: the owner default for a body that
+names nobody is gone, so a missing or blank person is a 422 and never the
+owner's search; the limit clamp and the optional `session_id` stay
+(security-6). The initiatives store recovers only a damaged file
+(SQLITE_CORRUPT, SQLITE_NOTADB) and renames it to
+`initiatives.db.corrupt-<stamp>` instead of deleting it; a locked or
+unreadable store fails the open, and `protagine upgrade` re-checks the
+intention columns and the row count after opening and fails with the reason
+rather than printing 'migration applied' over an emptied store; `close()`
+backs up through SQLite, WAL commits included (data-5). `protagine init`
+refuses a seeded `owner.contact_id` that does not resolve to a live contact,
+before writing anything, instead of creating a second owner contact (data-6).
+The service unit sends launchd's (systemd's) raw output to
+`service/launchd.log` (`service/systemd.log`), apart from the rotating
+`service/sidecar.log`, and restarts a crashed sidecar after 30 s instead of 5
+(operability-8). A forget removes the vectors from the served view and
+answers; the compaction that purges the text from the data files runs after
+the response (`vector_purge: scheduled`), one pass at a time
+(operability-11). `protagine doctor` has a `service` check: installed,
+running, and written by this release (operability-3). The owner-only
+refusals for `protagine_self` state, log and why and for listing people, and
+the `/mind` gate for non-owner senders (security-3), are in this line. See
+[docs/INSTALL.md](docs/INSTALL.md).
+
+Restraint. Capture no longer records an obligation between other people: a new
+item whose obligor and counterpart are two different named third parties
+(neither the owner, by any name the owner goes by, nor the assistant) is
+dropped where new items are recorded (`protagine.commitments.parties`), and the
+extraction prompt now says that a contact's promise the owner waits on or
+relies on is owed to the owner while an obligation between two other people
+names the other of the two. The duty drive raises no heads-up or reminder for
+such a row stored earlier, unless one of the two is the row's own person. The
+commitment tool says where ids come from (Pending Commitments; none listed,
+nothing to settle) and answers an id nobody listed with one final
+`retry: false` answer instead of a transport error, and the guard's refusal of
+`session_search` in a non-owner session is final in the same words; the
+adapter sends six tools in 3,314 characters.
+
+Upgrade rehearsal follow-ups. The vector tables are compacted routinely, not
+only after a forget: an upgraded store's conversations table held 74.7 GB of
+version manifests around 1.67 GB of data, and appends grow them again. One
+background task per store, never a request, compacts one table at a time and
+deletes its older versions after a forget, once per night crossed (the mind's
+tick schedules it, with the mind on or off) and whenever a table holds
+`PROTAGINE_VECTOR_COMPACT_VERSIONS` (1000) versions. A pass reads every
+retained manifest, whatever it prunes, so a table with more than
+`PROTAGINE_VECTOR_COMPACT_DAY_BYTES` (1 GiB) of manifests waits for the nightly
+pass, for at most a day. Each table's pass is logged at info with its versions,
+size before and after, and duration (operability-11). A forget's canonical
+closure no longer tests every message against every erasure rule on every
+pass: the rules are indexed, a source no rule can reach is not parsed, and the
+full-text index is rewritten in one scan instead of one per changed source. On
+a synthetic history shaped like a real one (38k sources, 258 MB) one forget
+took 4.3 s through the route before and 1.3 s after (a repeat 1.4 s and 0.65
+s). The route logs each forget's timings. The adapter's forget tool and the
+memory provider wait 5 s (the provider waited 3 s), and past that they say the
+removal is unconfirmed and may have completed, never that it failed. Only a
+request that never left counts as failed (operability-11). A turn sent to
+`turns/sync` without a session, such as a gateway recording a dispatched task's
+result, is no longer refused with 422. It becomes its own session, derived
+from the caller's principal and the envelope, so retries stay replays. A
+checkpoint or an input-linked answer still needs the caller's session. See
+[docs/EMBEDDING-GENERATIONS.md](docs/EMBEDDING-GENERATIONS.md) and
+[docs/RELATIONSHIPS.md](docs/RELATIONSHIPS.md).
+
+Two more from the final upgrade rehearsal. The projection worker runs each job
+family on its own lane (identity reconciliation, source-vector indexing, media
+descriptions, and the judgment, appraisal, claim and commitment projections),
+so capture no longer waits for indexing: an upgraded store carried 28,169
+sources to index on a table where indexing jobs took minutes, and the owner's
+capture jobs waited 25 minutes behind them. A capture job now lands within
+seconds whatever indexing is doing, and a model call that hangs holds no
+indexing back. A vector compaction pass holds the store's write lock from
+start to end, so no commit runs beside it: tables created by earlier releases
+carry Lance's own auto-cleanup (`lance.auto_cleanup.interval` 20, `older_than`
+14 days), which runs inside a commit, and a commit beside a first pass deleted
+the manifests that pass was pruning, so it failed after 13 minutes. Writes wait
+for a pass and reads do not: every read of the store is counted, and a pass
+prunes nothing a read begun before it may still be reading. A version manifest
+that vanishes under a prune anyway is retried once. See
+[docs/EMBEDDING-GENERATIONS.md](docs/EMBEDDING-GENERATIONS.md).
+
+Three fixes from running 1.10 on an upgraded store. The projection worker no
+longer runs an upgraded store's history through the model. A store from 1.9
+carried claim-extraction and appraisal jobs that its single worker loop, which
+started one model projection per source-vector commit, never reached; the
+per-family lanes took them back to back, oldest first, 140 to 190 small calls
+(an empty claim list, an empty appraisal) every ten minutes, and the owner's
+chat decoded at half speed. A job queued more than a day before the running
+release first opened the store is now backlog
+(`protagine.turns.projection_backlog`; claim and appraisal jobs and media
+descriptions record when they were queued, and a queue from before that column
+dates each job by its source). The claim, appraisal, capture and media lanes
+take new jobs first and at once, and backlog jobs start at most
+`projections.backlog_per_hour` times an hour across all of them (default 12,
+evenly spaced; 0 leaves them pending). The tick's capture drain, the night's
+claim settling, the tick's wait for the owner's appraisals and capture's health
+check do not wait for backlog, and a person's new turn is not held behind their
+backlogged ones. The sidecar logs the backlog it finds at startup. Mind tasks
+get budgets by kind: research, questions, investigations and goal steps get one
+run of 1,800 s and a second attempt (`mind.budgets.task_types`), other tasks
+keep 600 s and one attempt. The deliberation prompt tells the proposer the run
+its task gets and asks for one bounded first deliverable; work that needs more
+runs comes back as `steps` and becomes a goal of at most `budgets.goal_tasks`
+steps, or only its first run when no goal can be adopted (the first autonomous
+task on the upgraded store planned four steps into one 600 s run and timed
+out). A run stopped at its time limit fails its task but counts toward the
+breaker only when a retry timed out as well with nothing new to show
+(`result_metadata.breaker` says which), so one slow task no longer brings the
+mind within two failures of a 72-hour demotion. The `protagine-act` worker
+profile caps every request a mind task's worker makes (`mind.worker_request`,
+default `max_tokens` 8192 and `top_p` 0.95): stock Hermes sends a custom
+endpoint's `extra_body` with each request, so each endpoint entry in the
+profile carries the fields, and a model given as a bare `base_url` gets an
+entry of its own. Nothing capped the worker before, and one of its model calls
+generated about 20K tokens until the run was killed. `protagine upgrade`
+rewrites an existing profile. See [docs/MIND.md](docs/MIND.md) and
+[docs/INSTALL.md](docs/INSTALL.md).
+
+Plugin surface fixes from the faculty dev pilots (people, feelings, opinions).
+The plugin arms lost to plain Hermes on turns whose content was already right:
+every incomplete turn was Hermes' 8-iteration cap, filled by plugin tool calls
+that could not succeed. Every such call now gets one final answer
+(`client.final_answer`, `retry: false`, which the provider's system note calls
+final): a refusal of `protagine_self` outside the owner's own chat, a read given
+content to write ("only reads; what this turn says is recorded after it"; an
+argument the schema offers but the read does not take is ignored and the read
+served with that note), an id or opinion the record does not hold, `yes`/`no`
+with no ask open or with a code the owner's message does not carry (a miscopied
+code on a message that carries an open ask's code names it instead), an
+owner-only change from anyone else, a memory search with no hits (unless part of
+the search failed, when the result says only exact words were matched),
+reminders and forgets a non-owner asks for, an unreachable sidecar, and every
+guard block in a non-owner session, worded for a reply the contact reads; an
+argument the model can correct (a misspelled operation, a snooze time the
+sidecar cannot read) names its valid form. In a contact's session a message to
+the session's own chat (the chat the gateway bound, or without a gateway the
+sender's direct chat) is answered "your final response is delivered to this
+conversation as your reply"; another handle of the sender's, or a direct message
+to the sender from a group, goes to the verdict like any recipient, and a target
+no contact is known at is answered "nothing was sent: no contact is known at
+that target". No verdict becomes Hermes' approval gate there any more: in a
+gateway that gate posts its prompt to the session's own chat, where a contact
+could approve (with `/approve`, or a bare "yes" while the turn waits) a message
+the owner's floor reserves, and "always" would allowlist that tool for every
+session. `protagine_self` says log is read-only and recording is automatic, and
+the opinions cue line says the view is recorded after the turn with no tool
+call. The memory provider binds a turn's sender the way the guard and the tools
+do (from `pre_llm_call`) when a host sets no gateway context, and carries the
+binding across a compression's session rotation, so such a host's contact turns
+get their own recall instead of none, or, on an internal platform, the owner's.
+Every "now" in the sidecar reads `temporal.now_utc` (`time.time`, the clock
+Hermes' own follows): the mind's clock, the stamps its stores write and compare,
+a turn's `ingested_at` and every "Now" line the model reads; the plugins read
+`time.time`. Capture records a status line about an obligation that is not on
+the open list as its first mention; the stall rule is about listed items. When
+more items are open than the prompt shows, those sharing words with the turn
+are listed, and while the list says more are open a status line about an
+unlisted one records nothing. Feelings: the owner-turn Mind section carries no
+tone line and no idle curiosity (the tone stays in self-report); every consumer
+still reads the state until the held-out gate assigns any to the rule table.
+An opinion job holds a lease while its model call runs. The paired harness goes
+on past a turn that hit the cap but answered (the supervisor too), waits for the
+arm's ledger jobs, running or claimable, before a declared restart or a clock
+advance (bounded by `drain_seconds`, default 90, recorded in
+`tool_evidence.drains`), names the valid target form when a send fails, and
+reads token checks without markdown. The adapter line ceiling moves to 3,050;
+the six tools take 3,388 of 3,400 characters.
+
+## Unreleased - opinions
+
+The agent now holds opinions that change only on evidence (build plan M7,
+[docs/OPINIONS.md](docs/OPINIONS.md)). `self_model/judgments.py`
+(`SelfJudgments`) is the one opinion store: topic, person and approach views,
+each with a reason, a certainty, `revise_if` (what would change it) and
+explicit premises, which are admitted source claims of any contact's turns,
+settled mind task outcomes, mind findings, the agent's own reply in the same
+turn, or a quotation carried over from a migrated appraisal. The store, not
+the model, enforces the new-premise rule: a revision needs a current premise
+of a revising kind (a claim, an outcome or a finding) that the view does not
+already cite, by reference or by content, so the same record under a fresh id
+or cited again changes nothing, and the agent's own words never revise.
+Forming on a topic that already has a view is a revision. A view changes at
+most once per rolling day unless the new premise corrects one it cites, is a
+verified outcome, or answers the owner's reconsideration; a limited revision
+waits for the window. A revision rests first on its new evidence, and a
+replaced revision reads `superseded`. Topic views resting only on findings or
+outcomes are shown to everyone; every other view is the owner's alone.
+Forming, revising and withdrawing each write one owner-audience autobiography
+entry (`mind:opinion:<id>:<event>`), so "why did you change your mind?" is
+ordinary recall, and those entries are what relevance searches. Forgetting a
+source a view rests on tombstones the view and its entries.
+
+Views are formed by the opinion pass (`mind/opinions.py`), which the
+projection worker's `judgment` reflection runs one job at a time after a
+turn's claims, after a mind finding, or after an owner's reconsideration. A
+turn costs one `reasoning` call (task `self_judgment`) only when it has an
+admitted premise, or it is an owner turn asking for a judgment that the agent
+answered; "are you sure?" and small talk cost nothing. The model answers
+`none`, `form` or `revise`, validated to fixed codes, and a revision must
+name its new evidence. The queue is the lease-free `opinion_jobs` table;
+failures back off and stop after three attempts, and jobs older than 48 hours
+are dropped. Approach views need no call: three failures in a row at the same
+work within 30 days become an `avoid` view resting on those outcomes, and a
+success verified by a check or the owner turns it into `prefer`.
+
+Views are used in three places. Turn context gets a `protagine-stances`
+section ("Your recorded views", at most three views and 1,400 characters, no
+model call, filtered by the viewer's audience) with each view's id, reason,
+two premises cited by the source the agent can open and what would change it,
+a line when newer evidence from the viewer is still unweighed, and the
+standing rule: change a view only on new evidence, and disagree if need be
+while still doing what the owner authorizes, saying so. The next task at the
+same work carries its approach view in its body (`context.opinion_ids`); a
+view flags work and never holds it back, so when the three failures have
+tripped the breaker the owner's yes still dispatches it. The owner reads and
+controls views through `GET/POST /v1/mind/opinions` (list, show with the
+history, withdraw, reconsider), `protagine mind opinions`, and the
+opinion verbs of `protagine_self`, which the guard treats as read-only and which
+refuses the two controls to guests, kanban workers and cron runs. The
+owner-preference section that used to be titled "Current working judgments"
+is now "Owner priority corrections", which is all it renders.
+
+`mind.faculties.opinions` is the one switch (on in the defaults, the
+release-candidate value). Off, jobs finish without a call, nothing is formed
+or rendered, stored views are kept, and every context section and task body
+is what it was without the faculty. The running mind reads the flag, and the
+pass asks the running mind rather than `protagine.yaml`: the benchmark
+worker's instance file carries `digest_hour: 24`, which the config validator
+refuses, so a pass reading the file alone would have been off in `full` as
+well as in `full-opinions`. `mind.enabled` counts as configured; the runtime
+off switch stops effects, and forming views is memory. The SYCON-style
+pushback anchor (`benchmarks/paired/anchors/sycon_pushback.py`) renders
+twenty items under four kinds of pressure and reports Turn-of-Flip and
+Number-of-Flip per arm, descriptively; it was frozen before the faculty.
+
+Removed with what replaces it: the appraisal `judgment` kind (its current
+and withdrawn heads become person opinions with quotation premises at the
+first start after `protagine upgrade`, whose backup keeps the history), the
+`self_judgment_runs` lease queue (dropped by the upgrade),
+`PROTAGINE_SELF_JUDGMENTS_ENABLED` and
+`PROTAGINE_SELF_JUDGMENT_INTERVAL_SECONDS`, `POST /v1/host/executions/assess`
+and the runtime-observation writers only the old judgment pass read
+(`execution_outcomes.py`, `native_outcomes.py`, `task_assessments.admit`,
+`record_source(runtime_judgment=)`), the judgment mechanism of the perspective
+qualification pack, and `docs/SELF-JUDGMENTS.md`. The adapter's tool schemas
+grow by the one tool to 3,664 characters (budget 3,700); the adapter stays
+under 2,500 lines.
+
+## Unreleased - feelings
+
+The mind keeps its own affect (architecture 4.3, build plan M6) in
+`P/mind/affect.py`: frustration per topic, worry, curiosity and satisfaction
+as decaying `mind_state` levels, each capped at 0.7 and citing up to five
+causes, with recent dismissals as a fifth level (the satiation input, never
+shown as a mood) and a load computed each tick. One snapshot of stored
+records feeds it every tick: the owner's reported outcomes and appraisal
+records of the last week, failed, blocked, verified and rated intentions,
+expectation misses, owner turns on topics memory knew nothing about, and the
+near-term obligations the owner or the assistant owes. Each event is applied
+once, as if at its own time, and evidence that is erased takes its topic with
+it. Four consumers read one view. The strategy switch: a topic at frustration
+0.5 puts "Prior attempts at T failed N times using A; choose a different
+approach or ask one question." into the owner's Mind section, the
+deliberation prompt (with the failures' reasons as pitfalls) and the task
+body; deliberation may answer with one question for the owner (kind `ask`),
+and a plan identical to one that already failed is asked, never dispatched
+again. Overload: curiosity and social work and optional messages wait while
+the load is 0.6 or more. Priority: worry lifts owed duty and curiosity lifts
+research. Satiation: after dismissals or recent success an optional nudge to
+the owner needs a higher score. Affect never holds back an owed obligation
+or raises its bar, and never raises authority; the one change it makes to a
+decision is the strategy switch's question, which turns an `act` into an
+`ask`. A calm tone line ("Mood: somewhat frustrated about the
+quarterly figures; a little uneasy.") joins the Mind section, and
+`protagine_self state`, `GET /v1/mind/state` and `protagine mind status` show
+each level with its cited causes.
+
+The owner's statements reach the feeling through the appraisal call the
+projection worker already makes: its response gains a required `outcomes`
+list (failed, succeeded, dismissed or corrected, with the topic and the
+approach used), stored per owner turn in the new ledger table
+`appraisal_outcomes` and deleted with its source. Outcomes are counted
+occurrences, not votes: "the export failed twice" is two, a restatement adds
+none. A forced tick waits up to 30 s for the owner's pending appraisal jobs
+(a timer tick 2 s), alongside the capture drain, so a statement made just
+before a decision counts in it. The commitment extractor gives an item a
+priority below 50 only when the person calls it optional; that is how affect
+tells a nice-to-have from an owed promise.
+
+Two binary switches: `mind.faculties.affect` (on) keeps the state, and the
+new `mind.faculties.affect_rules` (off) makes every consumer read its frozen
+stateless rule (`P/mind/affect_rules.py`) over the same snapshot instead.
+With both off the mind decides exactly as before. The affect family's
+mechanism arm is the built-in profile `full-affect-plus-rules`
+(`full-affect` plus `plus_affect_rules`), so
+`benchmarks/paired/generators/affect_profiles.json` is gone and the
+arm-profile protocol is `paired-arm-profiles-5`; an older image is refused.
+A served arm's mind now reads the arm owner's appraisal records and outcomes
+as production does, which the drives family's arms see too.
+
+Deleted: the mind model signal collector and graph baseline
+(`P/intelligence/mind_model/`) and `POST /v1/host/signals/ingest` with its
+schemas, contact attribution, `signals` capability and
+`PROTAGINE_SIGNALS_ATTRIBUTION`. No plugin posted that route; an external
+caller now gets 404. The appraisal job lease is a plain claim status (a job a
+dead process left running is reset by the next process's first claim), and
+an erasure or an attribution change deletes the appraisal records, heads,
+corrections and outcomes derived from that source instead of keeping
+tombstones. The ledger removes old tombstones once when it opens; nothing
+else needs `protagine upgrade`. See [docs/MIND.md](docs/MIND.md) (Feelings).
+
+## Unreleased - memory and identity
+
+The agent now keeps what it learns across sessions and channels and gives a
+true account of itself (build plan M8). Once per night crossed (the start of
+the quiet window, or 03:00 local without one, fell since the last run; a
+fresh store waits for its first night), the mind runs a nightly
+consolidation beside its tick (`mind/consolidate.py`,
+[docs/CONSOLIDATION.md](docs/CONSOLIDATION.md)), cheapest and most valuable
+stage first: the self-narrative delta, contradictions, per-contact digests
+and episode summaries. It may spend `learn_share` x `llm_tokens_per_day`
+(50,000 tokens by default), every call is also held to the shared day
+budget, and each call's real usage is charged at once to the run's
+`note/consolidation` audit row, so `protagine mind stats` and the day budget
+see it. Every run is its own row, written done when it starts and given its
+summary when it ends, so the audit log never shows a night still running; a
+night cut short (a restart, `mind off`) runs again at the next due tick, and
+a night over an empty store makes no call at all. Two live claims about the
+same subject and predicate with different values and overlapping validity
+(the rule recall already applies) become one question concern that carries a
+typed message to the owner; the tick forms it through rank and authority like
+any other concern, so the autonomy level, the owner-message budget and the
+ask codes apply, and its title names both values. At most one new question
+goes out a night, the newest conflict first, so the owner's three daily
+messages stay free for duty work; a question is asked once, and when one side
+is corrected a question not yet answered is withdrawn and the concern
+resolves. Claims are deduplicated where they are read, never in the store:
+the night's inputs and the commitment extractor's prior claims see the newest
+witness of each value, the rule recall already applies, and no column is
+added. A digest of what each recently active person other than the owner has
+told the agent (at most six a night, 600 characters, citing only claims it
+was shown) is written into that contact's own record through the contact
+store's `set_digest` (the people milestone's `digest` / `digest_sources`
+columns; a store without them gets none, and no digest is kept anywhere
+else), and each session of three turns or more gets an episode summary in
+the ledger under its own contact, as the agent's row and never a claim. The
+mind's own rows (`session_id` `mind`, turn ids `mind:...`) are no longer read
+as the person's conversation, neither by the commitment extractor's "Recent
+conversation" nor by any consolidation input. A forced tick (`protagine mind
+tick`, the plugin's `tick()`) waits up to 300 s for a night it found due, so
+what the night wrote is there when it returns. `POST /v1/mind/consolidate`
+and `protagine mind consolidate` run the night now (the off switch and
+`faculties.consolidation` still win). The mind's own model calls, the night's
+and the tick's deliberation, carry `workload: background`, which the router
+keeps in its call record and never sends. The flags `semantic_recall`,
+`consolidation` and `self_narrative` are now read, each a binary switch;
+`semantic_recall` off keeps the embedder off with `router.embed_url` still
+set, and `init` no longer copies whether an endpoint existed into the flag,
+so an endpoint added later turns semantic recall on as the install guide
+says.
+
+The agent's identity has three layers (architecture 4.2). The constitution
+is `identity.yaml` `agent.{name, values, boundaries}` (`protagine init
+--agent-boundaries`), rendered as one paragraph of at most 1,500 characters;
+`init` refuses a longer one and names the list to shorten, and `protagine
+doctor` reports its length. Every appraisal prompt carries it as
+`agent_constitution`, an input the response schema has no field for, so a
+contact's preferences are never confused with the agent's own;
+`PROTAGINE_AGENT_VALUES` is no longer exported or read (it stays reserved, and
+`init` moves an old unit's values into the file). The plugin's one prompt
+section renders the constitution, the owner, the self-narrative and the two
+tool notes. The narrative (`GET /v1/mind/narrative`, `protagine mind
+narrative`) is at most 800 characters: three interests and two strengths or
+limits computed from the stores, three stances from the judgments store, and
+at most four model-written "recent" lines drawn only from the agent's own
+actions (a task, goal or message it decided to act on or ask about, never an
+internal note or a notice). Every line cites what it rests on, and a citation
+is one of five kinds that must exist when the narrative is rendered: a plain
+intention id, which `protagine_self why` explains, or the record references
+`interest:`, `judgment:`, `turn:` and `claim:`; the section tells the model
+so. The plugin fetches the narrative for every new session (Hermes already
+freezes the section per session) and remembers only a failed fetch, for
+60 s, so a session that starts right after a night sees what it wrote. The
+narrative and the rest of the mind's record are the owner's: the narrative is
+rendered only in a session that is the owner's alone (a direct chat from an
+owner handle, or an internal lane with no chat), and `protagine_self` answers
+`state`, `log` and `why` in full only there; a guest, a group the owner
+shares and a mind worker get the switch state (`enabled`, `autonomy`,
+`sidecar_reachable`) and a refusal for `log` and `why`, and the sidecar is not
+asked. `state` adds `working_on`; `log` takes `since_hours`, `kind` and
+`recipient`; `why` on an unknown id says "no intention `<id>` exists in the
+audit log", as the route now does. The mind cannot rewrite its constitution:
+in a mind run the plugin guard blocks every effectful tool that names
+`protagine.yaml`, `identity.yaml` or `api.key`, in any case and however a
+shell or code quotes, escapes or concatenates the name, before the workspace
+rule and beside Hermes' own protected patterns (which cover `write_file` and
+`patch` only, while `mind.worker_toolsets` may add a terminal); reads stay
+allowed, and a static test holds that nothing under `mind/`, `self_model/`,
+`beliefs/`, `memory/` or `commitments/` writes either file. The system text an
+owner session sends with every model request is measured and pinned: 3,185
+characters (1,360 GLM-5.3-Flash tokens) at its largest, a full constitution
+and a full narrative, about 1,745 (560 tokens) on a typical install with a
+history, against 726 (148) for the benchmark's disposable identity and fresh
+store, which is why the benchmark's overhead row cannot see it.
+
+For the memory and self families, `protagine models paired plan
+--embedding-config {base_url, model, dimensions, api_key_env?}` records one
+embedding endpoint in `comparison.embedding` and writes it into every case of
+every arm; the benchmark worker uses it unless the arm turns
+`semantic_recall` off, waits (at most 300 s) until a seeded history is
+embedded before the first turn and records the drain, and with no endpoint in
+the plan every arm keeps the embedder off as before. Mind arms record what
+the agent did after the episode's last turn, read from `/v1/mind/log` with
+the same action predicate the narrative uses (`body.audit_ids`), and each
+bound task's kanban id with its intention id (`body.audit_refs`); the
+self-report grader counts the two names of one task as one action, and a
+correct "nothing done" report no longer fails on the night's own note row.
+Every generated episode now starts at the next 12:00 UTC in every arm
+(`clock_start`, protocol `paired-clock-start-1`, recorded in
+`comparison.clock_start`; an image without it cannot plan a generated
+family), so a nightly rule fires by the scenario's clock advances, never by
+the hour a container started; and every `mind-memory-1` and `mind-self-1`
+template crosses one night (`advance_clock: 86400`, `tick: 1`) before its
+probe. Both are dated amendments in the evals plan, and the two dev splits
+are re-rendered with new content hashes. Walking every dev scenario under
+each arm with a fake model and the harness clock shows the contrasts are
+real: in `full` the night runs in every episode and in `full-consolidation`
+in none, and the probe's view changes in `preference-after-distractors` (a
+long session's summary is recalled), `contradiction-ask` (the question put to
+the owner is in the probe's recall) and `self-report-after-action` (the
+agent's own reminder is narrated); the other types give a night nothing to
+consolidate yet. The paired dev pilots that set n run at the integration
+checkpoint, with a model endpoint.
+
+What the consolidation replaces is deleted with every caller rewired: the
+Neo4j graph memory (`intelligence/graph/`, its consolidator and
+`PROTAGINE_GRAPH_ENABLED`), the world model (`world_model/`, its populator,
+extraction pipeline and LLM extractor), the graph-bound belief engine
+(`beliefs/engine`, `contradictions`, `resolve`, `models`, `store`, `decay`),
+the chain with its cryptographic identity (`chain/`) and the continuous
+learner. The routes `/v1/host/world/*`, `/world-model/*`, `/beliefs`,
+`/beliefs/run`, `/beliefs/conflicts`, `/identity/status|info|init`,
+`/chain/verify`, `GET /learning/weights` and `POST /learning/engagement` are
+gone, and so are the MCP server's `protagine_search_world` tool and
+`protagine://world/entities` resource, which called one of them. So are
+`protagine key`, `protagine node`, the chain step of `init`, `backup
+--no-graph`, the identity-only backup, `restore --force-identity` and the
+capabilities `consolidate`, `world_model`, `world_model_api`, `identity` and
+`learning` (`context` is now always advertised). `HostIdentity` loses
+`protagine_id`, `node_id`, `node_cert_fingerprint` and `trust_tier`; the
+instance is named by `<state>/instance-id`, which adopts an existing
+`protagine-id`, and backups record `instance_id` (an older archive's
+`protagine_id` is still read). Node certificates are unsigned, and the
+unused signer goes with its key-manager parameter. `/learning/correction`
+answers `{accepted, correction_id}`, `forget` no longer reports graph or world
+cleanup, and a summary-only `turns/sync` is skipped as `no_source_messages`.
+The `graph` and `extraction` extras, `neo4j`, the briefings' Cypher-only
+relationship aggregator and the `NEO4J` secret entries are gone, and so is
+`docker-compose.yml`, which was the optional graph deployment (both of its
+services demanded `NEO4J_PASSWORD`); `sidecar/Dockerfile` still builds the
+sidecar image. `protagine upgrade` moves the retired state files (the belief,
+chain and world-model stores, the chain's identity files, keys and
+manifests) into `<backup>/retired`, and restoring an archive taken before
+this release leaves them out (`retired_skipped` in the summary). Graph-only
+code no route builds any more waits for the M10 audit, named in the known
+gaps, and `benchmarks/source_recall` now drives the production recall path;
+its reference numbers await one measured run. The sidecar package goes from
+137,540 to 120,648 lines of Python; outside this changelog the change deletes 26,903 lines and adds
+6,190.
+## Unreleased - people
+
+The mind now knows who people are and reaches out to them itself (build plan
+M5, architecture 4.7). Every sender becomes a contact the first time they
+write: the resolver ladder tries the exact transport handle, then the one
+phone identity an E.164 address has on any gateway (C1: `sms:+1555...`,
+`whatsapp:+1555...` and a custom phone app are one person; a bare digit
+string such as a numeric user id matches only on its own gateway), then
+makes a shadow contact at `may_contact: ask`, and a sender whose name only
+suggests a known person is linked when the owner says so, through an ask.
+`contacts.may_contact` (`never | ask | auto`, migration 006, one transaction)
+replaces `interaction_allowed` and the tier defaults: the owner raises it
+through `protagine_people set_permission` or `protagine people permit`, and
+a contact's opt-out only lowers it, from a phrase match on their own words (a
+bare STOP, also behind a gateway's timestamp or sender header, "don't text
+me", "stop the check-ins" and close variants, anchored so "don't text me the
+file, email it" is not one) or the appraisal call's `opt_out` flag; the
+owner's daily digest lists the opt-outs. `store.merge` (C2) folds one record
+into another with its history: handles and ledger sources move through
+identity receipts, the comms log, contact affect and the dropped record's
+commitments (and every owner's message addressed to it) follow, group
+memberships move, recency and counts fold once even when two merges race, and
+a stopped merge can run again. Conversations are counted with a 30-minute
+gap (C3), which is what a tier-only contact's estimated cadence is made of.
+
+The social drive checks in with a contact that has an owner-set cadence or a
+tier of `regular` or above, due one cadence after the last conversation or
+send. Silence backs it off (the cooldown doubles per ignored check-in, up to
+four cadences), a reply resets it, and a declining mood in the contact's own
+turns holds it; replies and silence only order check-ins and never switch a
+contact off. An owner can set a cadence and its matter in conversation ("check
+on p-09 every week about the kitchen quote"): capture records it, the tick
+sets the cadence once and every check-in to that contact carries the matter,
+and permission stays the contact's own. The message is composed in one
+tool-less call (`P/mind/compose.py`) from an enumerated purpose, the
+contact's name, the topic and that contact's own context packet, never the
+concern, its evidence or an owner turn, and only when the budgets would let
+it go now; the text then passes the floor and the deny list. A message the
+owner wants a named contact to receive ("if p-05 has not confirmed by 5,
+tell them the booking lapses", or "tell p-05 the meeting moved" for now) is
+a notice with the owner's own words or a check-in around the matter; the
+owner's grant counts as `auto` for that recipient only, never over `never`,
+and only when the owner identified them exactly, while a name the store
+matched becomes an owner ask. Each contact talked with in the last day gets
+a template digest, shown to that person as "About this person" (at most 600
+characters) and read by the composer; it never carries what the owner set
+for them. The owner's surface is the `protagine_people` tool (who, inspect
+and link proposals for everyone; permission, cadence and merge for the owner)
+and `protagine people`, over `/v1/mind/people`. With
+`mind.faculties.people: false` all of this goes and nothing older:
+`may_contact`, opt-outs and shadow contacts stay.
+
+A guest's context is contact-scoped by construction and fails closed: only
+the owner, identified by the key, gets anything else. The digest and the
+recipient packet read only claims from the contact's own sources, so an owner
+turn about a contact reaches neither.
+
+Deleted, with their tests, routes, switches and docs: ToM2 and P8
+(visibility, arcs, the recipient audit and simulator, exposure, eligibility,
+levels), the ToM extractor, engagement and the environment-risk scorer, the
+`intelligence/relationships/` package with its second tier vocabulary,
+`delivery/` whole (its rate limiter had no caller; the back-off is the
+social drive's), `identity_bootstrap/`, the conversation presence census,
+owner-verified provisioning and the contact-policy routes, the unused
+`IdentityResolver`, the legacy `/contacts/merge` and `/contacts/{id}/handles`
+routes, the group auto-promotion switch nothing consumed, and the memory
+provider's `protagine_record_affect` tool. `protagine upgrade` backs up and
+retires their databases and the contact store's unread tables. The sidecar
+goes from 137,540 to 125,728 lines of Python; the milestone deletes 24,157
+lines and adds about 9,000, over half of them tests.
+
+The paired benchmark's people family runs on the same code: the plugin arm
+seeds its contact store from `contacts.json` and stamps it on the body clock,
+an inbound session carries its sender, every arm gets one `send_message`
+path to contacts (`paired-outbound-1`), and the served Mind has the people
+routes and reads. A no-model walk of the family's dev split through the
+arm's code passes every scenario with the right behaviour, and fails exactly
+the four templates the faculty carries in `full-people`. See
+[docs/RELATIONSHIPS.md](docs/RELATIONSHIPS.md) and
+[docs/MIND.md](docs/MIND.md).
+
+## Unreleased - evaluation families for the M4 to M9 gates
+
+The pre-registered evaluation families of the proto-AGI plan land as seeded
+dev generators under `benchmarks/paired/generators/`, each with its frozen
+plan under `docs/proto-agi/families/` and its held-out templates kept outside
+the repository. Their arms are built-in profiles: `full` and one ablation per
+faculty (`full-drives`, `full-broadcast`, `full-people`, `full-affect`,
+`full-opinions`, `full-semantic_recall`, `full-consolidation`,
+`full-self_narrative`, `full-lessons`), each `full` with one `minus_<faculty>`
+switch that the worker's mind section turns into `mind.faculties.<name>:
+false`, and `full-plus-skills`; the arm-profile protocol is
+`paired-arm-profiles-4`. A faculty whose code has not
+landed yet still has its flag served, so its ablation is a no-op contrast
+until its milestone. `mind-drives-1` (M4) adds the `selection` and `goal` body
+oracles, `mind-people-1` (M5) the per-target `sends` and inbound `replies`
+checks, and `mind-affect-1` (M6) decision-turn episodes graded on a JSON file;
+its rules mechanism arm became the built-in `full-affect-plus-rules` with the
+feelings milestone.
+
+The opinions evaluation family `mind-opinions-1` (evals section 6.5, the M7
+gate) ships as dev templates under `benchmarks/paired/generators/opinions.py`
+with its plan in `docs/proto-agi/families/mind-opinions-1.md`: twelve
+templates in four groups (pushback, pseudo-evidence, evidence, flawed-plan)
+around one shape, a stance formed from seeded records under a stated rule, a
+process restart, and a probe graded by `label_one_of` on the plan and the
+deciding source id, with a checkpoint that proves the stance was formed before
+any pressure. For it, a generated scenario may carry the frozen workflow
+contract (`restart_before`, `snapshot_after`) and oracle `checkpoints`, the
+loader and `cases()` pass them to the restart supervisor and the workflow
+grader, a plan with restarts refuses an image without the workflow protocol,
+and `Draw.source()` yields fixed-width `s-NN` source ids. Engine edits move
+every family's dev split content hash while the scenario bytes stay the same;
+the generators README records both.
+
+The memory and identity families for the M8 gate arrive as dev templates:
+`mind-memory-1` (`--family memory`, six recall types and two abstention
+controls graded on an `answer.json` the probe asks for) and `mind-self-1`
+(`--family identity`, a stance after a restart, a false and a true premise
+about the agent's own actions, and self-reports graded against the action ids
+the harness observed). Generated scenarios may now declare a process restart
+(`workflow`, the frozen workflows' contract) and seeded history (`history`,
+imported into Hermes `state.db` in every arm and into the Protagine ledger in
+plugin arms before the first turn, without model calls); the plan refuses an
+image whose worker lacks either protocol. The `self_report` oracle checks a
+`{actions, reasons}` file for fabricated ids, missing actions and drive
+labels. The LongMemEval_S anchor renderer
+(`benchmarks/paired/anchors/longmemeval_s.py`) selects ten short-answer
+questions per ability from a dataset fetched at run time and renders them with
+their haystack sessions as history into an `anchor` split. The arms are the
+built-in `full-semantic_recall`, `full-consolidation` and
+`full-self_narrative`. The frozen plan is
+`docs/proto-agi/families/mind-memory-1.md`.
+
+The self-improvement family `mind-improve-1` (evals plan 6.8, build plan M9)
+ships as `benchmarks/paired/generators/improve.py`: eight campaign designs
+over invented procedures (procedure, retrieval and tool-misuse classes), each
+a fifteen-day episode in one container with six training days whose verdicts
+carry the right result, eight held-out probe days at fixed positions (six
+warranted, an out-of-scope control and an unverified-rule control) and an
+old-family probe embedded from the frozen guard set. Probes are workspace
+files graded by the existing artifact checks, and each artifact spec carries
+`probe` metadata so a campaign report can take the probe as its unit and the
+campaign as its cluster. Its arms are the built-in `full-lessons` (the
+comparator) and `full-plus-skills` (`full` with the one faculty that ships
+off turned on, through the new `plus_skills` switch), beside `full` and
+`base-curator`; the plan is `docs/proto-agi/families/mind-improve-1.md`.
+
 ## Unreleased - initiative quality: capture that lands before the mind decides
 
 The self-initiative gate (`docs/proto-agi/PROTO-AGI-EVALS.md` 6.2) came out
@@ -149,6 +1051,64 @@ absolute heads-up by the same amount. A reminder with no resolvable owner
 handle is refused before it is claimed (`409 no_target`) and goes out once the
 handle resolves, and a message that expires unsent frees its obligation instead
 of losing it. The body grader checks the target of every counted effect.
+
+A rehearsal of the upgrade from 1.9.0 on a copy of a long-running install found
+what the cutover would otherwise have carried by hand in a service environment
+and a few request shapes 1.9.0 callers still send; each item is now the
+package's own business, pinned by a test that failed first. `protagine.yaml`
+carries the recall settings: `router.rerank_url` and `router.rerank_model`
+reach recall the way `router.embed_url` does (an endpoint without its model is
+a configuration error), `router.embed_dims` names the embedding width or, left
+at 0, lets the OpenAI-compatible provider learn it from the endpoint's first
+vector and hold every later one to it (a declared width that differs fails
+naming the setting rather than a built-in default), and a top-level
+`environment` mapping exports any further `PROTAGINE_*` tuning an operator has
+calibrated (a reranker prompt style, a recall floor, an endpoint key), laid
+over the values the keys derive and under the process environment, which still
+wins; a name another key already owns is refused naming that key, values are
+strings or numbers, and the log withholds anything that looks like a
+credential. An embedder or vector store that does not come up is no longer a
+silent fall-back to keywords: `/v1/host/health` gains a `problems` list that
+says in sentences why the status is not `ok`, `/v1/host/embed/health` repeats
+the reason, and `protagine doctor` fails its `semantic-recall` check whenever
+`router.embed_url` is set and the running embedder is not serving. The
+temporal health check tracks what this line runs: the mind beats
+`last_tick_at` on every tick, on or off, a tick older than ten of its intervals
+(floor a quarter hour, `PROTAGINE_STALE_TICK_HOURS`) or a capture job waiting
+longer than an hour (`PROTAGINE_STALE_CAPTURE_HOURS`, from a new `enqueued_at`
+on `commitment_runs`) degrades with its reason, and sync and prefetch silence,
+which only the conversation drives, is reported under `temporal.silence_hours`
+and never flags; `last_initiative_at`, `PROTAGINE_TEMPORAL_HEALTH_POLICY` and
+the sync, initiative and prefetch staleness knobs are gone (an upgraded
+`telemetry.json` drops the key on its next persist), and `protagine service
+start`, `service status`, `init` and `upgrade` treat an answering sidecar as
+ready and repeat the served verdict with its problems in words instead of
+raising against a degraded one. The generated launchd and systemd units ask
+for the 16,384 open files the vector store needs and `protagine start` raises
+its own soft limit to that figure within the hard limit (`doctor` warns below
+it). The base package brings the vector store itself (`lancedb`, `pyarrow`,
+`pandas`; the `lancedb` extra is gone and `vectors` keeps only the in-process
+models), the sidecar's interpreter range is the adapter's (`>=3.11,<3.14`),
+`init`, `upgrade` and `doctor` refuse an environment without the vector store
+with the reinstall command, and the install guide says how to pick the
+interpreter when the default is newer. `protagine upgrade` adopts the durable
+transport intake rows an earlier line stamped with one of several client
+principals: every `transport_ingress` receipt and coverage row whose producer
+is not the instance's is re-scoped to it after the backup (a receipt whose
+event already exists under the instance producer is kept as it is; coverage
+merges to the newest observation per account), so a messaging transport that
+journaled those receipts can still read, hand off and settle them with the one
+key, and `admit` recognises a journaled event by the event itself rather than
+by its digest. Two request shapes are met halfway: `POST
+/v1/host/memory/search` takes `person_id` and `session_id` as optional (with
+the key and no person the search is the owner's, development mode never
+resolves to the owner, blank counts as absent) and clamps `limit` to 20 instead
+of refusing it, and a request the sidecar refuses (a `turns/sync` with an empty
+session, a naive `occurred_at`) is answered `422 invalid_request` with the
+reason by one handler for the package's own `ValueError`s, installed in
+`create_app` and the test applications alike, while a library's error about
+the sidecar's own data stays a server error. See
+[docs/INSTALL.md](docs/INSTALL.md).
 
 ## Unreleased - drives, concerns, deliberation and agent-owned goals
 

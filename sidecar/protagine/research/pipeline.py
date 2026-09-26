@@ -2,7 +2,7 @@
 
 Stages:
   1. DECOMPOSE  — validate the research request
-  2. GATHER     — collect evidence from web, graph, documents, email
+  2. GATHER     — collect evidence from web, documents, email
   3. SYNTHESIZE — cross-reference evidence into insights
   4. OUTLINE    — build structured artifact outline
   5. PRODUCE    — render artifact in requested format
@@ -36,6 +36,7 @@ from protagine.research.artifact import (
     ArtifactOutline,
     ArtifactRenderer,
 )
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +95,8 @@ class PipelineRun:
     review: Optional[ReviewResult] = None
 
     # Timing
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: now_utc())
+    updated_at: datetime = field(default_factory=lambda: now_utc())
     completed_at: Optional[datetime] = None
 
     # Stage durations (seconds)
@@ -109,7 +110,7 @@ class PipelineRun:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def touch(self, stage: Optional[PipelineStage] = None) -> None:
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = now_utc()
         if stage:
             self.current_stage = stage
 
@@ -160,7 +161,6 @@ class PipelineConfig:
 
     # Delivery
     l7_cancel_window_seconds: float = 30.0
-    persist_to_graph: bool = True
 
     # Stage timeouts (seconds)
     timeout_decompose: float = 30.0
@@ -197,16 +197,9 @@ class ResearchPipeline:
     def __init__(
         self,
         config: Optional[PipelineConfig] = None,
-        *,
-        graph: Any = None,
-        allow_fallback_graph: bool = True,
     ) -> None:
         self.config = config or PipelineConfig()
-        self._gatherer = SourceGatherer(
-            self.config.gather,
-            graph=graph,
-            allow_fallback_graph=allow_fallback_graph,
-        )
+        self._gatherer = SourceGatherer(self.config.gather)
         self._synthesizer = ResearchSynthesizer(self.config.synthesis)
         self._renderer = ArtifactRenderer()
 
@@ -267,7 +260,7 @@ class ResearchPipeline:
 
             run.status = PipelineStatus.COMPLETED
             run.current_stage = PipelineStage.DONE
-            run.completed_at = datetime.now(timezone.utc)
+            run.completed_at = now_utc()
             logger.info(
                 "ResearchPipeline: run %s completed in %.1fs",
                 run.id,

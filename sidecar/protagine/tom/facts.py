@@ -7,16 +7,13 @@ which were told by them, and which the agent inferred they know.
 from __future__ import annotations
 
 import json
-import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
-
-
 from .source_lineage import SourceLinkedStore
+from protagine.util.temporal import now_utc
 
 
 class SharedFactsStore(SourceLinkedStore):
@@ -123,7 +120,7 @@ class SharedFactsStore(SourceLinkedStore):
             raise SourceErased('source_erased')
 
         fact_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         meta_json = None
         if metadata is not None:
             meta_json = json.dumps(metadata)
@@ -187,7 +184,7 @@ class SharedFactsStore(SourceLinkedStore):
             clauses.append('source_fact_automatic(contact_id,source_lineage_json)')
         else:
             clauses.append('source_fact_visible(contact_id,source_lineage_json)')
-        params.append(datetime.now(timezone.utc).isoformat())
+        params.append(now_utc().isoformat())
 
         where = f" WHERE {' AND '.join(clauses)}"
 
@@ -255,7 +252,7 @@ class SharedFactsStore(SourceLinkedStore):
 
     def purge_expired(self) -> int:
         """Remove expired facts. Returns count purged."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_utc().isoformat()
         cursor = self._conn.execute(
             "DELETE FROM shared_facts WHERE expires_at IS NOT NULL AND expires_at <= ?", (now,)
         )
@@ -278,49 +275,9 @@ class AutomaticFactsView:
                 record['contact_id'], record.get('source_lineage')):
             return None
         expires = record.get('expires_at')
-        if expires and expires <= datetime.now(timezone.utc).isoformat():
+        if expires and expires <= now_utc().isoformat():
             return None
         return record
 
     def list_facts(self, **kwargs):
         return self._store.list_facts(**{**kwargs, 'source_linked_only': True})
-
-
-class InferenceFactsView(SourceLinkedStore):
-    """ToM2 cannot reuse an old knowledge inference across a source correction.
-
-    Ordinary recall can bundle attributed corrections with the original. The
-    compact knowledge renderers cannot represent that packet, so omit the
-    inference while retaining its fact and correction for explicit inspection.
-    """
-
-    def __init__(self, view, ledger):
-        self._view, self._source_ledger = view, ledger
-        self._read = {}
-
-    def get_fact(self, fact_id):
-        from protagine.turns.source_annotations import expand
-        try:
-            row = self._view.get_fact(fact_id)
-            lineage = (row or {}).get('source_lineage') or {}
-            # Projected views can cache authorized rows. Recheck canonical
-            # membership independently, including all hashes and source scope.
-            if not lineage.get('message_hashes') or not self._source_visible(row['contact_id'], lineage):
-                return None
-            source = lineage['turn_id']
-            packet = expand(self._ledger(), [{
-                'id': fact_id, 'content': row['fact'], 'source_turn_id': source,
-                '_source_message_hashes': {source: lineage['message_hashes']},
-            }], contact_id=row['contact_id'], session_id=lineage['session_id'])
-            if (len(packet) != 1 or packet[0].get('_annotation_ids')
-                    or source not in {ref['source_id'] for ref in packet[0].get('_annotation_source_refs', [])}):
-                return None
-            self._read.setdefault(fact_id, row)
-            return row
-        except Exception:
-            logger.debug('ToM2 source correction check unavailable', exc_info=True)
-            return None
-
-    def current(self):
-        """Recheck after other context producers may have awaited work."""
-        return all(self.get_fact(key) == row for key, row in list(self._read.items()))

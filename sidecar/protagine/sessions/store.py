@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Protocol
 
-from protagine.intelligence.relationships.trust_tiers import TrustTier
 from protagine.sessions.isolated_session import IsolatedSession, SessionState
+from protagine.util.temporal import now_utc
 
 
 class IsolatedSessionStore(Protocol):
@@ -16,7 +16,7 @@ class IsolatedSessionStore(Protocol):
         self,
         contact_id: str,
         gateway: str,
-        trust_tier: TrustTier,
+        trust_tier: str,
     ) -> IsolatedSession:
         """Create a new session for a contact."""
         ...
@@ -81,7 +81,7 @@ class InMemorySessionStore:
         self,
         contact_id: str,
         gateway: str,
-        trust_tier: TrustTier,
+        trust_tier: str,
     ) -> IsolatedSession:
         session = IsolatedSession.create(contact_id, gateway, trust_tier)
         self._sessions[session.session_id] = session
@@ -125,7 +125,7 @@ class InMemorySessionStore:
         lookback_hours: int,
     ) -> dict:
         """Return {session_id: frozenset(mentioned_entities)} for other recent sessions."""
-        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=lookback_hours)
+        cutoff = now_utc() - timedelta(hours=lookback_hours)
         result = {}
         for session_id, session in self._sessions.items():
             if session_id == exclude_session_id:

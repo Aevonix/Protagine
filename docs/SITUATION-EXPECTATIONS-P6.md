@@ -95,8 +95,9 @@ performs additive `ALTER TABLE` migration; existing rows are surfaced as
 compatibility alias for the expanded record.
 
 New code uses `ExpectationStore.create_v2`. The existing commitment generator
-now creates V2 rows, while causal/world-model generators that still use the
-V1 call retain their old resolver behavior. The engine adds bounded structured
+now creates V2 rows. The causal/world-model generators that used the V1 call
+were removed in M8; their stored `world-causal:` rows stay history, never
+resolved again and never counted as calibration evidence. The engine adds bounded structured
 generators for:
 
 - contact cadence;

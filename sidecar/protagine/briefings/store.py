@@ -26,6 +26,7 @@ from .models import (
     ScheduleEntry,
     SectionEngagementRecord,
 )
+from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def _row_to_briefing(row: sqlite3.Row) -> Briefing:
         priority=BriefingPriority(row["priority"]),
         triggered_by=row["triggered_by"],
         gateway=row["gateway"],
-        created_at=_str_to_dt(row["created_at"]) or datetime.now(timezone.utc),
+        created_at=_str_to_dt(row["created_at"]) or now_utc(),
         delivered_at=_str_to_dt(row["delivered_at"]),
         read_at=_str_to_dt(row["read_at"]),
     )
@@ -295,7 +296,7 @@ class BriefingStore:
             self._conn.commit()
 
     def mark_delivered(self, briefing_id: str, gateway: str) -> None:
-        now = _dt_to_str(datetime.now(timezone.utc))
+        now = _dt_to_str(now_utc())
         with self._lock:
             self._conn.execute(
                 "UPDATE briefings SET status = 'delivered', gateway = ?, delivered_at = ? WHERE briefing_id = ?",
@@ -304,7 +305,7 @@ class BriefingStore:
             self._conn.commit()
 
     def mark_read(self, briefing_id: str) -> None:
-        now = _dt_to_str(datetime.now(timezone.utc))
+        now = _dt_to_str(now_utc())
         with self._lock:
             self._conn.execute(
                 "UPDATE briefings SET status = 'read', read_at = ? WHERE briefing_id = ?",
@@ -313,7 +314,7 @@ class BriefingStore:
             self._conn.commit()
 
     def count_today(self) -> int:
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = now_utc().date().isoformat()
         with self._lock:
             cur = self._conn.execute(
                 "SELECT COUNT(*) FROM briefings WHERE created_at >= ?",
@@ -354,7 +355,7 @@ class BriefingStore:
         )
 
     def update_schedule_last_run(self, briefing_type: BriefingType) -> None:
-        now = _dt_to_str(datetime.now(timezone.utc))
+        now = _dt_to_str(now_utc())
         with self._lock:
             self._conn.execute(
                 "UPDATE briefing_schedule SET last_run = ? WHERE type = ?",
@@ -406,7 +407,7 @@ class BriefingStore:
                 section_name=r["section_name"],
                 briefing_id=r["briefing_id"],
                 signal=r["signal"],
-                recorded_at=_str_to_dt(r["recorded_at"]) or datetime.now(timezone.utc),
+                recorded_at=_str_to_dt(r["recorded_at"]) or now_utc(),
                 context=r["context"],
             )
             for r in rows
@@ -418,7 +419,7 @@ class BriefingStore:
             return [r["section_name"] for r in cur.fetchall()]
 
     def suppress_section(self, section_name: str, reason: Optional[str] = None) -> None:
-        now = _dt_to_str(datetime.now(timezone.utc))
+        now = _dt_to_str(now_utc())
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO suppressed_sections (section_name, suppressed_at, reason) VALUES (?, ?, ?)",

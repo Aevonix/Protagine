@@ -1,7 +1,7 @@
 """Episode events, their ordering across restarts and the worker loop, with no model."""
 from copy import deepcopy
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 import io
 import json
 from pathlib import Path
@@ -134,6 +134,41 @@ def test_supervisor_carries_clock_and_tick_counts_across_restarts_and_merges_tic
     assert [row['index'] for row in body['ticks']] == [1, 1, 4]
     assert [entry['text'] for entry in body['outbox']] == [
         'tick 1 at offset 0', 'tick 2 at offset 0', 'tick 3 at offset 3600']
+
+
+def test_the_pinned_start_moves_the_body_clock_forward_to_the_next_time_of_day():
+    """A generated family starts every episode at the same UTC time of day in every arm, so day-boundary
+    rules (the nightly consolidation) fire by the scenario's advances alone, never by the start hour."""
+    def epoch(hour, minute=0):
+        return datetime(2026, 9, 24, hour, minute, tzinfo=timezone.utc).timestamp()
+
+    assert paired_body.start_offset('12:00', now=epoch(9, 30)) == 2.5 * 3600
+    assert paired_body.start_offset('12:00', now=epoch(12)) == 0
+    assert paired_body.start_offset('12:00', now=epoch(13)) == 23 * 3600          # forward only, never back
+    assert paired_body.CLOCK_STARTS == ('12:00',)
+    with pytest.raises(ValueError):
+        paired_body.start_offset('25:00', now=epoch(9))
+
+
+def test_supervisor_adds_the_pinned_start_once_to_every_phase(tmp_path, monkeypatch):
+    monkeypatch.setattr(paired_body, 'start_offset', lambda value, now=None: 9000 if value == '12:00' else None)
+    episodes = [USER, TICK, CLOCK, {'session_id': 'owner-3', 'user': 'later'}, {'tick': 1}]
+    payload = {'binding': 'candidate', 'config': {}, 'inputs': {'arm': 'base_hermes', 'episodes': episodes,
+        'initial_files': {}, 'workflow': {'restart_before': [3]}, 'clock_start': '12:00'}}
+    home, workspace = tmp_path / 'home', tmp_path / 'workspace'
+    payload['test_roots'] = [str(home), str(workspace)]
+    seen = []
+
+    def launch(request, stop, recorder):
+        seen.append(deepcopy(request['_workflow_phase']['body_before']))
+        return runtime.run_phase(request, stop, recorder,
+                                 command=[sys.executable, '-I', '-c', FAKE_BODY_WORKER])
+
+    result = runtime.supervise(payload, home=home, workspace=workspace, runner=launch,
+                               trace=runtime.TraceForwarder(sink=lambda _: None))
+    assert result['stage'] == 'returned'
+    assert seen == [{'clock_offset_seconds': 9000, 'ticks_completed': 0},
+                    {'clock_offset_seconds': 12600, 'ticks_completed': 2}]
 
 
 @pytest.fixture
@@ -271,6 +306,16 @@ def test_worker_runs_turns_and_events_in_order_and_records_inbound_replies(stubb
                                           'agent': {'model': 'cron-model', 'max_tokens': 64}}] * 3
 
 
+def test_worker_starts_a_pinned_episode_at_the_pinned_time_of_day(stubbed_hermes, monkeypatch, capsys):
+    monkeypatch.setattr(paired_body, 'start_offset', lambda value, now=None: 9000 if value == '12:00' else None)
+    request = {'binding': 'candidate', 'config': {'model': {'default': 'test'}},
+        'inputs': {'arm': 'base_hermes', 'initial_files': {}, 'max_iterations': 4, 'max_output_tokens': 64,
+                   'settle_seconds': 0, 'clock_start': '12:00', 'episodes': [USER, CLOCK, {'tick': 1}]}}
+    code, result = run_worker(monkeypatch, capsys, request)
+    assert code == 0 and result['stage'] == 'returned', result.get('private_error_traceback')
+    assert stubbed_hermes.events[:2] == [('install', 9000), ('advance', 3600)]
+
+
 def test_worker_pins_the_plan_temperature_on_cron_agents_too(stubbed_hermes, monkeypatch, capsys):
     request = {'binding': 'candidate', 'config': {'model': {'default': 'test'}}, 'temperature': 0.3,
         'inputs': {'arm': 'base_hermes', 'initial_files': {}, 'max_iterations': 8, 'max_output_tokens': 4096,
@@ -337,6 +382,10 @@ def test_a_turn_that_spent_its_iterations_but_answered_does_not_end_the_episode(
     assert [row['tick'] for row in effects['body']['ticks']] == [1, 2]
     assert [event[0] for event in stubbed_hermes.events] == ['install', 'advance', 'tick', 'tick']
     assert len(stubbed_hermes.calls) == 2
+    # The clock advance waited for the arm's queues first; a base arm has none. Nothing ended the episode.
+    assert effects['drains'] == [{'index': 2, 'before': 'advance_clock', 'status': 'no_queue',
+                                  'waited_seconds': 0.0, 'left': {}}]
+    assert 'ended_at' not in effects
 
 
 @pytest.mark.parametrize('turn', [{'completed': False, 'partial': True, 'final_response': None},
@@ -352,6 +401,7 @@ def test_a_failed_interrupted_or_silent_turn_still_ends_the_episode(stubbed_herm
     effects = result['tool_evidence']
     assert [row['completed'] for row in effects['turns']] == [False] and effects['turns_completed'] == 0
     assert effects['body']['ticks'] == [] and len(stubbed_hermes.calls) == 1
+    assert effects['ended_at'] == 0 and effects['drains'] == []   # the supervisor stops at the same turn
 
 
 def test_worker_rejects_malformed_events_before_any_turn(stubbed_hermes, monkeypatch, capsys):

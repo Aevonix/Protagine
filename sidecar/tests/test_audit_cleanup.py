@@ -3,9 +3,7 @@
 Covers the behaviours introduced by the April 2026 cleanup:
 - IMAPProvider missing → email_reply condition returns cleanly.
 - ApiKeyMiddleware refuses /v1/host/configure in dev mode.
-- Skill route params reject invalid ids.
 - Neo4j update_person rejects unknown property names.
-- Skill AST scanner flags dunder-chain and dynamic-getattr escapes.
 - Contact importer hashes PII and counts handle conflicts.
 """
 
@@ -16,7 +14,6 @@ import hashlib
 import pytest
 
 from protagine.contacts.importer import _pii_hash
-from protagine.skills.security.scanner import ASTScanner
 
 
 # ── A1: missing IMAPProvider is handled gracefully ────────────────────────────
@@ -84,126 +81,6 @@ async def test_middleware_accepts_valid_bearer():
         assert authed.status_code == 200
 
 
-# ── B3: skill_id validation ───────────────────────────────────────────────────
-
-
-def test_skill_id_validator_accepts_safe_ids():
-    from protagine.api.routers import host as host_mod
-
-    for ok in ("skill_a", "skill-1", "alpha.beta", "S1"):
-        host_mod._validate_skill_id(ok)  # should not raise
-
-
-def test_skill_id_validator_rejects_unsafe_ids():
-    from fastapi import HTTPException
-
-    from protagine.api.routers import host as host_mod
-
-    bad = ["../etc/passwd", "skill id", "a" * 100, "", "skill/evil", ".hidden"]
-    for value in bad:
-        with pytest.raises(HTTPException) as exc:
-            host_mod._validate_skill_id(value)
-        assert exc.value.status_code == 400
-
-
-# ── B5: Neo4j property-name allowlist ─────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_update_person_rejects_unknown_properties():
-    from protagine.intelligence.graph.client import ProtagineGraph
-
-    # Build a client instance without a real driver; the allowlist check
-    # happens before any Cypher executes.
-    client = ProtagineGraph.__new__(ProtagineGraph)
-    client.driver = None
-    client.database = "neo4j"
-
-    with pytest.raises(ValueError) as exc:
-        await client.update_person(
-            "person-1",
-            score=1.0,
-            **{"name} SET p.admin = true; SET p.{": "x"},
-        )
-    assert "update_person rejected unknown" in str(exc.value)
-
-
-@pytest.mark.asyncio
-async def test_update_person_accepts_known_properties(monkeypatch):
-    from protagine.intelligence.graph import client as client_mod
-
-    executed = {}
-
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def run(self, cypher, **params):
-            executed["cypher"] = cypher
-            executed["params"] = params
-            return None
-
-    class _FakeDriver:
-        def session(self, database=None):
-            return _FakeSession()
-
-    client = client_mod.ProtagineGraph.__new__(client_mod.ProtagineGraph)
-    client.driver = _FakeDriver()
-    client.database = "neo4j"
-
-    await client.update_person("p1", score=0.9, tier="bronze")
-    assert "p.score = $score" in executed["cypher"]
-    assert "p.tier = $tier" in executed["cypher"]
-    assert executed["params"]["score"] == 0.9
-
-
-# ── C1: AST scanner catches escape patterns ───────────────────────────────────
-
-
-def test_scanner_flags_dunder_attribute_chain():
-    src = (
-        "def run():\n"
-        "    return ().__class__.__bases__[0].__subclasses__()\n"
-    )
-    result = ASTScanner().scan(src, "skill-test")
-    assert result.status == "critical"
-    assert any(f.rule_id == "ESC001" for f in result.findings)
-
-
-def test_scanner_flags_getattr_with_dunder_string():
-    src = (
-        "def run():\n"
-        "    fn = getattr(__builtins__, '__import__')\n"
-        "    return fn('os')\n"
-    )
-    result = ASTScanner().scan(src, "skill-test")
-    assert result.status == "critical"
-    assert any(f.rule_id == "ESC002" for f in result.findings)
-
-
-def test_scanner_flags_dynamic_getattr():
-    src = (
-        "def run(name):\n"
-        "    return getattr(__builtins__, name)\n"
-    )
-    result = ASTScanner().scan(src, "skill-test")
-    assert result.status == "critical"
-    assert any(f.rule_id == "ESC002" for f in result.findings)
-
-
-def test_scanner_passes_plain_code():
-    src = (
-        "def run():\n"
-        "    values = [1, 2, 3]\n"
-        "    return sum(values)\n"
-    )
-    result = ASTScanner().scan(src, "skill-test")
-    assert result.status == "clean"
-
-
 # ── B4: PII hash is stable and short ──────────────────────────────────────────
 
 
@@ -218,97 +95,6 @@ def test_pii_hash_is_deterministic_and_short():
 def test_pii_hash_handles_empty():
     assert _pii_hash(None) == "∅"
     assert _pii_hash("") == "∅"
-
-
-# ── Rate limiter persistence ──────────────────────────────────────────────────
-
-
-def test_rate_limiter_in_memory_default_still_works():
-    """Backwards compat: no db_path means pure in-memory (existing behavior)."""
-    from protagine.delivery.rate_limiter import DeliveryRateLimiter
-
-    # Disable quiet hours so the test doesn't depend on the wall clock
-    # (default quiet hours made this fail when the suite ran at night).
-    rl = DeliveryRateLimiter(quiet_start_hour=0, quiet_end_hour=0)
-    ok, _ = rl.can_deliver("alice")
-    assert ok is True
-    rl.record_delivery("alice")
-    assert rl.daily_count("alice") == 1
-
-
-def test_rate_limiter_persists_count_across_restart(tmp_path, monkeypatch):
-    """Record 2 deliveries, 'restart' by constructing a fresh limiter on the
-    same db, and confirm the count survives and the daily limit is enforced."""
-    from protagine.delivery.rate_limiter import DeliveryRateLimiter
-
-    # Force a non-quiet UTC hour so the deliveries are allowed.
-    db = tmp_path / "delivery.db"
-    rl1 = DeliveryRateLimiter(
-        db_path=db, quiet_start_hour=0, quiet_end_hour=0,
-        cooldown_hours=0,
-    )
-    rl1.record_delivery("alice")
-    rl1.record_delivery("alice")
-    assert rl1.daily_count("alice") == 2
-
-    # Simulate a restart.
-    rl2 = DeliveryRateLimiter(
-        db_path=db, quiet_start_hour=0, quiet_end_hour=0,
-        cooldown_hours=0,
-    )
-    assert rl2.daily_count("alice") == 2
-
-    # Third delivery is still allowed (limit is 3).
-    ok, _ = rl2.can_deliver("alice")
-    assert ok is True
-    rl2.record_delivery("alice")
-
-    # Fourth would exceed the cap — also after a restart.
-    rl3 = DeliveryRateLimiter(
-        db_path=db, quiet_start_hour=0, quiet_end_hour=0,
-        cooldown_hours=0,
-    )
-    ok, reason = rl3.can_deliver("alice")
-    assert ok is False
-    assert "daily_limit_reached" in reason
-
-
-def test_rate_limiter_cooldown_restored_from_db(tmp_path):
-    """Cooldown based on last delivery must survive a restart."""
-    from protagine.delivery.rate_limiter import DeliveryRateLimiter
-
-    db = tmp_path / "delivery.db"
-    rl1 = DeliveryRateLimiter(
-        db_path=db, quiet_start_hour=0, quiet_end_hour=0,
-        cooldown_hours=2,
-    )
-    rl1.record_delivery("alice")
-
-    rl2 = DeliveryRateLimiter(
-        db_path=db, quiet_start_hour=0, quiet_end_hour=0,
-        cooldown_hours=2,
-    )
-    ok, reason = rl2.can_deliver("alice")
-    assert ok is False
-    assert "cooldown_active" in reason
-
-
-def test_rate_limiter_persistence_failure_falls_back_to_memory(tmp_path, caplog):
-    """If the db path is unusable, the limiter must still work in-memory."""
-    from protagine.delivery.rate_limiter import DeliveryRateLimiter
-
-    # Point at a path whose parent cannot be created — pass a file as the
-    # parent directory.
-    bogus = tmp_path / "i-am-a-file"
-    bogus.write_text("x")
-    db = bogus / "delivery.db"  # parent is a file, not a dir
-
-    rl = DeliveryRateLimiter(
-        db_path=db, quiet_start_hour=0, quiet_end_hour=0, cooldown_hours=0,
-    )
-    # Should not raise, and operate in-memory.
-    rl.record_delivery("alice")
-    assert rl.daily_count("alice") == 1
 
 
 # ── Body size middleware ──────────────────────────────────────────────────────

@@ -86,7 +86,7 @@ class ResearchOrchestrator:
 
     Source routing:
     - MEMORY: queries graph memory via ``graph.recall()``
-    - KNOWLEDGE_GRAPH: returns structured knowledge graph context
+    - KNOWLEDGE_GRAPH: no backend since the graph memory was removed (M8)
     - WEB: queries the injected ``SearchOrchestrator`` if one is provided.
     - API: delegates to a handler registered via ``register_api_handler``.
 
@@ -288,52 +288,9 @@ class ResearchOrchestrator:
         source: ResearchSource,
         query: str,
     ) -> Optional[ResearchResult]:
-        """Query the knowledge graph using entity and type recall.
-
-        Runs RECALL_BY_ENTITY (treating the query as an entity name) and
-        RECALL_BY_TYPE (treating the query as a memory type) against Neo4j,
-        then combines up to 3 results into a single ResearchResult.
-        """
-        from protagine.intelligence.graph.queries import RECALL_BY_ENTITY, RECALL_BY_TYPE
-
-        try:
-            memories: List[Any] = []
-            async with self.graph.driver.session(database=self.graph.database) as session:
-                entity_result = await session.run(
-                    RECALL_BY_ENTITY,
-                    entity_name=query,
-                    min_strength=0.1,
-                    limit=5,
-                )
-                memories.extend([record["memory"] async for record in entity_result])
-
-                type_result = await session.run(
-                    RECALL_BY_TYPE,
-                    memory_type=query,
-                    min_strength=0.1,
-                    limit=5,
-                )
-                memories.extend([record["memory"] async for record in type_result])
-
-            if not memories:
-                return None
-
-            content = "\n".join(
-                m.get("content", "") if isinstance(m, dict) else str(m)
-                for m in memories[:3]
-                if m
-            )
-            if not content.strip():
-                return None
-
-            return ResearchResult(
-                source=source.name,
-                content=content,
-                confidence=min(0.85, source.priority * 0.85),
-            )
-        except Exception as exc:
-            logger.debug("Graph source query failed: %s", exc)
-            return None
+        """A KNOWLEDGE_GRAPH source has no backend: the graph memory is gone (M8)."""
+        logger.debug("Knowledge-graph source %s has no backend", source.name)
+        return None
 
     async def _synthesize(
         self,

@@ -39,9 +39,11 @@ def _write_keyring(path, principals, *, mode: int = 0o600) -> None:
 def keyed_host_app(*_ignored, api_key: str = KEY, legacy_key: str | None = None, **_kw):
     """A host-router app behind the one key (what older fixtures built from a keyring)."""
     from fastapi import FastAPI
+    from protagine.api.errors import install_exception_handlers
     from protagine.api.middleware import ApiKeyMiddleware
     from protagine.api.routers import host
     app = FastAPI()
+    install_exception_handlers(app)
     app.add_middleware(ApiKeyMiddleware, api_key=legacy_key or api_key)
     app.include_router(host.router)
     app.include_router(host.v2_router)

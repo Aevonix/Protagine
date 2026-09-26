@@ -11,46 +11,79 @@ import time
 from unittest.mock import patch
 
 
-MIND_FACULTIES = ('initiative', 'drives', 'deliberation', 'goals', 'people', 'affect', 'opinions', 'broadcast',
-                  'semantic_recall', 'consolidation', 'self_narrative', 'lessons', 'skills')
+MIND_FACULTIES = ('initiative', 'drives', 'deliberation', 'goals', 'people', 'affect', 'affect_rules', 'opinions',
+                  'broadcast', 'semantic_recall', 'consolidation', 'self_narrative', 'lessons', 'skills', 'outreach')
 WORKER_PROFILE = 'protagine-act'
 
 
-def mind_section(switches):
+def mind_section(switches, quiet_hours=None):
     """The ``mind`` section of the disposable ``protagine.yaml`` for a profile's mind switches.
 
     Off (``None`` or ``False``) in the plain plugin arm. ``{'initiative': True}``
     (or ``True``) turns the mind on at autonomy ``standard`` with only the
-    initiative faculty (mind-initiative-1). ``{'full': True}`` sets every
+    initiative faculty (mind-initiative-1); semantic recall, memory the plain
+    plugin arm has too, stays on. ``{'full': True}`` sets every
     faculty flag and drive weight to its release-candidate value from the
-    shipped defaults; a ``minus_drives`` or ``minus_broadcast`` switch turns
-    that faculty off and a ``minus_<drive>`` switch sets that drive's weight
-    to 0 (evals section 3, the ``full-X`` arms). Quiet hours and the daily
-    digest are off in every mind arm because an episode's clock advance would
+    shipped defaults; a ``minus_<faculty>`` switch turns that faculty's flag
+    off, a ``plus_<faculty>`` switch turns on one that ships off
+    (``plus_skills``, ``plus_affect_rules``), and a
+    ``minus_<drive>`` switch sets that drive's weight to 0 (evals section 3,
+    the ``full-X`` arms). The flag is written whether or not the
+    faculty's code has landed, so an ablation of a faculty nothing reads yet
+    is a no-op contrast until its milestone. Quiet hours and the daily digest
+    are off in every mind arm because an episode's clock advance would
     otherwise hold or add owner notices that have nothing to do with the
-    scenario.
+    scenario; a family that declares quiet hours (``quiet_hours``, the owner
+    outreach family) has that window written instead, the one its base arms
+    read from the workspace.
     """
     if not switches:
         return {'enabled': False}
     if switches is True:
         switches = {'initiative': True}
-    section = {'enabled': True, 'autonomy': 'standard', 'quiet_hours': '', 'digest_hour': 24}
+    section = {'enabled': True, 'autonomy': 'standard', 'quiet_hours': quiet_hours or '', 'digest_hour': 24}
     if not switches.get('full'):
-        section['faculties'] = {name: name == 'initiative' for name in MIND_FACULTIES}
+        section['faculties'] = {name: name in {'initiative', 'semantic_recall'} for name in MIND_FACULTIES}
         return section
     from copy import deepcopy
     from protagine.config import DEFAULTS
     defaults = DEFAULTS['mind']
     faculties = {name: bool(defaults['faculties'].get(name, False)) for name in MIND_FACULTIES}
     drives = deepcopy(defaults['drives'])
-    for name in ('drives', 'broadcast'):
+    for name in MIND_FACULTIES:
         if switches.get(f'minus_{name}'):
             faculties[name] = False
+        if switches.get(f'plus_{name}'):
+            faculties[name] = True
     for name in drives:
         if switches.get(f'minus_{name}'):
             drives[name] = 0.0
     section.update(faculties=faculties, drives=drives, budgets=deepcopy(defaults['budgets']))
     return section
+
+
+def embedding_environment(inputs, section):
+    """The embedding provider for one arm, as a binary choice recorded in the plan.
+
+    The plan may carry one embedding endpoint (``paired plan --embedding-config``), written
+    identically into every case's ``inputs['embedding']``. An arm uses it unless its mind
+    section turns ``faculties.semantic_recall`` off, the rule ``config.apply_environment``
+    applies on a real install; only the ``full-semantic_recall`` arm does, and the plain plugin
+    arm has no faculties and uses it too. With no endpoint in the plan every arm keeps today's
+    behaviour: the embedder off (``skip``). A named credential is read from this process's
+    environment (the plan admits only names the native config already forwards). The served
+    host opens the embedder from these variables (``paired_worker.semantic_recall``).
+    """
+    embedding = inputs.get('embedding')
+    faculties = section.get('faculties') if isinstance(section.get('faculties'), dict) else {}
+    semantic = isinstance(embedding, dict) and bool(embedding) and faculties.get('semantic_recall', True) is not False
+    if not semantic:
+        return {'PROTAGINE_EMBED_PROVIDER': 'skip'}
+    values = {'PROTAGINE_EMBED_PROVIDER': 'openai_api', 'PROTAGINE_EMBED_BASE_URL': str(embedding['base_url']),
+              'PROTAGINE_EMBED_MODEL': str(embedding['model']), 'PROTAGINE_EMBED_DIMS': str(int(embedding['dimensions']))}
+    if embedding.get('api_key_env'):
+        values['PROTAGINE_EMBED_API_KEY'] = os.environ[str(embedding['api_key_env'])]
+    return values
 
 
 def mind_clock():
@@ -72,41 +105,49 @@ def benchmark_identity(person):
             'agent': {'name': 'Agent'}}
 
 
+def mount_routes(app, *, mind):
+    """The routes the arm serves, as the sidecar mounts them: the host routes, and with the mind
+    its own routes and the people routes (an owner's ``protagine_people`` reaches them)."""
+    from protagine.api.routers import host
+    from protagine.mind.factory import mind_routers
+    app.include_router(host.router)
+    app.include_router(host.v2_router)
+    if mind:
+        for router in mind_routers():   # the list the sidecar mounts (protagine.mind.factory)
+            app.include_router(router)
+
+
 @contextmanager
 def serve_mind(app, state, person, section):
     """A real Mind over this arm's stores, on ``/v1/mind`` next to the host routes.
 
     The stores the host routes already own (the commitment store, contacts and
     the ledger) are shared; the intention, feedback and expectation stores live
-    in the same ``memory-state`` directory. The Mind's own timer is never
-    started: the body tick calls ``POST /v1/mind/tick`` through the plugin's
-    ``tick()``, so intentions form in lockstep with the episode's clock.
+    in the same ``memory-state`` directory, and the owner's appraisal records
+    and reported outcomes are read from the arm's ledger, as production reads
+    them. The Mind's own timer is never started: the body tick calls
+    ``POST /v1/mind/tick`` through the plugin's ``tick()``, so intentions form
+    in lockstep with the episode's clock.
     """
     from protagine.api.routers import host
     from protagine.api.routers import mind as mind_router
-    from protagine.commitments.extract import CommitmentExtractor, contact_aliases
     from protagine.feedback import TypeFeedbackStore
     from protagine.initiatives.store import InitiativeStore
-    from protagine.mind import Mind
+    from protagine.mind.factory import build_mind
     from protagine.self_model.expectations import ExpectationEngine, ExpectationStore
     from protagine.turns import get_turn_idempotency_ledger
     directory = state / 'memory-state'
     directory.mkdir(parents=True, exist_ok=True)
     store = InitiativeStore(state_dir=directory)
     try:
-        # The arm's own router (the endpoint the plan pinned) serves the one deliberation call per tick
-        # and the capture jobs a tick drains first; the extractor shares the source worker's ledger,
-        # so a job the worker holds is waited for, never run twice.
-        mind = Mind(config=section, store=store, state_dir=directory, owner_id=person,
-                    commitments=host._commitment_store,
-                    feedback=TypeFeedbackStore(db_path=str(directory / 'protagine-feedback.db')),
-                    expectations=ExpectationEngine(ExpectationStore(str(directory / 'protagine-expectations.db'))),
-                    contacts=getattr(host, '_contacts_store', None),
-                    ledger=get_turn_idempotency_ledger(directory), clock=mind_clock, backups=False,
-                    router=getattr(host, '_llm_router', None),
-                    capture=CommitmentExtractor(get_turn_idempotency_ledger(directory),
-                                                lambda: host._commitment_store,
-                                                aliases=contact_aliases(lambda: getattr(host, '_contacts_store', None))))
+        # The sidecar's own factory over the stores the host routes own (the commitment store, contacts,
+        # the comms ledger, contact affect and the arm's router, the endpoint the plan pinned); only the
+        # body clock and the backups are this process's own choice.
+        mind = build_mind(host, config=section, store=store, state_dir=directory,
+                          ledger=get_turn_idempotency_ledger(directory), owner_id=person,
+                          feedback=TypeFeedbackStore(db_path=str(directory / 'protagine-feedback.db')),
+                          expectations=ExpectationEngine(ExpectationStore(str(directory / 'protagine-expectations.db'))),
+                          clock=mind_clock, backups=False)
         mind_router.set_mind(mind)
         yield mind
     finally:
@@ -141,6 +182,8 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     """
     inputs = request['inputs']
     person = inputs['contact_id']
+    section = mind_section(mind, quiet_hours=inputs.get('quiet_hours'))
+    embedding = embedding_environment(inputs, section)
     os.environ.update(PROTAGINE_STATE_DIR=str(state / 'memory-state'),
         PROTAGINE_EVENT_JOURNAL_DIR=str(state / 'memory-state' / 'events'),
         PROTAGINE_SKIP_DOTENV='1', PYTHON_DOTENV_DISABLED='1',
@@ -149,7 +192,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
         PROTAGINE_GENERAL_PLUGIN_ACTIVE='1', PROTAGINE_MEMORY_TURN_WRITER='disabled',
         PROTAGINE_MEMORY_WORKER_TOOLS='0', PROTAGINE_MEMORY_DEFAULT_CONTEXT_AUTHORITY='none',
         PROTAGINE_OWNER_CONTACT_ID=person,
-        PROTAGINE_EMBED_PROVIDER='skip', PROTAGINE_GRAPH_ENABLED='false',
+        **embedding,
         # The body tick drives the adapter (tick() and flush()); its own thread stays parked
         # so no dispatch or send lands between two observed ticks.
         PROTAGINE_BODY_THREAD='0')
@@ -161,6 +204,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     from protagine.api.routers import host
     from protagine.api.routers import mind as mind_router
     from protagine.turns import get_turn_idempotency_ledger
+    from protagine.vector import get_store
     from hermes_cli.plugins import get_plugin_manager
     from hermes_state import SessionDB
     import httpx
@@ -178,7 +222,6 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
     key_file.write_text(secret + '\n')
     key_file.chmod(0o600)
     (instance / 'identity.yaml').write_text(json.dumps(benchmark_identity(person)))
-    section = mind_section(mind)
     (instance / 'protagine.yaml').write_text(json.dumps({'owner': {'contact_id': person}, 'mind': section}))
     os.environ.update(PROTAGINE_HOME=str(instance), PROTAGINE_API_KEY=secret)
     if mind:
@@ -196,10 +239,7 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
                 'path': req.url.path, 'status': response.status_code})
         return response
 
-    app.include_router(host.router)
-    app.include_router(host.v2_router)
-    if mind:
-        app.include_router(mind_router.router)
+    mount_routes(app, mind=bool(mind))
     host_resources = ExitStack()
     listener = server = thread = None
     transport_observer = None
@@ -333,7 +373,8 @@ def prepare(request, state, arguments, config, *, setup_host=None, scopes=None, 
                 'freshness_responses': list(freshness),
                 'erased_sources': {source: ledger.is_source_erased(source, person)
                                   for source in inputs.get('forget_source_ids', [])},
-                'embedding_and_reranking': 'not_exercised',
+                # What the served host actually opened, not what the plan asked for.
+                'embedding_and_reranking': 'endpoint' if get_store() is not None else 'not_exercised',
                 'transport_delivery': 'not_exercised'}
 
         yield evidence

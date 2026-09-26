@@ -8,7 +8,7 @@ from jsonschema import Draft202012Validator, ValidationError
 import pytest
 
 from protagine.beliefs import source_claims
-from protagine.self_model import appraisals, judgments
+from protagine.self_model import appraisals
 from test_memory_formation import PROCEDURE, procedure
 
 
@@ -16,6 +16,38 @@ def validator(module):
     schema = module.RESPONSE_SCHEMA['schema']
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
+
+
+def _optional_properties(node, path=''):
+    """Every object level (with its path) whose properties are not all listed in ``required``."""
+    found = []
+    if isinstance(node, dict):
+        if isinstance(node.get('properties'), dict):
+            missing = sorted(set(node['properties']) - set(node.get('required') or []))
+            if missing:
+                found.append((path or '/', missing))
+        for key, value in node.items():
+            found += _optional_properties(value, f'{path}/{key}')
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found += _optional_properties(value, f'{path}[{index}]')
+    return found
+
+
+def test_every_memory_response_schema_requires_every_property_at_every_level():
+    """The router sends every response schema with ``strict: true``, and a strict endpoint rejects
+    an object whose properties are not all required: an optional block fails every call there
+    (integration map X3). Optional content is a nullable type instead."""
+    from protagine.commitments import extract
+    from protagine.mind import consolidate, opinions
+    schemas = {'claims': source_claims.RESPONSE_SCHEMA, 'claims (per source)':
+               source_claims.claim_response_schema('The kettle is on the second shelf.'),
+               'commitments': extract.RESPONSE_SCHEMA, 'appraisals': appraisals.RESPONSE_SCHEMA,
+               'opinions': opinions.RESPONSE_SCHEMA, 'narrative': consolidate.NARRATIVE_SCHEMA, 'digest': consolidate.DIGEST_SCHEMA,
+               'episode': consolidate.EPISODE_SCHEMA}
+    for name, schema in schemas.items():
+        Draft202012Validator.check_schema(schema['schema'])
+        assert _optional_properties(schema['schema']) == [], name
 
 
 def test_claim_schema_preserves_procedure_and_empty_output_but_not_unquoted_content():
@@ -83,26 +115,10 @@ def test_long_sources_still_select_bounded_spans():
             assert ('const' in evidence) is (size == 500)
 
 
-def test_judgment_schema_has_exact_abstain_retain_revise_shapes():
-    check = validator(judgments)
-    check.validate({'action': 'abstain'})
-    check.validate({'action': 'retain', 'topic': 'scanner procedure', 'supersedes': 1})
-    revise = {'action': 'revise', 'topic': 'scanner procedure', 'supersedes': None,
-              'stance': 'Try the reported steps under the stated conditions.',
-              'reason': 'The report supplies a conditional procedure for that failure.',
-              'certainty': 'tentative', 'support': ['current-handle'], 'contrary': []}
-    check.validate(revise)
-    for bad in [{'action': 'abstain', 'reason': 'extra'},
-                {**revise, 'certainty': 'certain'}, {**revise, 'support': []},
-                {**revise, 'supersedes': True},
-                {k: v for k, v in revise.items() if k != 'supersedes'}]:
-        with pytest.raises(ValidationError):
-            check.validate(bad)
-
-
 def test_appraisal_schema_retains_all_kinds_and_limits_without_semantic_claims():
     check = validator(appraisals)
-    empty = {'observations': [], 'incident_decisions': []}
+    empty = {'observations': [], 'incident_decisions': [], 'outcomes': [],
+             'contact': {'their_valence': None, 'opt_out': False}}
     check.validate(empty)
     item = {'kind': 'preference', 'dimension': 'communication', 'topic': 'review order',
             'text': 'The contact requests risk, edit, then links in reviews.',
@@ -118,7 +134,21 @@ def test_appraisal_schema_retains_all_kinds_and_limits_without_semantic_claims()
     check.validate({**empty, 'incident_decisions': [repair]})
     for outcome in ('unchanged', 'uncertain'):
         check.validate({**empty, 'incident_decisions': [{'record_id': 'previous-incident', 'outcome': outcome}]})
+    reported = {'event': 'failed', 'topic': 'quarterly figures', 'approach': '',
+                'support': [{'handle': 'current-handle', 'quote': 'the export was stale again'}]}
+    for event in appraisals.OUTCOME_EVENTS:
+        check.validate({**empty, 'outcomes': [{**reported, 'event': event}] * 4})
     for bad in [{'observations': []},
+                {'observations': [], 'incident_decisions': []},
+                {k: v for k, v in empty.items() if k != 'contact'},       # the contact block is required
+                {k: v for k, v in empty.items() if k != 'outcomes'},      # and so are the outcomes
+                {**empty, 'contact': {'their_valence': None}},
+                {**empty, 'outcomes': [reported] * 5},
+                {**empty, 'outcomes': [{**reported, 'event': 'annoyed'}]},
+                {**empty, 'outcomes': [{**reported, 'support': []}]},
+                {**empty, 'outcomes': [{**reported, 'support': reported['support'] * 3}]},
+                {**empty, 'outcomes': [{**reported, 'topic': ''}]},
+                {**empty, 'outcomes': [{**reported, 'reason': 'extra'}]},
                 {**empty, 'observations': [item] * 5},
                 {**empty, 'observations': [{**item, 'dimension': 'format'}]},
                 {**empty, 'observations': [{**item, 'intensity': 'strong'}]},

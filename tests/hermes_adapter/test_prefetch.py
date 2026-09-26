@@ -30,6 +30,42 @@ emit(name=provider.name, url=provider.sidecar_url, key=provider._api_key, contex
     call, = sidecar.calls("/v1/host/context/assemble", "POST")
     assert call["authorization"] == f"Bearer {API_KEY}"
     assert call["json"]["context"]["contact_id"] == OWNER and "audience" not in call["json"]
+    assert "metadata" not in call["json"]["context"]
+
+
+def test_a_section_the_last_turn_carried_is_one_line_through_stock_hermes(home, sidecar):
+    """Stock Hermes' memory manager: the first turn gets every section; once that turn completed
+    (``sync_all``, same message), the next turn of the session gets an unchanged section as one line and
+    a changed one whole; a new session starts from nothing again."""
+    result = probe('''
+from agent.memory_manager import MemoryManager
+manager = MemoryManager()
+manager.add_provider(provider)
+first = manager.prefetch_all("what are my plans", session_id="session-1")
+manager.sync_all("what are my plans", "Here they are.", session_id="session-1")
+assert manager.flush_pending(timeout=10)
+second = manager.prefetch_all("and after that?", session_id="session-1")
+manager.on_session_switch("session-2", parent_session_id="session-1", reset=True)
+third = manager.prefetch_all("and after that?", session_id="session-2")
+emit(first=first, second=second, third=third)
+''', home, prelude=PROVIDER_PRELUDE)
+    assert CANARY in result["first"] and "unchanged since your last turn" not in result["first"]
+    assert "unchanged since your last turn: Owner notes" in result["second"] and CANARY not in result["second"]
+    assert "unchanged since your last turn: Shared" in result["second"] and "## Current Time" in result["second"]
+    assert CANARY in result["third"] and "unchanged since your last turn" not in result["third"]
+
+
+def test_a_kanban_workers_prefetch_names_its_task(home, sidecar):
+    """A worker's prefetch reaches the sidecar on the owner's lane with its task body as the message. It names
+    its kanban task, so the sidecar treats it as task work, not the owner's turn: the body carries its own
+    lessons, and no owner verdict can ever score a turn lesson in a worker session."""
+    probe('''
+provider.prefetch("Research order codes for order 6633.", session_id="worker-run-1")
+emit(ok=True)
+''', home, prelude=PROVIDER_PRELUDE, env={"HERMES_KANBAN_TASK": "t_abc", "HERMES_KANBAN_WORKSPACE": str(home.root)})
+    call, = sidecar.calls("/v1/host/context/assemble", "POST")
+    assert call["json"]["context"]["contact_id"] == OWNER
+    assert call["json"]["context"]["metadata"] == {"kanban_task": "t_abc"}
 
 
 def test_guest_prefetch_carries_the_viewer_scope_and_no_owner_only_text(home, sidecar):
@@ -44,7 +80,7 @@ emit(context=context)
     call, = sidecar.calls("/v1/host/context/assemble", "POST")
     assert call["json"]["context"]["contact_id"] == "p-03"
     assert call["json"]["audience"] == "viewer"
-    assert call["json"]["projection_policy"] == "scoped_viewer_required"
+    assert "projection_policy" not in call["json"]
 
 
 def test_unresolved_channel_sender_gets_no_context(home, sidecar):
@@ -76,7 +112,7 @@ def test_guest_direct_tools_are_withheld(home, sidecar):
     """A guest turn is offered no direct tool; a call that still arrives is refused once, terminally."""
     result = probe('''
 tokens = set_session_vars(platform="telegram", user_id="2003", chat_id="2003", session_id="session-1")
-guest = json.loads(provider.handle_tool_call("protagine_record_affect", {"valence": 0.1, "arousal": 0.1}))
+guest = json.loads(provider.handle_tool_call("protagine_resolve_commitment", {"commitment_id": "c-01", "action": "fulfilled"}))
 guest_tools = [s["name"] for s in provider.get_tool_schemas()]
 clear_session_vars(tokens)
 tokens = set_session_vars(platform="telegram", user_id="1001", chat_id="1001", session_id="session-2")
@@ -87,8 +123,8 @@ emit(guest=guest, guest_tools=guest_tools, owner_tools=owner_tools)
     assert result["guest"] == {"unavailable": True, "retry": False, "reason": result["guest"]["reason"]}
     assert "owner-only" in result["guest"]["reason"]
     assert result["guest_tools"] == []
-    assert set(result["owner_tools"]) == {"protagine_record_affect", "protagine_resolve_commitment"}
-    assert not any(call["path"].startswith("/v1/host/affect") for call in sidecar.requests)
+    assert set(result["owner_tools"]) == {"protagine_resolve_commitment"}
+    assert not any(call["path"].startswith("/v1/host/commitments") for call in sidecar.requests)
 
 
 def test_unbound_channel_session_is_built_without_direct_tools(home, sidecar):
@@ -106,3 +142,61 @@ emit(tools=[s["name"] for s in unbound.get_tool_schemas()],
     assert result["call"]["unavailable"] is True and result["call"]["retry"] is False
     assert "protagine_resolve_commitment" in result["cli_tools"]
     assert "protagine_list_goals" not in result["cli_tools"] and "protagine_get_patterns" not in result["cli_tools"]
+
+
+def test_a_fact_told_on_one_channel_reaches_the_owners_prefetch_on_another(home, sidecar):
+    """Build plan M8 acceptance 1 through the adapter: the owner's senders on two platforms resolve to one
+    contact, so what they said in session A on one channel is recalled in session B on the other (the real
+    recall behind it is test_memory_identity_acceptance); a guest's prefetch never gets it."""
+    sidecar.contacts[("signal", "+15550001")] = {"contact_id": OWNER, "display_name": "Owner",
+                                                "interaction_allowed": True, "trust_tier": "GENESIS"}
+    home.write_config(**{**home.config, "plugins": {**home.config["plugins"], "enabled": []}})
+    result = probe('''
+tokens = set_session_vars(platform="telegram", user_id="1001", chat_id="1001", session_id="tg-a")
+provider.sync_turn("My office is room 4, by the lifts.", "Noted.", session_id="tg-a", turn_id="tg-a-1")
+provider._sync_thread.join(10)
+clear_session_vars(tokens)
+tokens = set_session_vars(platform="signal", user_id="+15550001", chat_id="+15550001", session_id="sg-b")
+owner = provider.prefetch("Which room is my office in?", session_id="sg-b")
+clear_session_vars(tokens)
+tokens = set_session_vars(platform="telegram", user_id="2003", chat_id="2003", session_id="guest-c")
+guest = provider.prefetch("Which room is the office in?", session_id="guest-c")
+clear_session_vars(tokens)
+emit(owner=owner, guest=guest)
+''', home, prelude=PROVIDER_PRELUDE)
+    assert "room 4, by the lifts" in result["owner"] and "room 4" not in result["guest"]
+    synced, = sidecar.calls("/v1/host/turns/sync", "POST")
+    assert synced["json"]["context"]["contact_id"] == OWNER and synced["json"]["context"]["channel_id"] == "telegram:1001"
+    assembled = sidecar.calls("/v1/host/context/assemble", "POST")
+    assert [(c["json"]["context"]["contact_id"], c["json"]["context"]["session_id"]) for c in assembled] == [
+        (OWNER, "sg-b"), ("p-03", "guest-c")]
+
+
+def test_a_sender_bound_on_the_agent_alone_reaches_recall(home, sidecar):
+    """A host that binds the sender on the agent only (``AIAgent(user_id=...)``, no gateway session context)
+    reaches the provider through ``pre_llm_call``, the binding the general plugin's guard and tools read, so
+    a contact's turn is recalled as that contact. Where the gateway binds a turn, its own sender wins, and a
+    channel with no sender stays unbound whatever the agent was built with."""
+    result = probe('''
+from hermes_cli.lifecycle import invoke_hook
+def hook(session, sender, platform="telegram"):
+    return invoke_hook("pre_llm_call", session_id=session, task_id="t", turn_id="turn", user_message="what do I owe you?",
+                       conversation_history=[], is_first_turn=True, model="m", platform=platform,
+                       parent_session_id="", sender_id=sender)
+clock = hook("session-1", "2003")
+agent_only = provider.prefetch("what do I owe you?", session_id="session-1")
+hook("session-1", "2003")
+tokens = set_session_vars(platform="telegram", user_id="2002", chat_id="2002", session_id="session-1")
+gateway = provider.prefetch("what do I owe you?", session_id="session-1")
+clear_session_vars(tokens)
+tokens = set_session_vars(platform="telegram", user_id="", chat_id="group-1", session_id="session-1")
+channel = provider.prefetch("what do I owe you?", session_id="session-1")
+clear_session_vars(tokens)
+emit(clock=clock, agent_only=agent_only, gateway=gateway, channel=channel)
+''', home, prelude=PROVIDER_PRELUDE)
+    assert "shared facts" in result["agent_only"] and CANARY not in result["agent_only"]
+    assert not any("Current Time for this turn" in str(item) for item in result["clock"])  # recall carries it
+    assert result["channel"] == ""
+    contacts = [call["json"]["context"]["contact_id"] for call in sidecar.calls("/v1/host/context/assemble", "POST")]
+    assert contacts == ["p-03", "p-02"]
+    assert all(call["json"]["audience"] == "viewer" for call in sidecar.calls("/v1/host/context/assemble", "POST"))

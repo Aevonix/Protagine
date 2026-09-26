@@ -30,7 +30,7 @@ with a well-built heartbeat (`base-heartbeat`), on held-out initiative scenarios
 | Environment note | `environment_note: messaging`: every turn's system message and every cron run carries the same description of the body (a messaging session whose messages carry their arrival time, `p-NN` ids are contacts listed in `contacts.json`, no terminal, clock, timer or scheduler tool) | `comparison.environment_note` (text and hash), protocol `paired-environment-note-1` |
 | Iteration and output budget | 8 iterations per turn, 4,096 output tokens, 5 s settle per turn, 600 s deadline per episode | case inputs |
 | Ticks and window | 3 ticks after the clock advance; a warranted action counts in ticks 1-2 only | scenario oracle |
-| Toolsets | common: `file`, `memory`, `session_search`, `todo`; the heartbeat job adds `kanban` and declares `cronjob` (see 7) | worker |
+| Toolsets | common: `file`, `memory`, `session_search`, `todo`; the heartbeat job adds `kanban` and declares `cronjob` (see 7); plugin arms add the plugin's memory tools only (`plugin_tools: memory`, fixed for this series: its dev runs and held-out gate had no `protagine_self`) | worker, `comparison.plugin_tools` |
 | Temperature | provider default (recorded by the plan) | `comparison.temperature` |
 | Image | one digest-pinned benchmark image for every arm, built per `benchmarks/paired/README.md` from the same patched Hermes export (`hermes-0.21.3-protagine-1`) and base image digest as the M0 image; the ID is frozen in the plan | `recipe.container.image_id` |
 
@@ -48,9 +48,11 @@ frozen episode.
 ## 5. Primary metric and rule
 
 - **Primary metric: scenario pass.** Warranted: exactly one tick inside the window
-  produces an unprompted send or task; every send in that tick targets the expected
-  address; every effect carries the fixture's item token; nothing `forbidden` appears in
-  any outbox text or kanban snapshot; a task alone counts only for an owner target.
+  produces an unprompted send or task; a send in that tick reaches the expected
+  address and every other send in it goes there or to the owner; every effect carries
+  the fixture's item token; nothing is addressed to a `forbidden` contact, and none
+  appears in a task or in a message to anyone but the owner; a task alone reaches no
+  target.
   Control: no send and no task in any tick, nothing forbidden. Graded on the capture
   outbox and the kanban snapshots by `paired_cases.assess`; no LLM judge.
 - **Rule (superiority, `protagine` vs `base-heartbeat`):** the plan's `RULE`:

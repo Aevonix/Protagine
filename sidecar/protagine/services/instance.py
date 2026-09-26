@@ -13,9 +13,16 @@ import sys
 import tempfile
 import time
 
+from protagine.resources import OPEN_FILES
+
 
 class ServiceError(RuntimeError):
     pass
+
+
+#: Seconds between a crashed sidecar and its restart. An error at startup (a bad protagine.yaml,
+#: a native panic) would otherwise re-import the whole sidecar every 5 s, all day.
+RESTART_SECONDS = 30
 
 
 def _private_write(path, content):
@@ -74,7 +81,11 @@ class InstanceService:
             raise ServiceError('Instance autostart supports Linux systemd user services and macOS launchd')
         self.definition = self.state / 'service' / self.name
         self.backup = self.definition.with_name(self.name + '.previous')
+        # The rotating runtime log is the sidecar's own; the manager appends the process's raw
+        # stdout/stderr (a native panic, a traceback before logging starts) to a file of its own,
+        # so a rotation never leaves the manager writing into a renamed or unlinked file.
         self.log = self.state / 'service' / 'sidecar.log'
+        self.manager_log = self.state / 'service' / ('launchd.log' if self.platform == 'darwin' else 'systemd.log')
         self.runner = runner or subprocess.run
 
     @classmethod
@@ -117,20 +128,51 @@ class InstanceService:
         environment = {'PROTAGINE_HOME': str(self.state), 'HERMES_HOME': str(self.hermes_home),
                        'PROTAGINE_INSTANCE_SERVICE': self.label, 'PYTHONUNBUFFERED': '1'}
         if self.platform == 'darwin':
+            # The vector store holds a descriptor per data file; macOS starts a user
+            # process at 256. Both limits, so the server's own raise has room.
+            limits = {'NumberOfFiles': OPEN_FILES}
             return plistlib.dumps({'Label': self.label, 'ProgramArguments': arguments,
                 'WorkingDirectory': str(self.state), 'EnvironmentVariables': environment,
-                'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 5,
+                'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': RESTART_SECONDS,
                 'ExitTimeOut': 20, 'Umask': 0o077,
-                'StandardOutPath': str(self.log), 'StandardErrorPath': str(self.log)}, sort_keys=True)
+                'SoftResourceLimits': limits, 'HardResourceLimits': dict(limits),
+                'StandardOutPath': str(self.manager_log), 'StandardErrorPath': str(self.manager_log)},
+                sort_keys=True)
         quote = _systemd_quote
         return ('[Unit]\nDescription=Protagine private instance ' + self.label + '\n\n[Service]\nType=exec\n'
                 'WorkingDirectory=' + _systemd_path(self.state) + '\n'
                 # ':' disables dollar-variable substitution; %% escapes specifiers.
                 'ExecStart=:' + ' '.join(quote(arg) for arg in arguments) + '\n'
                 'Environment=' + ' '.join(quote(key + '=' + value) for key, value in environment.items()) + '\n'
-                'Restart=always\nRestartSec=5\nTimeoutStopSec=20\nUMask=0077\n'
-                'StandardOutput=append:' + _systemd_path(self.log) + '\n'
-                'StandardError=append:' + _systemd_path(self.log) + '\n\n[Install]\nWantedBy=default.target\n').encode()
+                'Restart=always\nRestartSec=' + str(RESTART_SECONDS) + '\nTimeoutStopSec=20\nUMask=0077\n'
+                'LimitNOFILE=' + str(OPEN_FILES) + '\n'
+                'StandardOutput=append:' + _systemd_path(self.manager_log) + '\n'
+                'StandardError=append:' + _systemd_path(self.manager_log) + '\n\n'
+                '[Install]\nWantedBy=default.target\n').encode()
+
+    def outdated(self):
+        """What the installed definition still does the way an earlier release wrote it: a log shared
+        with the rotating runtime logger, or a restart delay under ``RESTART_SECONDS``."""
+        content = self.definition.read_bytes()
+        stale = []
+        if self.platform == 'darwin':
+            try:
+                plist = plistlib.loads(content)
+            except Exception:
+                return ['an unreadable definition']
+            if str(self.log) in {plist.get('StandardOutPath'), plist.get('StandardErrorPath')}:
+                stale.append('launchd writes into the rotating sidecar.log')
+            delay = int(plist.get('ThrottleInterval') or 10)  # launchd's default is 10 s
+            if delay < RESTART_SECONDS:
+                stale.append(f'a crash restarts after {delay} s')
+            return stale
+        unit = content.decode(errors='replace')
+        if 'append:' + _systemd_path(self.log) + '\n' in unit:
+            stale.append('systemd writes into the rotating sidecar.log')
+        delay = re.search(r'^RestartSec=([0-9]+)$', unit, re.MULTILINE)
+        if delay and int(delay[1]) < RESTART_SECONDS:
+            stale.append(f'a crash restarts after {delay[1]} s')
+        return stale
 
     def status(self):
         owned = self._owned()
@@ -172,8 +214,9 @@ class InstanceService:
             self.link.parent.mkdir(parents=True, exist_ok=True)
             if not owned:
                 self.link.symlink_to(self.definition)
-            if not self.log.exists():
-                _private_write(self.log, b'')
+            for log in (self.log, self.manager_log):
+                if not log.exists():
+                    _private_write(log, b'')
             if self.platform == 'darwin':
                 self._run('launchctl', 'enable', self.target)
             else:
@@ -201,7 +244,14 @@ class InstanceService:
             raise ServiceError('Service is not installed for this instance; run protagine service install')
         self._manager_ready()
 
-    def healthy(self):
+    def health(self):
+        """The served health verdict, ``{'status', 'problems'}``, or None when the sidecar does not answer.
+
+        Readiness is the sidecar answering ``/v1/host/health``; what it answers (``ok``, or
+        ``degraded`` with its reasons in words) is reported as it is, so ``service start``,
+        ``service status`` and ``protagine doctor`` all read the one verdict rather than each
+        deciding for itself what ready means.
+        """
         import httpx
         host = {'0.0.0.0': '127.0.0.1', '::': '::1'}.get(self.host, self.host)
         if ':' in host:
@@ -210,9 +260,17 @@ class InstanceService:
         try:
             response = httpx.get(f'http://{host}:{self.port}/v1/host/health',
                 headers={'Authorization': 'Bearer ' + key}, timeout=5, trust_env=False, follow_redirects=False)
-            return response.status_code == 200 and response.json().get('status') == 'ok'
+            if response.status_code != 200:
+                return None
+            body = response.json()
         except (httpx.HTTPError, ValueError):
-            return False
+            return None
+        if not isinstance(body, dict) or not body.get('status'):
+            return None
+        return {'status': str(body['status']), 'problems': [str(item) for item in body.get('problems') or []]}
+
+    def healthy(self):
+        return self.health() is not None
 
     def start(self, *, restart=False, timeout=30):
         self._require_installed()
@@ -235,10 +293,12 @@ class InstanceService:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             result = self.status()
-            if result['running'] and self.healthy():
-                return {**result, 'ready': True}
+            served = self.health() if result['running'] else None
+            if served is not None:
+                return {**result, 'ready': True, 'health': served['status'], 'problems': served['problems']}
             time.sleep(.2)
-        raise ServiceError(f'Service did not become HTTP-ready; inspect {self.log}. It remains installed for recovery.')
+        raise ServiceError(f'Service did not become HTTP-ready (no answer from /v1/host/health); inspect {self.log} '
+                           f'and {self.manager_log}. It remains installed for recovery.')
 
     def stop(self):
         self._require_installed()
@@ -278,5 +338,8 @@ def manage(action):
     else:
         result = getattr(service, action)()
     if action == 'status':
-        result['ready'] = bool(result['running'] and service.healthy())
+        served = service.health() if result['running'] else None
+        result['ready'] = served is not None
+        result['health'] = served['status'] if served else None
+        result['problems'] = served['problems'] if served else []
     print(json.dumps(result, sort_keys=True))

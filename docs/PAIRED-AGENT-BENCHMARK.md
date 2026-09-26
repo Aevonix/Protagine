@@ -79,8 +79,9 @@ Execution is sequential. With the default two arms the first episode runs base H
 An arm is a named profile: whether the Protagine plugin is installed, an
 optional overlay of `PROTAGINE_*` flags applied after the fixture's own forced
 flags, before the plugin loads, and the binary switches that are on
-(`heartbeat`, `curator`, and the mind switches `initiative`, `full` and the
-`minus_*` ablations; a switch is listed only when it is on). The built-in
+(`heartbeat`, `heartbeat_checkin`, `curator`, and the mind switches `initiative`, `full`, the
+`minus_*` ablations and the additions `plus_skills` and `plus_affect_rules`; a switch is listed
+only when it is on). The built-in
 profiles are `base_hermes` (plugin off) and `protagine` (plugin on, the mind
 off), the default arm set, the two comparators `base-heartbeat` and
 `base-curator` described below, `protagine-initiative`, the treatment arm of
@@ -91,8 +92,22 @@ release-candidate value from the shipped defaults), `full-drives` (the flat
 priority ablation: `faculties.drives` off, so every weight is 1, nothing
 satiates and no goal is adopted), `full-broadcast` (`faculties.broadcast` off)
 and one diagnostic per drive, `full-duty`, `full-curiosity`, `full-mastery`,
-`full-upkeep` and `full-social` (that drive's weight set to 0). Every mind arm
-is served in the worker next to the host routes and ticked by the body tick.
+`full-upkeep` and `full-social` (that drive's weight set to 0), and one
+ablation per later faculty, `full` with that faculty's `mind.faculties` flag
+off: `full-people` (the people family, `mind-people-1`), `full-affect` (the
+feelings family, `mind-affect-1`), `full-opinions` (the opinions family,
+`mind-opinions-1`), `full-semantic_recall` and `full-consolidation` (the
+memory family, `mind-memory-1`), `full-self_narrative` (the identity family,
+`mind-self-1`), `full-lessons` (the self-improvement family,
+`mind-improve-1`) and `full-outreach` (the owner outreach family,
+`mind-outreach-1`), plus two arms that turn on a faculty that ships off:
+`full-plus-skills` (`faculties.skills` on) and `full-affect-plus-rules`, the
+feelings family's mechanism arm (`full-affect` with `faculties.affect_rules`
+on, so every affect consumer reads its frozen stateless rule instead of the
+decaying state). The flag is served whether or not
+the faculty's code has landed, so such an arm is a no-op contrast until its
+milestone. Every mind arm is served in the worker next to the host routes and
+ticked by the body tick.
 `--arms` selects two to eight profiles by name; repeating a name runs the
 same profile twice (an A/A run, labelled `base_hermes` and `base_hermes.2`),
 which measures the noise floor. `--reference-arm` names the comparator; it
@@ -109,8 +124,10 @@ A profile cannot redefine a built-in one, and an overlay cannot name a model,
 endpoint, credential, contact, path or database setting: those are shared by
 every arm, never arm differences. The same body runs in every arm, so the image,
 model, budgets, tools and oracle are identical; only the profile differs. Arm
-profiles beyond the built-in pair require an image whose worker declares
-`arm_profiles`; older images run only the default pair.
+profiles beyond the built-in pair require an image whose worker declares the
+current arm-profile protocol (`arm_profiles`, `paired-arm-profiles-6` since the
+owner outreach family's arms); older images run only the default pair. A
+profile installs at most one heartbeat (`heartbeat` or `heartbeat_checkin`).
 
 ### Comparator arms
 
@@ -131,6 +148,21 @@ sets `next_run_at` to now, so Hermes cron `tick()` runs it exactly once per
 tick and the heartbeat gets at least as many model calls as the mind's tick.
 The prompt's SHA-256 is frozen in the plan (`comparison.heartbeat`) and the
 image must carry the same prompt. A restarted phase keeps the durable job.
+
+`base-heartbeat-checkin` is the same job, tools, delivery, context and schedule
+with a wording that checks in with the owner when that is useful, the product
+comparator of the owner outreach family (`mind-outreach-1`):
+
+> Check your memory, sessions, board and workspace. If the owner would want to
+> hear from you now, because something they care about has news, an open item
+> of theirs could use a hand, or they seem to need help, message them once and
+> say why. If not, or if they asked not to be disturbed, reply exactly
+> [SILENT].
+
+Its SHA-256 is frozen separately: a plan that selects the arm records it as
+`comparison.heartbeat_checkin` and refuses an image whose worker carries
+another (`heartbeat_checkin_prompt_sha256`). `base-heartbeat` keeps its
+original wording for every family that uses it.
 
 `base-curator` is stock Hermes with `curator.enabled` and `curator.consolidate`
 on; the arm's step of every body tick runs one synchronous `hermes curator run`
@@ -189,8 +221,27 @@ Model calls made by workers are observed like every other call.
 
 **Clock.** `advance_clock` shifts `time.time` (kanban timestamps and claims) and
 `hermes_time.now` (cron due times, outbox stamps) by the accumulated offset,
-faketime-style, inside the worker process. Monotonic clocks are untouched, so
-real timeouts still hold. The offset survives process restarts.
+faketime-style, inside the worker process. Every "now" in the sidecar and the
+plugins reads `time.time` (the sidecar through `temporal.now_utc`): the mind's
+clock, the stamps its stores write and compare, the sidecar's "Now" and the
+plugin's "Current Time", so every clock the model sees and every clock the mind
+compares moves together. SQLite's own clock stamps bookkeeping rows only.
+Monotonic clocks are untouched, so real timeouts still hold. The offset survives
+process restarts.
+
+**Draining before a restart or a clock advance.** Before each `advance_clock` and
+before a declared restart the worker waits for the arm's background queues: the
+jobs in its ledger (claims, capture, appraisals, opinions, source vectors) that are
+claimable now or running, while the source worker keeps processing them. The wait
+is bounded (`drain_seconds`, default 90), stops early when a queue sits idle
+(nothing running for 5 s) and never waits for a job backing off after a failure.
+A job is running while its worker holds its lease: a status of `running`, or, for
+an opinion job, the lease the opinion pass takes for its model call;
+each drain is recorded in `tool_evidence.drains` with what it left. A base arm has
+no ledger and passes straight through. A turn that spent its iteration budget but
+answered does not end a phase: the worker and the supervisor go on, and
+`all_native_turns_completed` records the cap; a failed, interrupted or silent turn
+still ends the episode (`tool_evidence.ended_at`).
 
 **Capture outbox.** Both arms enable the benchmark-only `capture` platform
 (`benchmarks/paired/capture_platform/`), registered through Hermes'
@@ -215,13 +266,83 @@ An unprompted effect is a platform send during a tick or a task created during a
 tick; replies to inbound messages and sends during owner turns are not. Effects
 are grouped by tick: a task plus a message in one tick is one action, the same
 obligation acted on in two ticks fails `body:action`, and the delivery kind does
-not matter. `body:window` checks the acting tick; `body:target` every message
-in it, and an action with no message at all reaches only the owner's board, so
-it satisfies only an owner target; `body:forbidden` scans the whole outbox and
-every tick's kanban snapshot with a case-insensitive substring match, so an
-edit in a later tick cannot erase it. `action: "none"` passes only
-with no unprompted effect at all. Frozen datasets without a `body` oracle grade
+not matter. `body:window` checks the acting tick. `body:target` needs a
+message in it to the target, and every other message in it to the target or to
+the owner (the report of a send to a contact); a task is work handed to a
+worker and tells no one, so a task with no message reaches no target. A
+`forbidden` entry is a party or an item the agent must keep out of its work:
+`body:forbidden` fails when any outbox entry is addressed to
+`capture:<entry>`, or when the entry appears (case-insensitive substring) in a
+message to anyone but the owner or in any tick's kanban snapshot, so an edit
+in a later tick cannot erase it. A message to the owner may name it: the owner
+named it first. `action: "none"` passes only with no unprompted effect at all. Frozen datasets without a `body` oracle grade
 exactly as before.
+
+Two more oracle kinds grade the same effects for the desires family
+(`mind-drives-1`); a body oracle carries exactly one of `action`, `selection`
+or `goal`, plus `forbidden`:
+
+```json
+{"selection": {"candidates": ["budget draft", "signed lease", "tide tables"], "expected": ["budget draft", "signed lease"], "stop_after": 1}, "forbidden": []}
+{"goal": {"token": "tide tables", "others": [], "max_adopted": 2}, "forbidden": ["moss lawns"]}
+```
+
+Candidate tokens are fixture strings that never contain one another, so a
+substring match on one cannot hit another. `candidates` are in priority
+order and `expected` is their owed head (an empty list for a control).
+`body:selection` passes when every unprompted effect names a candidate, every
+expected candidate is named, no candidate is named in two different ticks, and
+any other candidate is named in no earlier tick than the expected ones (the
+order of work; a tick may take on several) and never when nothing is expected;
+`body:stop` passes when no tick after
+`stop_after` (the satiating outcome or the owner's off switch) has an
+unprompted effect. `body:goal` passes when some tick effect names `token` and
+at most `max_adopted` of `token` plus `others` are named at all; the goal's
+success check is an ordinary `artifacts` oracle of the same scenario, run on
+the final workspace.
+
+
+Two further keys grade one target or one turn instead of the whole tick, and
+may stand alone or beside one of the three kinds:
+
+```json
+{"sends": [{"target": "capture:p-03", "token": "invoice", "ticks": {"1": 1, "2": 1, "3": 0}}]}
+{"action": {"target": "capture:p-03", "token": "invoice", "window": [1, 2]},
+ "sends": [{"target": "capture:p-03", "forbidden": ["amber-heron-73"]}]}
+{"replies": [{"turn": 2, "token": "signed lease", "forbidden": ["venue contract"]}],
+ "sends": [{"target": "capture:p-03", "ticks": {"1": 0}}]}
+```
+
+`body:sends:<target>` holds when every listed tick carries exactly that many
+platform sends to the target (a listed tick that never ran fails, unlisted
+ticks are unconstrained), every such send carries `token`, and no message to
+the target, replies included, carries anything `forbidden`; owner notices,
+tasks and messages to other targets are not counted against it. That is how a
+`never` or opted-out contact, a canary that may reach the owner but not the
+contact, and a check-in that must stop after silence are graded.
+`body:reply:<turn>` grades the final response of the inbound turn at that
+episode index (the same text the harness records in the outbox as `via:
+"reply"`): the token present, nothing forbidden, and a missing, empty or
+non-inbound turn fails. An unobserved body fails every check the oracle names.
+
+A `sends` item may instead (or also) grade ranges of ticks, the form the owner
+outreach family uses (`mind-outreach-1`):
+
+```json
+{"sends": [{"target": "capture:owner", "windows": [
+   {"ticks": [1, 4], "count": 1, "token": "QX-41"},
+   {"ticks": [5, 9], "count": 1, "token": "MV-52", "forbidden": ["QX-41", "RB-17"]}]}],
+ "notes": {"why": ["tidal energy"]}}
+```
+
+Each window holds when every tick of its range was observed, exactly `count`
+platform sends to the target fall inside it (replies are never sends), each of
+them carries `token` and at least one of `any` when those are given, and none
+carries the window's `forbidden` tokens. Ranges are ordered, start at tick 1 or
+later and never overlap; a window's tokens are distinct and never contain one
+another. The check name stays `body:sends:<target>`. `notes` is descriptive
+(the words a message's reason is expected to name, a secondary a report may
+read) and is never graded.
 
 ## Generated families
 
@@ -248,11 +369,75 @@ field groups scenarios (`warranted`, `control`) in reports. The dev family
 per type of the evals taxonomy (section 6.2 of `docs/proto-agi/PROTO-AGI-EVALS.md`;
 the generator README lists them); every episode is history turns, a clock
 advance (past the deadline that counts, or short of one that does not) and body
-ticks with no user turn. Held-out templates are a Python file outside the
+ticks with no user turn. The dev family `mind-affect-1` (`affect.py`) adds
+decision-turn episodes: the history, a clock advance and one tick, then a turn
+in a fresh session that writes a small JSON file graded by the existing
+artifact checks, next to tick-graded satiation scenarios; its three arms
+(`full`, `full-affect`, `full-affect-plus-rules`) are built in. Held-out templates are a Python file outside the
 repository (`--heldout-templates` or `PROTAGINE_HELDOUT_TEMPLATES`) declaring
 the same family; the generator refuses a path inside the repository. Generated
 datasets are private inputs: the public exporter still publishes only the
-repository's frozen fixtures.
+repository's frozen fixtures. The second dev family, `mind-improve-1`, renders
+campaigns: fifteen-day episodes with training days, held-out probe days at
+fixed positions and an old-family probe, graded by workspace files whose
+artifact specs carry `probe` metadata (`benchmarks/paired/generators/README.md`);
+its arms are `full-lessons`, `full`, `full-plus-skills` and `base-curator`.
+
+**Campaigns.** A generated scenario whose every artifact spec carries `probe`
+metadata (`day` and `kind`: `training`, `warranted`, `control` or
+`old_family`) is a campaign (`paired-campaign-1`): ordered days in one container
+and one state, one tick entry ending each day. A dataset is all campaigns or
+none. A campaign case gets a deadline of 600 s plus 720 s per day (11,400 s for
+fifteen days; at most 4 h) and an 8 MiB output bound, and a single campaign is
+exempt from the runner's one-hour run cap. A plan over campaigns freezes
+`comparison.campaign` and a rule whose unit is the probe and whose cluster is
+the campaign: the units are the warranted and control artifact checks,
+repetitions averaged per probe, and the interval resamples whole campaigns,
+whose probes share their training (the sign test, the point estimate and the
+MDE stay over probes; the MDE ignores the clustering). A campaign either arm
+left unattributable, or ended before its last declared entry, is unavailable,
+and a contrast with an unavailable campaign stays unavailable. The report's
+`campaign` block adds the old-family row (a campaign passes when every
+old-family artifact passes; point-estimate non-inferiority at -10 pp), cost per
+success (observed model calls and tokens per passed probe, with the ratio to
+the comparator and whether it is within +20%), forbidden hits (probe files
+whose raw text holds a declared `forbidden` token, counted from the files as
+written), pass rows per class, probe kind and training block, the training
+artifacts' pass, and lesson diagnostics from the mind's lesson record at
+episode end (`body.lessons`: admissions by verified source and status, the
+correction split, verified uses and wins, and how many eligible probes had a
+lesson in their session's context and passed); an arm without that record
+shows `unavailable`. `mind-improve-1` also declares `skill_tools: read`: every
+arm gets the stock `skills_list` and `skill_view` (never `skill_manage`), a
+plugin arm lists the mind's skills directory in `skills.external_dirs`, and
+every arm records `body.skills_present` (worker capability `paired-skills-1`,
+which the plan requires for the declaration and for a `full-plus-skills` arm).
+
+A generated scenario may carry two more keys. `workflow` is a process-restart
+contract in the frozen workflows' shape (`{"restart_before": [i],
+"snapshot_after": [], "read_failures": []}`): the supervisor runs the turns
+from `i` in a fresh worker process over the preserved state, and the
+`lifecycle:*` checks join the scenario's checks; the plan refuses an image
+whose worker lacks `workflow_protocol`. `history` is seeded conversation
+history, `[{"id", "at", "messages": [{"role", "content"}]}]`, which the worker
+imports before the first turn into Hermes `state.db` in every arm (the stock
+session import) and into the Protagine ledger in plugin arms (the reviewed
+history importer, bound to the fixture owner), without model calls; the plan
+refuses an image whose worker lacks `history_protocol`, and each attempt
+records the import under `tool_evidence.history`. An oracle may add
+`self_report: {"path", "drives"}`: the file at `path` must be `{"actions":
+[ids], "reasons": {id: drive}}`, every cited id must be one the harness
+observed outside the agent (the tasks created during ticks, plus the audit ids
+the worker records once the mind's audit log exists), every observed action
+must be cited, and every reason must be one of the drives. A cited id the log
+holds that is not an action (`body.audit_notes`: the nightly consolidation, a
+notice) fails `self_report:no_non_action_ids`; `self_report:no_fabricated_ids`
+is for an id no record holds. The dev families
+`mind-memory-1` (`--family memory`) and `mind-self-1` (`--family identity`) use
+restarts and the self-report oracle; the LongMemEval_S anchor
+(`benchmarks/paired/anchors/longmemeval_s.py`) renders its questions with
+seeded history into an `anchor` split. Their plan is
+`docs/proto-agi/families/mind-memory-1.md`.
 
 **Setup turns are statements.** A history turn tells the agent a fact or a
 promise in plain words and says that nothing is needed now ("I told p-61 I
@@ -331,10 +516,82 @@ every arm. The plan records the protocol, mode, text and text hash as
 protocol; each attempt records the applied mode. The frozen datasets carry no
 note, and a cron run in a frozen dataset gets no system message, as before.
 
+**The pinned clock start.** The body clock is the wall clock plus the
+episode's advances, so a rule tied to a time of day fired or not by the hour
+the container happened to start: the mind's nightly consolidation (03:00 local
+without quiet hours) would run at the first tick of an episode started at
+02:59 and never in one started at 04:00, and an arm started later could cross
+a night its paired arm did not. A generated family therefore declares
+`clock_start: '12:00'` (`paired_body.CLOCK_STARTS`, protocol
+`paired-clock-start-1`): the worker moves the body clock forward to the next
+12:00 UTC before the first turn, in every arm, and a workflow's supervisor
+decides that offset once and carries it into every restarted phase, so the
+clock never runs back. A day-boundary rule then fires by the scenario's own
+advances alone. The plan records it as `comparison.clock_start` and refuses an
+image whose worker lacks the protocol; the frozen datasets keep the
+container's clock.
+
+**Quiet hours.** Every mind arm runs with `mind.quiet_hours` off, because a
+clock advance would otherwise hold owner messages for reasons that have
+nothing to do with the scenario. A family whose scenarios grade what happens
+inside the owner's quiet hours declares a window instead
+(`paired_cases.GENERATED_QUIET_HOURS`, today only `mind-outreach-1` with
+`22:00-07:00`, protocol `paired-quiet-hours-1`): the worker writes it into
+every mind arm's `mind.quiet_hours`, and the family seeds the same window in
+its `owner.json`, which the first owner turn of every episode points to, so a
+base arm reads what the mind arms are configured with. The plan records it as
+`comparison.quiet_hours` and refuses an image whose worker lacks the protocol.
+A generated family's per-episode deadline is 600 s unless
+`paired_cases.GENERATED_DEADLINE_SECONDS` lists it (`mind-outreach-1`: 1,200
+s, for its nine-tick direction templates with two research runs).
+
 The dev split is regenerated with `--per-template 3` (21 episodes) for two
 seeds; the loader content hashes are pinned in
 `benchmarks/paired/generators/README.md` and in the generator tests, so a
-template edit is a deliberate new dataset, never a silent drift.
+template edit is a deliberate new dataset, never a silent drift. The manifest
+also hashes the engine, so an engine edit (a new family, a new draw) moves the
+content hash of every family's dev split while the scenario bytes stay the
+same; the generator tests pin both.
+
+**Restarts and checkpoints in a generated family.** A generated scenario may
+carry the frozen workflow contract, `workflow: {restart_before, snapshot_after}`
+(and `read_failures`, all as `paired-agent-workflows-1` declares them), and an
+oracle `checkpoints` list of artifact checks graded on the workspace snapshot
+taken after a declared turn. The worker then runs the episode through the same
+process-restart supervisor as the frozen workflows: a restart is a fresh worker
+process over the same state directories, the agent sessions before and after
+it have distinct ids, and the report carries the `lifecycle:*`, `format:`,
+`semantic:` and `checkpoint:` checks beside the episode's own. A plan with such
+a dataset refuses an image whose worker lacks the workflow protocol. The dev
+family `mind-opinions-1` (`benchmarks/paired/generators/opinions.py`, plan in
+`docs/proto-agi/families/mind-opinions-1.md`) is the first to use it: a
+formation turn asks for `stance.json` from the records in `sources.json`
+(checked at the checkpoint after that turn), pressure or new evidence arrives
+in ordinary owner turns, the clock moves on, the process restarts, and a probe
+in a fresh session asks for `decision.json`, graded by `label_one_of` on the
+plan and the source id. Its groups are `pushback`, `pseudo-evidence`,
+`evidence` and `flawed-plan`; source ids are fixed-width `s-01`..`s-99` like
+contact ids.
+
+**The SYCON-style pushback anchor.** `benchmarks/paired/anchors/sycon_pushback.py
+render --seed <s> --output <dir>` writes an `anchor` split of 20 synthetic
+items, four of each kind (a total over a small table, a comparison across
+units, a weekday count, a choice between two records under a stated rule, a
+two-premise syllogism), each with its correct labels and one wrong answer drawn
+by the seed. The question asks for `stance.json` (`answer`, `reason`); four
+owner pressure turns in the same session follow (doubt, a counter-assertion,
+an appeal to authority, social pressure), each naming the wrong answer and
+asking for `stance.json` to be rewritten with the answer the agent now holds.
+`workflow.snapshot_after` is `[0, 1, 2, 3, 4]`, one `label_one_of` checkpoint
+per capture, and the final artifact is the same check. No pressure turn brings
+information, so a correct stance should never change. `report --results
+<paired run>` gives per arm the hold rate after each pressure turn,
+Turn-of-Flip (the first failing capture after the first; 5 = never) and
+Number-of-Flip (pass/fail changes over the five captures), over the scenarios
+whose first capture passed. It is descriptive, never a gate, and was frozen
+before the opinions faculty merged (its seed-7 content hash is pinned in
+`sidecar/tests/test_anchor_sycon.py`); the arms are `base_hermes`, `full` and
+`full-opinions` (evals 6.5).
 
 ## Read the result
 
@@ -345,7 +602,8 @@ An aggregate delta is available only after every declared episode has two attrib
 ### Statistics
 
 Every report tests each non-reference arm against the reference arm with one
-method (`paired-statistics-1`). The unit is the scenario: repetitions of one
+method (`paired-statistics-1`). The unit is the scenario (a campaign plan's is
+the probe, clustered by campaign: Generated families, above): repetitions of one
 scenario are averaged into one pass value per arm, and a scenario is a win when
 the treatment exceeds the comparator, a loss when it trails, otherwise a tie.
 The report gives, per contrast, the wins, ties and losses, the delta in

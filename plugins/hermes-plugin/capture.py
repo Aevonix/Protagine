@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 
 # Turns without a sender on these platforms belong to the owner's own terminal.
 INTERNAL_PLATFORMS = frozenset({"", "cli", "internal", "system", "owner", "api", "worker", "cron"})
+# The skills the sidecar writes into its own skills.external_dirs entry (P/mind/skills.py).
+SKILL_PREFIX = "protagine-"
+
+
+def session_env() -> tuple[str, str, str, str]:
+    """The platform, sender, chat and chat type the gateway bound for the current turn, or blanks."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return "", "", "", ""
+    return tuple(str(get_session_env(name, "") or "").strip() for name in (  # type: ignore[return-value]
+        "HERMES_SESSION_PLATFORM", "HERMES_SESSION_USER_ID", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_TYPE"))
 
 
 def text_of(content: Any) -> str:
@@ -50,6 +62,9 @@ class SessionInfo:
     seen_at: float = field(default_factory=time.time)
     owner: bool | None = None
     contact_id: str | None = None
+    # The chat the gateway bound for the sender's turn ("" without a gateway: the sender's own direct chat).
+    chat_id: str = ""
+    chat_type: str = ""
 
 
 class SessionMap:
@@ -71,6 +86,7 @@ class SessionMap:
                 info = SessionInfo(session_id, str(platform or ""), str(sender_id or ""))
             info.user_message = text_of(user_message)
             info.parent_session_id = str(parent_session_id or "")
+            info.chat_id, info.chat_type = self._bound_chat(info) or (info.chat_id, info.chat_type)
             info.seen_at = time.time()
             self._sessions[session_id] = info
             self._sessions.move_to_end(session_id)
@@ -81,6 +97,20 @@ class SessionMap:
     def get(self, session_id: str) -> SessionInfo | None:
         with self._lock:
             return self._sessions.get(str(session_id or ""))
+
+    @staticmethod
+    def _bound_chat(info: SessionInfo) -> tuple[str, str] | None:
+        """The gateway's ``(chat, chat type)`` when the turn it bound is this session's sender's, else None."""
+        platform, sender, chat, chat_type = session_env()
+        if (chat or chat_type) and sender == info.sender_id and platform.lower() == info.platform.lower():
+            return chat, chat_type.lower()
+        return None
+
+    def chat(self, session_id: str) -> tuple[str, str]:
+        """Where a session's final response goes: the chat bound now or when its turn began; blanks without a
+        gateway (the sender's direct chat)."""
+        info = self.get(session_id)
+        return ("", "") if info is None else self._bound_chat(info) or (info.chat_id, info.chat_type)
 
     def _owner_handles(self, platform: str) -> set[str]:
         return {item.lower() for item in self.settings.owner_handles().get(platform.lower(), [])}
@@ -104,6 +134,46 @@ class SessionMap:
             return False  # unresolved senders never gain owner authority
         info.owner = bool(owner_id) and contact == owner_id
         return info.owner
+
+    def sender_is_owner(self, platform: str, sender_id: str) -> bool:
+        """One of the owner's handles, or a handle the sidecar resolves to the owner's contact. Nothing is
+        recorded and no contact is created; an unresolvable sender is not the owner."""
+        platform, sender = str(platform or "").strip().lower(), str(sender_id or "").strip()
+        if not sender:
+            return False
+        if sender.lower() in self._owner_handles(platform):
+            return True
+        owner_id = self.settings.owner_contact_id()
+        if not owner_id:
+            return False
+        try:
+            contact = self.client.resolve_contact(platform, sender)
+        except Exception as error:
+            logger.debug("sender not resolved (%s)", type(error).__name__)
+            return False
+        return bool(contact) and str(contact.get("contact_id")) == owner_id
+
+    def owner_only(self, session_info: Mapping[str, Any]) -> bool:
+        """Whether the session whose prompt Hermes is rendering is the owner's alone.
+
+        Hermes renders a session's prompt before its first ``pre_llm_call``, so the
+        sender comes from the gateway's session variables, as the memory provider
+        reads it. The owner's own direct chat counts, and so does an internal lane
+        with no chat at all (the CLI, the benchmark). A guest, an unresolved
+        sender, a group or channel the owner shares, and a chat with no sender
+        never do. This map is only read here: a render in mid-turn must not reset
+        the message the tools check an ask code against.
+        """
+        platform, sender, chat, chat_type = session_env()
+        platform = (platform or str(session_info.get("platform") or "")).strip().lower()
+        if chat_type.lower() not in {"", "dm"}:
+            return False
+        if not sender:
+            return not chat and platform in INTERNAL_PLATFORMS
+        known = self.get(str(session_info.get("session_id") or ""))
+        if known is not None and known.sender_id == sender and known.owner is not None:
+            return known.owner
+        return self.sender_is_owner(platform, sender)
 
     def contact_id(self, session_id: str) -> str | None:
         """The sidecar contact for a session's sender; the owner for internal turns."""
@@ -320,6 +390,23 @@ class Capture:
                 logger.debug("body wake failed (%s)", type(error).__name__)
         return None
 
+    def skill_loaded(self, *, action: str = "", skill_name: str = "", session_id: str = "", task_id: str = "",
+                     **_: Any) -> None:
+        """``on_skill_lifecycle``: a load of one of Protagine's own skills (``protagine-*``) is queued for
+        ``POST /v1/mind/skills/used``; every other skill and action is Hermes' business. Enqueue only."""
+        name = str(skill_name or "")
+        if action != "loaded" or not name.startswith(SKILL_PREFIX):
+            return None
+        payload = {"kind": "skill_use", "skill": name, "session_id": str(session_id or ""),
+                   "task_id": str(task_id or "")}
+        try:  # a load is never disturbed by its bookkeeping
+            self.outbox.enqueue(f"skill:{uuid.uuid4().hex}", payload)
+            if self.on_enqueue is not None:
+                self.on_enqueue()
+        except Exception as error:
+            logger.debug("skill load not queued (%s)", type(error).__name__)
+        return None
+
     def _capture(self, *, session_id: str = "", task_id: str = "", turn_id: str = "",
                  user_message: Any = None, assistant_response: Any = None, model: str = "",
                  platform: str = "", **_: Any) -> dict[str, Any] | None:
@@ -339,7 +426,7 @@ class Capture:
             "platform": str(platform or (info.platform if info else "") or ""),
             "sender_id": info.sender_id if info else "", "user_message": user,
             "assistant_message": assistant, "model": str(model or ""),
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "occurred_at": datetime.fromtimestamp(time.time(), timezone.utc).isoformat(),
         }
         return self.outbox.enqueue(stable, payload)
 
@@ -363,7 +450,15 @@ def checkpoint(messages: list[dict[str, Any]], *, session_id: str, contact_id: s
 
 def deliver(client: ProtagineClient, sessions: SessionMap, settings: Settings,
             payload: Mapping[str, Any]) -> bool:
-    """POST one outbox row to ``/v1/host/turns/sync``; True when accepted."""
+    """POST one outbox row to ``/v1/host/turns/sync`` (a skill load to ``/v1/mind/skills/used``); True when
+    accepted."""
+    if payload.get("kind") == "skill_use":
+        response = client.post("/v1/mind/skills/used", timeout=5, json={
+            "skill": payload.get("skill"), "session_id": payload.get("session_id") or None,
+            "task_id": payload.get("task_id") or None})
+        if response.status_code in {400, 404, 409, 413, 422}:
+            raise Undeliverable(f"HTTP {response.status_code}")
+        return response.is_success
     contact = str(payload.get("contact_id") or "")
     platform, sender = str(payload.get("platform") or ""), str(payload.get("sender_id") or "")
     if not contact:

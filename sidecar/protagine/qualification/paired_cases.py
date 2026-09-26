@@ -14,7 +14,7 @@ import math
 from pathlib import Path, PurePosixPath
 import re
 
-from .records import CaseSpec
+from .records import CaseSpec, MAX_CAMPAIGN_OUTPUT_BYTES, MAX_CAMPAIGN_SECONDS
 
 VERSION = 'paired-agent-pilot-1'
 REVIEWED_VERSION = 'paired-agent-reviewed-1'
@@ -111,7 +111,9 @@ CASE_IDS = tuple(item['id'] for item in _SCENARIOS)
 # Seeded template families (benchmarks/paired/generators) are written outside the
 # frozen fixtures. Their scenarios may hold body events and body oracles.
 GENERATOR_PROTOCOL = 'paired-generator-1'
-GENERATED_SPLITS = ('dev', 'heldout')
+# An anchor split is public external data rendered into the fixture shape (the
+# LongMemEval_S anchor); it is reported descriptively, never as a held-out gate.
+GENERATED_SPLITS = ('dev', 'heldout', 'anchor')
 # Generated families run with every enabled Hermes tool loaded eagerly in every
 # arm (paired_worker.EAGER_TOOLS_CONFIG); the frozen datasets keep stock loading.
 GENERATED_TOOL_LOADING = 'eager'
@@ -122,8 +124,82 @@ GENERATED_MESSAGE_TIMESTAMPS = 'gateway'
 # Every turn and cron run of a generated family carries the same description of
 # the body (paired_worker.ENVIRONMENT_NOTES); the frozen datasets carry none.
 GENERATED_ENVIRONMENT_NOTE = 'messaging'
+# The families whose scenarios grade messages to contacts give every arm the same outbound
+# path (paired_worker.OUTBOUND_SCHEMA, families/mind-people-1.md 7.1); in every other family
+# no arm has a send tool, as their plans say.
+GENERATED_OUTBOUND = {'mind-people-1': 'send_message'}
+# The families whose question involves skills give every arm the same read-only skill tools
+# (paired_worker.SKILL_TOOLS): Hermes lists skills only to an agent with a skill tool, so without them
+# no arm could see one (evals section 11, 2026-09-24). No arm has skill_manage.
+GENERATED_SKILL_TOOLS = {'mind-improve-1': 'read'}
+# Every generated family's plugin tool set (paired_worker.PLUGIN_TOOL_SETS), fixed for its comparison series.
+# The initiative series (its dev runs and held-out gate) ran with the plugin's memory tools only; the memory
+# family's self-report probe reads the mind's action log. A family not listed keeps ``memory_self``.
+GENERATED_PLUGIN_TOOLS = {'mind-initiative-1': 'memory'}
+GENERATED_PLUGIN_TOOLS_DEFAULT = 'memory_self'
+# Every episode of a generated family starts its body clock at this UTC time of day, in
+# every arm (paired_body.start_offset); the frozen datasets keep the container's clock.
+GENERATED_CLOCK_START = '12:00'
+# Families whose scenarios grade what the agent does inside the owner's quiet hours: the window is written
+# into every mind arm (paired_worker.QUIET_HOURS_PROTOCOL) and seeded in the family's owner.json for every
+# arm. Every other family keeps quiet hours off in every mind arm.
+GENERATED_QUIET_HOURS = {'mind-outreach-1': '22:00-07:00'}
+# The per-episode deadline of a generated family, 600 s unless listed: the outreach family's direction
+# templates run up to nine ticks with two research runs.
+GENERATED_DEADLINE_SECONDS = {'mind-outreach-1': 1200}
 GENERATED_SCENARIO_KEYS = frozenset({'id', 'family', 'scenario', 'seed', 'role', 'initial_files',
                                      'episodes', 'limitations', 'oracle'})
+# A generated scenario may also declare a process-restart contract (``workflow``, the
+# frozen workflows' shape) with checkpoint artifacts graded on its snapshots, and seeded
+# conversation history (``history``, paired_history) that the worker imports before the
+# first turn.
+GENERATED_OPTIONAL_KEYS = frozenset({'workflow', 'history'})
+GENERATED_ORACLE_KEYS = frozenset({'declared_turns', 'artifacts', 'body', 'checkpoints', 'self_report'})
+# A campaign (the improve family, evals section 6.8) is one scenario of ordered days sharing one
+# arm's state, whose artifacts are probes: every artifact spec carries ``probe`` with its day and
+# kind (training, warranted, control, old_family). Its deadline grows with the day count (one tick
+# entry ends each day) and its output bound is the campaign one; the report takes the probe as
+# its unit and the campaign as its cluster (paired_report).
+CAMPAIGN_PROTOCOL = 'paired-campaign-1'
+CAMPAIGN_DAY_SECONDS = 720
+PROBE_KINDS = ('training', 'warranted', 'control', 'old_family')
+PROBE_KEYS = frozenset({'day', 'kind', 'control', 'source'})
+
+
+def validate_probes(item):
+    """True when the scenario is a campaign (every artifact carries a valid probe), False when none does."""
+    artifacts = (item.get('oracle') or {}).get('artifacts') or []
+    marked = [spec for spec in artifacts if isinstance(spec, dict) and 'probe' in spec]
+    if not marked:
+        return False
+    if len(marked) != len(artifacts):
+        raise ValueError('A campaign declares a probe on every artifact')
+    for spec in marked:
+        probe = spec['probe']
+        if (not isinstance(probe, dict) or set(probe) - PROBE_KEYS or not {'day', 'kind'} <= set(probe)
+                or type(probe['day']) is not int or probe['day'] < 1 or probe['kind'] not in PROBE_KINDS
+                or any(key in probe and (not isinstance(probe[key], str) or not probe[key])
+                       for key in ('control', 'source'))):
+            raise ValueError('A probe is {day >= 1, kind in ' + ', '.join(PROBE_KINDS)
+                             + ', control?, source?}')
+    return True
+
+
+def campaign_days(episodes):
+    """A campaign's days: one tick entry ends each day."""
+    return sum(isinstance(entry, dict) and 'tick' in entry for entry in episodes)
+
+
+def _validate_checkpoints(checkpoints, workflow):
+    if (not isinstance(checkpoints, list) or not checkpoints
+            or len({c.get('turn_index') for c in checkpoints if isinstance(c, dict)}) != len(checkpoints)
+            or any(not isinstance(c, dict) or set(c) != {'turn_index', 'artifacts'}
+                   or c['turn_index'] not in workflow['snapshot_after']
+                   or not isinstance(c['artifacts'], list) or not c['artifacts']
+                   or any(not isinstance(a, dict) or not _leaf_name(a.get('path')) for a in c['artifacts'])
+                   or len({a['path'] for a in c['artifacts']}) != len(c['artifacts'])
+                   for c in checkpoints)):
+        raise ValueError('Generated checkpoints must grade declared snapshots')
 
 
 def load_generated_dataset(directory):
@@ -146,11 +222,12 @@ def load_generated_dataset(directory):
     if (not isinstance(scenarios, list) or not 1 <= len(scenarios) <= 128
             or len(scenarios) != manifest['scenario_count']):
         raise ValueError('Generated dataset scenario count mismatch')
-    from .paired_body_grading import validate_body_oracle
-    from .paired_workflow_runtime import validate_episodes
-    identities, counts = set(), {}
+    from .paired_body_grading import validate_body_oracle, validate_self_report_oracle
+    from .paired_history import validate_history
+    from .paired_workflow_runtime import validate_episodes, validate_workflow
+    identities, counts, campaigns = set(), {}, set()
     for item in scenarios:
-        if (not isinstance(item, dict) or set(item) != GENERATED_SCENARIO_KEYS
+        if (not isinstance(item, dict) or set(item) - GENERATED_OPTIONAL_KEYS != GENERATED_SCENARIO_KEYS
                 or not _leaf_name(item['id']) or item['id'] in identities
                 or not _leaf_name(item['family']) or not _leaf_name(item['scenario'])
                 or type(item['seed']) is not int or not isinstance(item['role'], str) or not item['role']
@@ -162,15 +239,29 @@ def load_generated_dataset(directory):
         if not isinstance(files, dict) or any(not _leaf_name(k) or not isinstance(v, str) for k, v in files.items()):
             raise ValueError('Initial files require leaf names and text')
         kinds = validate_episodes(item['episodes'])
+        workflow = validate_workflow(item['workflow'], item['episodes']) if 'workflow' in item else None
+        if 'history' in item:
+            validate_history(item['history'])
+            sessions = {entry['session_id'] for entry in item['episodes'] if 'session_id' in entry}
+            if any(session['id'] in sessions for session in item['history']):
+                raise ValueError('History session ids must differ from the episode session ids')
         artifacts = oracle.get('artifacts') if isinstance(oracle, dict) else None
-        if (not isinstance(oracle, dict) or set(oracle) - {'declared_turns', 'artifacts', 'body'}
+        if (not isinstance(oracle, dict) or set(oracle) - GENERATED_ORACLE_KEYS
                 or oracle.get('declared_turns') != len(kinds) or not isinstance(artifacts, list)
                 or any(not isinstance(a, dict) or not _leaf_name(a.get('path')) for a in artifacts)
                 or len({a['path'] for a in artifacts}) != len(artifacts)
-                or not (artifacts or 'body' in oracle)):
-            raise ValueError('Generated scenarios need artifact or body outcomes')
+                or not (artifacts or 'body' in oracle or 'self_report' in oracle)
+                or ('checkpoints' in oracle and workflow is None)):
+            raise ValueError('Generated scenarios need artifact, body or self-report outcomes')
         if 'body' in oracle:
             validate_body_oracle(oracle['body'])
+        if 'self_report' in oracle:
+            validate_self_report_oracle(oracle['self_report'])
+        if 'checkpoints' in oracle:
+            _validate_checkpoints(oracle['checkpoints'], workflow)
+        campaigns.add(validate_probes(item))
+    if len(campaigns) != 1:
+        raise ValueError('A generated dataset is all campaigns (every artifact a probe) or none')
     if counts != manifest['families']:
         raise ValueError('Generated dataset family count mismatch')
     content_hash = hashlib.sha256(b'manifest\0' + manifest_raw + b'\0scenarios\0' + scenario_raw).hexdigest()
@@ -221,13 +312,38 @@ def cases(arm, case_ids=None, *, dataset_version=VERSION, profile=None, dataset_
             inputs['tool_loading'] = GENERATED_TOOL_LOADING
             inputs['message_timestamps'] = GENERATED_MESSAGE_TIMESTAMPS
             inputs['environment_note'] = GENERATED_ENVIRONMENT_NOTE
+            if dataset_version in GENERATED_OUTBOUND:
+                inputs['outbound'] = GENERATED_OUTBOUND[dataset_version]
+            if dataset_version in GENERATED_SKILL_TOOLS:
+                inputs['skill_tools'] = GENERATED_SKILL_TOOLS[dataset_version]
+            if dataset_version in GENERATED_QUIET_HOURS:
+                inputs['quiet_hours'] = GENERATED_QUIET_HOURS[dataset_version]
+            inputs['plugin_tools'] = GENERATED_PLUGIN_TOOLS.get(dataset_version, GENERATED_PLUGIN_TOOLS_DEFAULT)
+            inputs['clock_start'] = GENERATED_CLOCK_START
+            if 'workflow' in scenario:
+                # The normalized contract: the supervisor restarts the worker process before
+                # the probe and the workflow grader checks the lifecycle and the checkpoints.
+                from .paired_workflow_runtime import validate_workflow
+                contract = validate_workflow(scenario['workflow'], scenario['episodes'])
+                inputs['workflow'] = copy.deepcopy(contract)
+                oracle['workflow_contract'] = copy.deepcopy(contract)
+            if 'history' in scenario:
+                inputs['history'] = copy.deepcopy(scenario['history'])
         # Tick episodes wait for cron runs and in-process workers; give them the workflow deadline.
         generous = dataset_version == WORKFLOW_VERSION or split is not None
+        timeout_seconds = (GENERATED_DEADLINE_SECONDS.get(dataset_version, 600) if split is not None
+                           else 600 if generous else 120 * len(scenario['episodes']) + 30)
+        if split is not None and dataset_version in GENERATED_DEADLINE_SECONDS:
+            inputs['family_deadline'] = timeout_seconds
+        max_output_bytes = 1048576 if generous else 262144
+        if split is not None and validate_probes(scenario):
+            days = campaign_days(scenario['episodes'])
+            inputs['campaign'] = {'protocol': CAMPAIGN_PROTOCOL, 'days': days}
+            timeout_seconds = min(MAX_CAMPAIGN_SECONDS, 600 + CAMPAIGN_DAY_SECONDS * days)
+            max_output_bytes = MAX_CAMPAIGN_OUTPUT_BYTES
         result.append(CaseSpec(id=scenario['id'], version=dataset_version, role=scenario['role'],
             boundary='native_hermes', consumer='native_paired', evaluator='paired_artifacts',
-            inputs=inputs, oracle=oracle,
-            timeout_seconds=600 if generous else 120 * len(scenario['episodes']) + 30,
-            max_output_bytes=1048576 if generous else 262144))
+            inputs=inputs, oracle=oracle, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes))
     return result
 
 
@@ -379,6 +495,9 @@ def assess(observed, oracle):
     if 'body' in oracle:
         from .paired_body_grading import assess_body
         checks.update(assess_body(effects, oracle['body']))
+    if 'self_report' in oracle:
+        from .paired_body_grading import assess_self_report
+        checks.update(assess_self_report(effects, oracle['self_report']))
     return checks
 
 

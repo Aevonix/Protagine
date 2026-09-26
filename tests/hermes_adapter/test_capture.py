@@ -40,6 +40,23 @@ emit(rows=rows, pending=outbox.pending_count(), path=str(settings.outbox_path))
         assert connection.execute("SELECT COUNT(*) FROM turn_outbox").fetchone()[0] == 1
 
 
+def test_a_turn_is_stamped_on_the_clock_the_mind_compares_it_with(home, sidecar):
+    """``occurred_at`` follows ``time.time``, the clock a benchmark body shifts and the mind's
+    contact stamps use; ``datetime.now`` would not move with it (audit B1)."""
+    result = probe(CAPTURE_PRELUDE_CODE + '''
+real = time.time
+time.time = lambda: real() + 86400
+try:
+    fire(1)
+finally:
+    time.time = real
+row, = outbox.rows()
+emit(occurred_at=row["payload"]["occurred_at"], now=real())
+''', home)
+    from datetime import datetime
+    assert abs(datetime.fromisoformat(result["occurred_at"]).timestamp() - (result["now"] + 86400)) < 60
+
+
 def test_hundred_overlapping_fires_produce_hundred_rows_and_deliveries(home, sidecar):
     result = probe(CAPTURE_PRELUDE_CODE + '''
 threads = [threading.Thread(target=fire, args=(i,), kwargs={"sender": "1001" if i % 2 else "2003"})

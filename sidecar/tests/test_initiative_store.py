@@ -366,3 +366,123 @@ class TestDedupOutcomes:
     def test_create_shim_returns_initiative(self, store: InitiativeStore) -> None:
         init = store.create(type="task", description="x", dedup_key="task:9")
         assert isinstance(init, StoredInitiative)
+
+
+
+# -- recovery at open (cutover data-5) ------------------------------------------------------------
+
+LEGACY_INITIATIVES = (
+    "CREATE TABLE initiatives (id TEXT PRIMARY KEY, dedup_key TEXT UNIQUE, type TEXT NOT NULL, "
+    "description TEXT NOT NULL, priority REAL, rationale TEXT, action_hint TEXT, entity_id TEXT, "
+    "source_type TEXT, source_id TEXT, created_by TEXT, status TEXT, assigned_agent_id TEXT, "
+    "assigned_agent_name TEXT, assigned_at TIMESTAMP, acknowledged_at TIMESTAMP, completed_at TIMESTAMP, "
+    "cancelled_at TIMESTAMP, cancelled_by TEXT, cancelled_reason TEXT, failed_at TIMESTAMP, "
+    "failed_reason TEXT, attempt_count INTEGER, max_attempts INTEGER, timeout_seconds INTEGER, "
+    "last_attempt_at TIMESTAMP, created_at TIMESTAMP, expires_at TIMESTAMP, delivery_mode TEXT, "
+    "delivery_attempts INTEGER, last_delivery_at TIMESTAMP, delivery_failed_at TIMESTAMP, "
+    "delivery_failed_reason TEXT, result TEXT, result_metadata TEXT, preferred_agent_id TEXT, "
+    "stale_reason TEXT, recovery_reason TEXT, job_id TEXT, context TEXT)")
+
+
+def _legacy_store(home: Path, rows: int = 3) -> None:
+    """A 1.9 initiatives table: no intention columns, a few rows, WAL like the live store."""
+    import sqlite3
+    from contextlib import closing
+    home.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(home / "initiatives.db")) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute(LEGACY_INITIATIVES)
+        db.executemany("INSERT INTO initiatives (id, type, description, status) VALUES (?, 'task', 'old', 'completed')",
+                       [(f"old-{index}",) for index in range(rows)])
+        db.commit()
+
+
+def _rows(home: Path) -> int:
+    import sqlite3
+    from contextlib import closing
+    with closing(sqlite3.connect(home / "initiatives.db")) as db:
+        return db.execute("SELECT count(*) FROM initiatives").fetchone()[0]
+
+
+def test_a_locked_store_is_left_as_it_is_and_upgrade_says_so(tmp_path: Path) -> None:
+    """Another process holds the write lock while ``upgrade`` adds the intention columns: they
+    cannot be added, so the open fails loudly. The file and its rows stay, nothing is renamed and
+    no 'migration applied' is reported (the store used to be unlinked and recreated empty)."""
+    import sqlite3
+    from protagine import init
+    _legacy_store(tmp_path)
+    holder = sqlite3.connect(tmp_path / "initiatives.db", isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(init.InitError, match="left as it is"):
+            init.migrate_initiatives(tmp_path)
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert _rows(tmp_path) == 3
+    assert not list(tmp_path.glob("initiatives.db.corrupt-*"))
+    assert "initiatives.db:kind" in init.pending_initiative_columns(tmp_path)
+    # With the lock gone the same upgrade step adds the columns and keeps every row.
+    assert "migration applied: initiatives.db:kind" in init.migrate_initiatives(tmp_path)
+    assert _rows(tmp_path) == 3 and init.pending_initiative_columns(tmp_path) == []
+
+
+def test_a_corrupt_store_is_renamed_aside_never_deleted(tmp_path: Path) -> None:
+    """Only a damaged file (SQLITE_CORRUPT, SQLITE_NOTADB) is recovered, and the damaged file is
+    kept beside the store under a dated name; a backup is restored when one exists."""
+    garbage = b"this is not a database" * 64
+    (tmp_path / "initiatives.db").write_bytes(garbage)
+    store = InitiativeStore(state_dir=tmp_path)
+    try:
+        assert store.count() == 0
+    finally:
+        store.close()
+    aside = list(tmp_path.glob("initiatives.db.corrupt-*"))
+    assert len(aside) == 1 and aside[0].read_bytes() == garbage
+
+    store = InitiativeStore(state_dir=tmp_path)
+    store.create(type="task", description="kept in the backup", dedup_key="task:kept")
+    store.close()  # writes initiatives.db.backup
+    (tmp_path / "initiatives.db").write_bytes(garbage)
+    store = InitiativeStore(state_dir=tmp_path)
+    try:
+        assert store.get_by_dedup_key("task:kept").description == "kept in the backup"
+    finally:
+        store.close()
+    assert len(list(tmp_path.glob("initiatives.db.corrupt-*"))) == 2
+
+
+def test_upgrade_rechecks_columns_and_rows_after_the_store_opens(tmp_path: Path, monkeypatch) -> None:
+    """``migrate_initiatives`` reports 'migration applied' only when the columns are there and no
+    row went missing; a store that came back without them is an upgrade failure."""
+    from protagine import init
+    from protagine.initiatives import store as store_module
+
+    class Emptied:
+        """The old recovery: the file is dropped and a fresh store takes its place."""
+        def __init__(self, state_dir):
+            for suffix in ("", "-wal", "-shm"):
+                (Path(state_dir) / ("initiatives.db" + suffix)).unlink(missing_ok=True)
+            self._real = InitiativeStore(state_dir=state_dir)
+
+        def close(self):
+            self._real.close()
+
+    class Untouched:
+        """A store open that swallowed its ALTERs."""
+        def __init__(self, state_dir):
+            pass
+
+        def close(self):
+            pass
+
+    emptied, untouched = tmp_path / "emptied", tmp_path / "untouched"
+    _legacy_store(emptied)
+    _legacy_store(untouched)
+    monkeypatch.setattr(store_module, "InitiativeStore", Emptied)
+    with pytest.raises(init.InitError, match="3 rows before, 0 after"):
+        init.migrate_initiatives(emptied)
+    monkeypatch.setattr(store_module, "InitiativeStore", Untouched)
+    with pytest.raises(init.InitError, match="still lacks"):
+        init.migrate_initiatives(untouched)
+    assert _rows(untouched) == 3

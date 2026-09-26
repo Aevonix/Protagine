@@ -7,10 +7,14 @@ a thought budget, and anti-rumination scales salience by 0.9 after progress
 and 0.6 without. The top 3 open concerns are the broadcast set: the only
 deliberation candidates, rendered in turn context and added to recall.
 
-``mind_state`` keeps decaying levels with cited causes: drive levels,
-satiation, seeded interests and open questions. Affect and the
-self-narrative sections arrive with their own milestones and share the
-table.
+``mind_state`` keeps decaying levels with cited causes. Its key prefixes, one
+owner each: ``drive.*`` and ``satiety.*`` (the drives), ``interest:*`` and
+``question:*`` (curiosity), ``self.*`` (the self-narrative sections),
+``consolidation.last`` (the nightly run) and ``people.digests.last`` (the
+template digests' day). A text-only key carries no half-life, so
+``MindState.decay`` never rewrites its ``updated_at``: ``consolidation.last``
+and ``people.digests.last`` read the last run's moment from it. Affect arrives
+with its own milestone and shares the table.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from protagine.util.temporal import now_utc
 
 MIND_DB = "mind.db"
 HALF_LIFE = timedelta(hours=12)
@@ -72,8 +77,8 @@ class Concern:
     thoughts_spent: int = 0
     max_thoughts: int = MAX_THOUGHTS
     status: str = "open"
-    last_touched: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_touched: datetime = field(default_factory=lambda: now_utc())
+    created_at: datetime = field(default_factory=lambda: now_utc())
     intention_id: Optional[str] = None
     detail: Dict[str, Any] = field(default_factory=dict)
 
@@ -141,7 +146,7 @@ class MindState:
 
     def __init__(self, conn: sqlite3.Connection, *, clock: Callable[[], datetime] | None = None) -> None:
         self.conn = conn
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:
         row = self.conn.execute("SELECT * FROM mind_state WHERE key = ?", (key,)).fetchone()
@@ -216,7 +221,7 @@ class Concerns:
     def __init__(self, path: str | Path | sqlite3.Connection, *, clock: Callable[[], datetime] | None = None,
                  capacity: int = CAPACITY, half_life: timedelta = HALF_LIFE) -> None:
         self.conn = path if isinstance(path, sqlite3.Connection) else open_mind_db(path)
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: now_utc())
         self.capacity = int(capacity)
         self.half_life = half_life
         self.state = MindState(self.conn, clock=self.clock)

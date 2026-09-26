@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 import uuid
+from protagine.util.temporal import now_utc
 
 CREATOR = 'native_local_work'
 SOURCE = 'owner_local_draft'
@@ -25,7 +26,7 @@ def encoded(value):
 
 
 def stamp():
-    return datetime.now(timezone.utc).isoformat()
+    return now_utc().isoformat()
 
 
 def retryable_legacy(row):

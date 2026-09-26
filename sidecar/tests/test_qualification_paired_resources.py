@@ -164,3 +164,137 @@ def test_incomplete_agent_turns_are_counted_per_arm_without_touching_the_score(t
     assert row == original
     assert paired_report._native_turns([{'effects': {}}]) == {
         'agent_turns': 0, 'incomplete_agent_turns': 0, 'episodes_with_incomplete_turn': 0}
+
+
+def test_dead_values_in_the_injected_context_are_a_secondary_count_per_arm(tmp_path, monkeypatch):
+    """A forbidden (superseded) value on a line of the model's injected context, with no expected value and no
+    superseded note, counts; the text itself never reaches the report."""
+    case = {'id': 'knowledge-update.01', 'oracle': {'artifacts': [{'path': 'answer.json', 'forbidden': ['corner office'],
+            'assertions': [{'path': ['place'], 'op': 'label_one_of', 'value': ['front lobby']}]}]}}
+    member = {'path': 'runs/one', 'case': case}
+    path = tmp_path / 'runs/one/attempts/knowledge-update.01/private-trace.jsonl'
+    path.parent.mkdir(parents=True)
+
+    def event(thread, *blocks):
+        content = 'Where is it now?' + ''.join(f'\n\n<memory-context>\n{block}\n</memory-context>' for block in blocks)
+        return json.dumps({'protocol': 'paired-private-trace-1', 'kind': 'model_request', 'thread': thread,
+                           'data': {'request_id': 1, 'payload': {'messages': [
+                               {'role': 'system', 'content': 'The review is in the corner office.'},
+                               {'role': 'user', 'content': content}]}}})
+    earlier = 'The review is in the corner office.'
+    probe = '\n'.join(['## Relevant Memories', 'The review is in the corner office.',
+                       'The review is in the corner office. [superseded: now "front lobby" since 2026-09-18]',
+                       'It moved from the corner office to the front lobby.', 'Unrelated line.'])
+    path.write_text('\n'.join([event('paired-source-worker', earlier, earlier), event('Thread-5 (<lambda>)', earlier),
+                               event('Thread-6 (<lambda>)', earlier, probe), event('Thread-1 (run)')]))
+    missing = {'path': 'runs/two', 'case': dict(case)}
+    row = {'outcome': 'pass', 'primary_outcome': 'pass', 'elapsed_ms': 4000, 'effects': {'model_requests': []}}
+    manifest = {'recipe': {}, 'pairs': [{'episode_id': episode, 'order': list(paired_report.ARMS),
+        'task_sha256': 'b' * 64, 'oracle_sha256': 'c' * 64, 'arms': dict.fromkeys(paired_report.ARMS, arm_member)}
+        for episode, arm_member in (('knowledge-update.01', member), ('knowledge-update.02', missing))],
+        'sha256': 'd' * 64, 'comparison_key': 'e' * 64, 'label': 'test', 'evidence_mode': 'controlled',
+        'dataset': {'version': 'test', 'split': 'development'},
+        'comparison': {'policy': {'environment': {'endpoint_usage': 'unknown'}}}}
+    monkeypatch.setattr(paired_report, 'load_manifest', lambda _: manifest)
+    monkeypatch.setattr(paired_report, '_row', lambda *args: row)
+    report = paired_report.summarize(tmp_path)
+    for arm in paired_report.ARMS:
+        dead = report['arms'][arm]['dead_values_in_context']
+        # The last request carrying context replays the earlier block and adds the probe's: two dead lines.
+        assert (dead['episodes_observed'], dead['episodes_with_dead_values'], dead['dead_value_lines']) == (1, 1, 2)
+        assert dead['unreadable_traces'] == 0
+    rendered = paired_report.markdown(report)
+    assert 'Dead values in the injected context' in rendered and '1/1 episodes, 2 lines' in rendered
+    assert 'corner office' not in json.dumps(report['arms']) and 'corner office' not in rendered
+    assert paired_report._dead_values(tmp_path, [{'path': 'runs/one', 'case': {'id': 'x', 'oracle': {}}}])[
+        'episodes_observed'] == 0
+
+
+def dead_value_member(tmp_path, specs, block):
+    case = {'id': 'knowledge-update.07', 'oracle': {'artifacts': specs}}
+    path = tmp_path / 'runs/one/attempts/knowledge-update.07/private-trace.jsonl'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({'protocol': 'paired-private-trace-1', 'kind': 'model_request', 'thread': 'Thread-6',
+                                'data': {'request_id': 1, 'payload': {'messages': [{'role': 'user', 'content':
+                                    f'Where?\n\n<memory-context>\n{block}\n</memory-context>'}]}}}))
+    return {'path': 'runs/one', 'case': case}
+
+
+def spec(forbidden, expected):
+    return {'path': 'answer.json', 'forbidden': [forbidden],
+            'assertions': [{'path': ['value'], 'op': 'label_one_of', 'value': [expected]}]}
+
+
+def test_dead_values_are_matched_in_decoded_text(tmp_path):
+    """A forbidden value serialized with JSON escapes is still shown to the model."""
+    block = '- {"source": "turn:s-meet"} ' + json.dumps('We meet at Café Central.')
+    member = dead_value_member(tmp_path, [spec('Café Central', 'Main Library')], block)
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+
+
+def test_a_note_answers_only_for_the_value_it_corrects(tmp_path):
+    """Three superseded facts on one line with two notes: the third is still shown as current."""
+    specs = [spec('locker 42', 'locker 43'), spec('blue door', 'green door'), spec('tuesday', 'thursday')]
+    line = 'Locker 42, the blue door, every Tuesday.'
+    partial = line + ' [superseded: now "locker 43"] [superseded: now "green door"]'
+    marked = partial + ' [superseded: now "Thursday"]'
+    member = dead_value_member(tmp_path, specs, '\n'.join([partial, marked]))
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+    # A note with a value the spec does not expect answers for nothing; a spec without expected values
+    # counts its forbidden value wherever it is shown.
+    member = dead_value_member(tmp_path, [spec('tuesday', 'thursday'),
+                                          {'path': 'answer.json', 'forbidden': ['r14-erased']}],
+                               'Every Tuesday. [superseded: now "Monday"]\nCode r14-erased [superseded: now "x"]')
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 2
+
+
+def test_a_note_naming_its_record_is_read_as_a_note(tmp_path):
+    """The context names each note's record ([superseded id=<record>: ...]); the counter reads it as a note."""
+    line = ('Standup [superseded id=claim:0a1b: now "Wednesday, was Tuesday" since 2026-09-19]\n'
+            'Review [superseded id=c-1: rescheduled to "Friday, was Tuesday"]')
+    member = dead_value_member(tmp_path, [spec('tuesday', 'thursday')], line)
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 0
+
+
+def fields_spec(forbidden, *expected):
+    """One artifact forbidding several values, with one expected-value assertion per field."""
+    return {'path': 'answer.json', 'forbidden': list(forbidden),
+            'assertions': [{'path': [f'field{n}'], 'op': 'label_one_of', 'value': list(values)}
+                           for n, values in enumerate(expected)]}
+
+
+def test_each_shown_superseded_value_needs_its_own_answer_within_one_artifact(tmp_path):
+    """Round 3, finding 8: one field's expected value never answers for another field's stale value."""
+    artifact = fields_spec(['locker 42', 'blue door', 'tuesday'], ['locker 43'], ['green door'], ['thursday'])
+    line = 'Locker 42, the blue door, every Tuesday.'
+    partial = line + ' [superseded: now "locker 43"] [superseded: now "green door"]'
+    marked = partial + ' [superseded: now "Thursday"]'
+    member = dead_value_member(tmp_path, [artifact], '\n'.join([partial, marked]))
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+    # Two versions of one field, each with its own note, are answered; one note for two versions is not.
+    artifact = fields_spec(['corner office', 'east room'], ['front lobby'])
+    both = 'Corner office, later the east room.'
+    member = dead_value_member(tmp_path, [artifact], '\n'.join([
+        both + ' [superseded id=c-1: now "front lobby"] [superseded id=c-2: now "front lobby"]',
+        both + ' [superseded id=c-1: now "front lobby"]',
+        'It moved from the corner office to the front lobby.']))
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+
+
+def test_short_values_are_matched_as_whole_words(tmp_path):
+    """Round 3, new P2: a fully corrected short value is answered, and a short value inside a word is not shown."""
+    member = dead_value_member(tmp_path, [spec('42', '43'), spec('US', 'UK')], '\n'.join([
+        'Locker 42 [superseded: now "43"]',
+        'Ships from the US [superseded id=claim:0a: now "UK" since 2026-09-19]',
+        'Ships to Belarus and the 1420 depot.',   # "us" and "42" only inside other words
+        'Locker 42 and the US office.']))         # both shown, neither answered
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+
+
+def test_notes_are_read_before_their_escapes_are_decoded(tmp_path):
+    """Round 3, new P2: an escaped quote or bracket inside a note's value never ends the note."""
+    note = '[superseded: now ' + json.dumps('Mark "[done]" on Tuesday') + ']'
+    named = '[superseded id=c-1: now ' + json.dumps('Tuesday "draft]" moved') + ' since 2026-09-19]'
+    member = dead_value_member(tmp_path, [spec('tuesday', 'thursday')], '\n'.join([
+        'Status ' + note, 'Plan ' + named, 'Every Tuesday. ' + note]))
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1

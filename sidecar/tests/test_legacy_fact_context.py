@@ -9,15 +9,13 @@ from protagine.tom.facts import SharedFactsStore
 from protagine.turns import TurnIdempotencyLedger
 from protagine.turns.source_annotations import append as annotate_source
 from test_contact_fact_recall import contact_context, context
-from test_recall_unified_context import Graph, belief
 from test_turn_source_evidence import source_app
 from onekey import KEY
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('p8_enabled', [False, True])
-async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_preserves_inspection(
-        contact_context, monkeypatch, p8_enabled):
+async def test_owner_context_excludes_unlinked_manual_facts_but_preserves_inspection(
+        contact_context, monkeypatch):
     runtime = contact_context
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
     keys = json.loads(runtime.keyring.read_text())
@@ -27,17 +25,7 @@ async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_pre
     keys['principals'][0]['allow_unscoped_api'] = True
     keys['principals'][0]['scopes'].append('api:access')
     runtime.keyring.write_text(json.dumps(keys))
-    if not p8_enabled:
-        monkeypatch.setattr(host, '_p8_runtime', None)
     old = runtime.add('Hydrofoil legacy queue status repeats forever.', source_linked=False)
-    # The graph contains both historical mirror formats, including one whose
-    # original SQLite fact is subsequently deleted. No graph deletion is done.
-    graph = Graph([
-        {**belief(old['fact']), 'id': 'old-mirror', 'source_uri': 'tom:shared_fact'},
-        {**belief('Hydrofoil marker-only old mirror.'), 'id': 'old-marker', 'metadata': "{'shared_fact': True}"},
-        belief('A separate hydrofoil memory remains inspectable.'),
-    ])
-    monkeypatch.setattr(host, '_graph', graph)
     async with AsyncClient(transport=ASGITransport(app=runtime.app), base_url='http://test') as client:
         created = await client.post('/v1/host/mind/facts', headers={'Authorization': 'Bearer ' + KEY}, json={
             'contact_id': 'contact-a', 'fact': 'Hydrofoil hand-entered note.',
@@ -48,23 +36,17 @@ async def test_owner_context_excludes_unlinked_manual_and_legacy_mirrors_but_pre
             read = await client.get('/v1/host/mind/facts/'+row['id'], headers={'Authorization': 'Bearer ' + KEY})
             assert read.status_code == 200 and read.json()['fact'] == row['fact']
         text = await context(client, 'hydrofoil')
-        assert 'separate hydrofoil memory' not in text
-        assert all(value not in text for value in (old['fact'], manual['fact'], 'marker-only'))
-        assert graph.calls == []
+        assert all(value not in text for value in (old['fact'], manual['fact']))
         runtime.facts.delete_fact(old['id'])
         assert old['fact'] not in await context(client, 'hydrofoil')
     assert runtime.facts.get_fact(manual['id'])['metadata']['curated'] is True
-    assert len(graph.rows) == 3  # Selection does not delete or migrate history.
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('p8_enabled', [False, True])
 async def test_current_linked_estimate_has_native_citations_then_revision_and_erasure_exclude_it(
-        contact_context, monkeypatch, p8_enabled):
+        contact_context, monkeypatch):
     runtime = contact_context
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
-    if not p8_enabled:
-        monkeypatch.setattr(host, '_p8_runtime', None)
     runtime.ledger.record_source('origin', contact_id='contact-a', session_id='earlier',
         messages=[{'role': 'user', 'content': 'The hydrofoil gate is violet.'}], derive_claims=False)
     lineage, _ = runtime.facts.source_input('origin', 'contact-a')
@@ -115,7 +97,6 @@ def test_automatic_window_filters_unlinked_before_limit_and_rechecks_scope(tmp_p
 async def test_linked_estimate_keeps_current_correction_and_exact_source_refs(contact_context, monkeypatch):
     runtime = contact_context
     monkeypatch.setenv('PROTAGINE_RECALL_RERANK', 'off')
-    monkeypatch.setattr(host, '_p8_runtime', None)
     original = 'The hydrofoil gate is violet.'
     runtime.ledger.record_source('annotated-origin', contact_id='contact-a', session_id='prior',
         messages=[{'role': 'user', 'content': original}], derive_claims=False)
@@ -143,12 +124,9 @@ async def test_linked_estimate_keeps_current_correction_and_exact_source_refs(co
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('p8_enabled', [False, True])
 async def test_canonical_estimate_keeps_correction_refs_and_never_revives_erased_note(
-        contact_context, monkeypatch, p8_enabled):
+        contact_context, monkeypatch):
     runtime = contact_context
-    if not p8_enabled:
-        monkeypatch.setattr(host, '_p8_runtime', None)
     original = 'The hydrofoil gate is violet.'
     runtime.ledger.record_source('enriched-origin', contact_id='contact-a', session_id='prior',
         messages=[{'role': 'user', 'content': original}], derive_claims=False)

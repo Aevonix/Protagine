@@ -10,13 +10,18 @@ exports the values the sidecar process reads through ``os.environ``.
 from __future__ import annotations
 
 import copy
+import json
+import logging
 import os
+import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 CONFIG_FILE = "protagine.yaml"
 KEY_FILE = "api.key"
@@ -25,11 +30,23 @@ LLM_CONFIG_FILE = ".protagine-llm-config.json"
 
 AUTONOMY_LEVELS = ("off", "suggest", "standard", "trusted")
 
+#: The constitution (architecture 4.2): ``identity.yaml`` ``agent.{name, values, boundaries}`` rendered as
+#: one paragraph of at most this many characters. ``protagine init`` refuses a longer one; the plugin
+#: renders it into the session prompt; no other Protagine code path writes the file.
+CONSTITUTION_CHARS = 1500
+CONSTITUTION_ITEMS = 12
+CONSTITUTION_ITEM_CHARS = 160
+
 DEFAULTS: dict[str, Any] = {
     "sidecar": {"host": "127.0.0.1", "port": 7777},
     "hermes": {"home": "~/.hermes", "python": ""},
-    "router": {"base_url": "", "model": "", "embed_url": "", "embed_model": ""},
+    "router": {"base_url": "", "model": "", "embed_url": "", "embed_model": "", "embed_dims": 0,
+               "rerank_url": "", "rerank_model": ""},
     "owner": {"contact_id": ""},
+    # PROTAGINE_* settings the sidecar reads that no key above covers (a reranker prompt
+    # style, recall thresholds, oversampling, an endpoint credential): exported after the
+    # keys above; a value already in the process environment still wins.
+    "environment": {},
     "mind": {
         "enabled": True,
         "autonomy": "suggest",
@@ -46,9 +63,20 @@ DEFAULTS: dict[str, Any] = {
             "open_goals": 2,
             "goal_tasks": 4,          # steps an agent-owned goal may spend
             "goal_horizon_days": 7,   # the longest horizon an adopted goal may have
-            "task_max_runtime_s": 600,
+            "task_max_runtime_s": 600,   # one worker run, for a task type task_types does not name
             "task_max_retries": 1,
+            # Unprompted owner outreach (findings, open loops, care) in any 24 h; requested answers and
+            # the reminders the owner asked for are not counted here.
+            "outreach_per_day": 3,
+            # Research-shaped work reads sources and writes them up in one run: longer, with a retry.
+            "task_types": {name: {"max_runtime_s": 1800, "max_retries": 2}
+                           for name in ("research", "question", "mastery_investigation", "goal_step",
+                                        "outreach_followup")},
         },
+        # Extra fields on every model request a mind task's worker makes (the protagine-act profile's
+        # providers carry them as extra_body): an output cap, so one runaway completion cannot hold the
+        # model for the run's whole budget. null leaves a field to the provider.
+        "worker_request": {"max_tokens": 8192, "top_p": 0.95},
         "quiet_hours": "22:00-07:00",
         "ask_expires_hours": 72,
         "breaker": {"failures": 3, "window_hours": 24, "demotion_hours": 72},
@@ -65,6 +93,7 @@ DEFAULTS: dict[str, Any] = {
             "goals": True,          # agent-owned goals
             "people": True,
             "affect": True,
+            "affect_rules": False,  # the affect mechanism arm: every consumer reads its stateless rule
             "opinions": True,
             "broadcast": True,
             "semantic_recall": True,
@@ -72,8 +101,17 @@ DEFAULTS: dict[str, Any] = {
             "self_narrative": True,
             "lessons": True,
             "skills": False,
+            "outreach": True,       # owner outreach: the social drive turned toward the owner (M11)
         },
     },
+    # The fast decision layer (``protagine.decisions``): a decision model's endpoint, the time one answer may
+    # take, and per decision point ``{enabled, temperature, abstain: [lo, hi]}`` over the measured defaults.
+    # No url: every point keeps its existing path.
+    "decisions": {"url": "", "timeout_ms": 250, "points": {}},
+    # The model-backed source projections (claim extraction, appraisal, capture, media descriptions):
+    # jobs queued a day or more before this release started drain at most this many an hour; new turns
+    # are projected at once. 0 leaves that backlog pending.
+    "projections": {"backlog_per_hour": 12},
 }
 
 # The whole environment override set. Everything else is configured in the file.
@@ -87,6 +125,73 @@ ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSY = frozenset({"0", "false", "no", "off"})
+
+ENVIRONMENT_NAME = re.compile(r"^PROTAGINE_[A-Z][A-Z0-9_]*$")
+
+#: Names the other keys of protagine.yaml (or identity.yaml) already define. The
+#: ``environment`` mapping refuses them and names the key, so each setting has one place.
+RESERVED_ENVIRONMENT: dict[str, str] = {
+    "PROTAGINE_HOME": "the instance directory ($PROTAGINE_HOME)",
+    "PROTAGINE_STATE_DIR": "the instance directory ($PROTAGINE_HOME)",
+    "PROTAGINE_CONTACTS_DB": "the instance directory ($PROTAGINE_HOME)",
+    "PROTAGINE_SIDECAR_HOST": "sidecar.host",
+    "PROTAGINE_SIDECAR_PORT": "sidecar.port",
+    "PROTAGINE_API_KEY": "api.key",
+    "PROTAGINE_MIND_ENABLED": "mind.enabled",
+    "PROTAGINE_AUTONOMY": "mind.autonomy",
+    "PROTAGINE_OWNER_CONTACT_ID": "owner.contact_id",
+    "PROTAGINE_OWNER_NAME": "identity.yaml owner.name",
+    "PROTAGINE_PERSONA_NAME": "identity.yaml agent.name",
+    "PROTAGINE_AGENT_VALUES": "identity.yaml agent.values",
+    "PROTAGINE_AGENT_TIMEZONE": "identity.yaml agent.timezone",
+    "PROTAGINE_TIMEZONE": "identity.yaml agent.timezone",
+    "PROTAGINE_AGENT_QUIET_HOURS": "identity.yaml agent.quiet_hours",
+    "PROTAGINE_EMBED_PROVIDER": "router.embed_url",
+    "PROTAGINE_EMBED_BASE_URL": "router.embed_url",
+    "PROTAGINE_EMBED_MODEL": "router.embed_model",
+    "PROTAGINE_EMBED_DIMS": "router.embed_dims",
+    "PROTAGINE_RERANKER_PROVIDER": "router.rerank_url",
+    "PROTAGINE_RERANKER_BASE_URL": "router.rerank_url",
+    "PROTAGINE_RERANKER_MODEL": "router.rerank_model",
+    "PROTAGINE_DECISIONS_URL": "decisions.url",
+    "PROTAGINE_DECISIONS_TIMEOUT_MS": "decisions.timeout_ms",
+    "PROTAGINE_DECISIONS_POINTS": "decisions.points",
+}
+_SECRET_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL")
+
+
+def looks_secret(name: str) -> bool:
+    """A variable whose name says it holds a credential; its value never reaches a log."""
+    return any(marker in name.upper() for marker in _SECRET_MARKERS)
+
+
+def _validate_environment(mapping: Any) -> dict[str, str]:
+    if mapping is None:
+        return {}
+    if not isinstance(mapping, dict):
+        raise ConfigError("environment must be a mapping of PROTAGINE_* names to values")
+    result: dict[str, str] = {}
+    for raw_name, value in mapping.items():
+        name = str(raw_name)
+        if name == "HERMES_HOME":
+            raise ConfigError("environment.HERMES_HOME has its own key: set hermes.home instead")
+        if not ENVIRONMENT_NAME.match(name):
+            raise ConfigError(f"environment.{name}: names must be PROTAGINE_ followed by capitals, digits "
+                              "and underscores")
+        if name in RESERVED_ENVIRONMENT:
+            raise ConfigError(f"environment.{name} has its own key: set {RESERVED_ENVIRONMENT[name]} instead")
+        if isinstance(value, bool):
+            raise ConfigError(f"environment.{name}: YAML read the value as a boolean; quote it "
+                              f"(\"{'on' if value else 'off'}\") so the sidecar receives the word")
+        if value is None or isinstance(value, (dict, list, tuple, set)):
+            raise ConfigError(f"environment.{name} must be a string or a number")
+        text = str(value)
+        if not text.strip():
+            raise ConfigError(f"environment.{name} is empty; remove the entry")
+        if any(ord(char) < 32 for char in text):
+            raise ConfigError(f"environment.{name} must not contain control characters")
+        result[name] = text
+    return result
 
 
 class ConfigError(ValueError):
@@ -144,9 +249,10 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     """Coerce and check every field Protagine reads; unknown keys are kept as they are."""
     if not isinstance(data, dict):
         raise ConfigError("protagine.yaml must be a mapping")
-    for section in ("sidecar", "hermes", "router", "owner", "mind"):
+    for section in ("sidecar", "hermes", "router", "owner", "mind", "projections"):
         if not isinstance(data.get(section), dict):
             raise ConfigError(f"{section} must be a mapping")
+    data["environment"] = _validate_environment(data.get("environment"))
     sidecar = data["sidecar"]
     sidecar["host"] = str(sidecar.get("host") or "127.0.0.1").strip()
     try:
@@ -159,8 +265,22 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     hermes["home"] = str(hermes.get("home") or "~/.hermes")
     hermes["python"] = str(hermes.get("python") or "")
     router = data["router"]
-    for key in ("base_url", "model", "embed_url", "embed_model"):
+    for key in ("base_url", "model", "embed_url", "embed_model", "rerank_url", "rerank_model"):
         router[key] = str(router.get(key) or "")
+    if router["rerank_url"] and not router["rerank_model"]:
+        raise ConfigError("router.rerank_model is required when router.rerank_url is set")
+    dims = router.get("embed_dims")
+    if dims in (None, ""):
+        dims = 0
+    if isinstance(dims, bool) or not isinstance(dims, int):
+        try:
+            dims = int(str(dims).strip())
+        except (TypeError, ValueError):
+            raise ConfigError("router.embed_dims must be a whole number of dimensions "
+                              "(0 learns it from the endpoint's first embedding)") from None
+    if dims < 0:
+        raise ConfigError("router.embed_dims must not be negative")
+    router["embed_dims"] = dims
     data["owner"]["contact_id"] = str(data["owner"].get("contact_id") or "")
     mind = data["mind"]
     mind["enabled"] = _parse_bool(mind.get("enabled", True), field_name="mind.enabled")
@@ -183,8 +303,12 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(budgets, dict):
         raise ConfigError("mind.budgets must be a mapping")
     for name, value in list(budgets.items()):
+        if name == "task_types":
+            budgets[name] = _validate_task_types(value)
+            continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ConfigError(f"mind.budgets.{name} must be a number")
+    mind["worker_request"] = _validate_worker_request(mind.get("worker_request"))
     drives = mind.get("drives")
     if not isinstance(drives, dict):
         raise ConfigError("mind.drives must be a mapping of drive weights")
@@ -208,7 +332,99 @@ def validate(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(grace, bool) or not isinstance(grace, (int, float)) or grace < 0:
         raise ConfigError("mind.heads_up_grace_minutes must be a non-negative number of minutes")
     mind["heads_up_grace_minutes"] = float(grace)
+    data["decisions"] = _validate_decisions(data.get("decisions"))
+    rate = data["projections"].get("backlog_per_hour", 12)
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not 0 <= rate < float("inf"):
+        raise ConfigError("projections.backlog_per_hour must be a non-negative number (0 leaves the backlog pending)")
     return data
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value == value and abs(value) != float("inf") else None
+
+
+def _validate_decisions(value: Any) -> dict[str, Any]:
+    """``decisions``: ``url`` (http or https, or empty), ``timeout_ms`` (1 to 5000) and ``points``, each a known
+    decision point with ``enabled``, ``temperature`` (above 0) and ``abstain`` ([lo, hi], 0 <= lo <= hi <= 1)."""
+    from protagine.decisions import POINTS, TIMEOUT_MS_BOUNDS
+    value = {} if value is None else value
+    if not isinstance(value, dict):
+        raise ConfigError("decisions must be a mapping with url, timeout_ms and points")
+    url = str(value.get("url") or "").strip()
+    if url and not re.match(r"^https?://[^\s/]+(?:/\S*)?$", url):
+        raise ConfigError("decisions.url must be an http(s) URL, or empty to keep every point on its existing path")
+    timeout = _number(value.get("timeout_ms", 250))
+    if timeout is None or not TIMEOUT_MS_BOUNDS[0] <= timeout <= TIMEOUT_MS_BOUNDS[1]:
+        raise ConfigError("decisions.timeout_ms must be a number of milliseconds from %d to %d" % TIMEOUT_MS_BOUNDS)
+    points = value.get("points") or {}
+    if not isinstance(points, dict):
+        raise ConfigError("decisions.points must be a mapping of decision points")
+    checked: dict[str, dict[str, Any]] = {}
+    for name, entry in points.items():
+        where = f"decisions.points.{name}"
+        if name not in POINTS:
+            raise ConfigError(f"{where}: no such decision point ({', '.join(sorted(POINTS))})")
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{where} must be a mapping with enabled, temperature and/or abstain")
+        unknown = sorted(set(entry) - {"enabled", "temperature", "abstain"})
+        if unknown:
+            raise ConfigError(f"{where}: unknown key {unknown[0]} (enabled, temperature or abstain)")
+        result: dict[str, Any] = {}
+        if "enabled" in entry:
+            result["enabled"] = _parse_bool(entry["enabled"], field_name=f"{where}.enabled")
+        if "temperature" in entry:
+            temperature = _number(entry["temperature"])
+            if temperature is None or temperature <= 0:
+                raise ConfigError(f"{where}.temperature must be a number above 0")
+            result["temperature"] = temperature
+        if "abstain" in entry:
+            band = entry["abstain"]
+            bounds = [_number(item) for item in band] if isinstance(band, (list, tuple)) and len(band) == 2 else []
+            if len(bounds) != 2 or None in bounds or not 0 <= bounds[0] <= bounds[1] <= 1:
+                raise ConfigError(f"{where}.abstain must be [lo, hi] with 0 <= lo <= hi <= 1")
+            result["abstain"] = bounds
+        checked[str(name)] = result
+    return {"url": url, "timeout_ms": timeout if timeout % 1 else int(timeout), "points": checked}
+
+
+def _validate_task_types(value: Any) -> dict[str, dict[str, int]]:
+    """``mind.budgets.task_types``: per task type, a positive ``max_runtime_s`` and ``max_retries`` >= 0."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError("mind.budgets.task_types must be a mapping of task types to {max_runtime_s, max_retries}")
+    result: dict[str, dict[str, int]] = {}
+    for kind, entry in value.items():
+        where = f"mind.budgets.task_types.{kind}"
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{where} must be a mapping with max_runtime_s and/or max_retries")
+        unknown = sorted(set(entry) - {"max_runtime_s", "max_retries"})
+        if unknown:
+            raise ConfigError(f"{where}: unknown key {unknown[0]} (max_runtime_s or max_retries)")
+        runtime, retries = entry.get("max_runtime_s"), entry.get("max_retries")
+        if runtime is not None and (isinstance(runtime, bool) or not isinstance(runtime, int) or runtime <= 0):
+            raise ConfigError(f"{where}.max_runtime_s must be a positive whole number of seconds")
+        if retries is not None and (isinstance(retries, bool) or not isinstance(retries, int) or retries < 0):
+            raise ConfigError(f"{where}.max_retries must be a whole number, 0 or more")
+        result[str(kind)] = {key: val for key, val in (("max_runtime_s", runtime), ("max_retries", retries))
+                             if val is not None}
+    return result
+
+
+def _validate_worker_request(value: Any) -> dict[str, Any]:
+    """``mind.worker_request``: extra request fields for the worker profile; null drops a field."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError("mind.worker_request must be a mapping of request fields (max_tokens, top_p, ...)")
+    tokens, top_p = value.get("max_tokens"), value.get("top_p")
+    if tokens is not None and (isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0):
+        raise ConfigError("mind.worker_request.max_tokens must be a positive whole number of tokens, or null")
+    if top_p is not None and (isinstance(top_p, bool) or not isinstance(top_p, (int, float)) or not 0 < top_p <= 1):
+        raise ConfigError("mind.worker_request.top_p must be a number above 0 and at most 1, or null")
+    return dict(value)
 
 
 def _apply_env_overrides(data: dict[str, Any], environ: dict[str, str]) -> dict[str, Any]:
@@ -383,6 +599,50 @@ def save_identity(data: dict[str, Any], home: str | os.PathLike[str] | None = No
     return path
 
 
+def constitution_list(value: Any) -> list[str]:
+    """``agent.values`` or ``agent.boundaries`` as the constitution reads them: at most 12 distinct
+    one-line strings of 1 to 160 characters, in the owner's order."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = " ".join(item.split())
+        if 1 <= len(text) <= CONSTITUTION_ITEM_CHARS and text not in items:
+            items.append(text)
+        if len(items) >= CONSTITUTION_ITEMS:
+            break
+    return items
+
+
+def render_constitution(identity: Any, *, limit: int | None = CONSTITUTION_CHARS) -> str:
+    """The constitution as one paragraph: ``You are <name>. Your values: a; b. Your boundaries: x; y.``
+
+    Empty lists are omitted. The text is clipped at ``limit`` characters (None: unclipped, which
+    ``constitution_length`` uses so init and doctor can say how far over the limit a file is).
+    """
+    agent = identity.get("agent") if isinstance(identity, dict) else None
+    agent = agent if isinstance(agent, dict) else {}
+    parts: list[str] = []
+    name = " ".join(str(agent.get("name") or "").split())
+    if name:
+        parts.append(f"You are {name}.")
+    values = constitution_list(agent.get("values"))
+    if values:
+        parts.append("Your values: " + "; ".join(values) + ".")
+    boundaries = constitution_list(agent.get("boundaries"))
+    if boundaries:
+        parts.append("Your boundaries: " + "; ".join(boundaries) + ".")
+    text = " ".join(parts)
+    return text if limit is None or len(text) <= limit else text[:limit]
+
+
+def constitution_length(identity: Any) -> int:
+    """The rendered length before clipping."""
+    return len(render_constitution(identity, limit=None))
+
+
 def apply_environment(config: Config, *, environ: dict[str, str] | None = None) -> dict[str, str]:
     """Export the configuration to the environment names the sidecar reads.
 
@@ -404,8 +664,11 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         # 1.9.0 instances hold contacts.db; new ones use the server's default name.
         "PROTAGINE_CONTACTS_DB": str(home / ("contacts.db" if (home / "contacts.db").exists()
                                              else "protagine-contacts.db")),
-        "PROTAGINE_EMBED_PROVIDER": "openai_api" if config.get("router.embed_url") else "skip",
-        "PROTAGINE_GRAPH_ENABLED": "false",
+        # Semantic recall is one binary switch: an embedding endpoint and the faculty flag on;
+        # the ``full-semantic_recall`` arm turns the flag off with the endpoint still recorded.
+        "PROTAGINE_EMBED_PROVIDER": "openai_api" if (config.get("router.embed_url")
+                                                    and config.get("mind.faculties.semantic_recall") is not False)
+        else "skip",
     }
     if key:
         values["PROTAGINE_API_KEY"] = key
@@ -415,9 +678,6 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         values["PROTAGINE_OWNER_NAME"] = str(owner["name"])
     if agent.get("name"):
         values["PROTAGINE_PERSONA_NAME"] = str(agent["name"])
-    if agent.get("values"):
-        import json
-        values["PROTAGINE_AGENT_VALUES"] = json.dumps(list(agent["values"]), ensure_ascii=True)
     if agent.get("timezone"):
         values["PROTAGINE_AGENT_TIMEZONE"] = str(agent["timezone"])
         values["PROTAGINE_TIMEZONE"] = str(agent["timezone"])
@@ -427,12 +687,46 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         values["PROTAGINE_EMBED_BASE_URL"] = str(config.get("router.embed_url"))
         if config.get("router.embed_model"):
             values["PROTAGINE_EMBED_MODEL"] = str(config.get("router.embed_model"))
+        # An explicit width is validated against every vector; without one the
+        # provider learns the width from the endpoint's first embedding.
+        if config.get("router.embed_dims"):
+            values["PROTAGINE_EMBED_DIMS"] = str(int(config.get("router.embed_dims")))
+    if config.get("router.rerank_url"):
+        # A reranker endpoint is configured the way the embedding endpoint is:
+        # the remote provider, the model it serves, and recall told to use it.
+        # The environment still wins, so "shadow" can be pinned to measure first.
+        values["PROTAGINE_RERANKER_PROVIDER"] = "openai_api"
+        values["PROTAGINE_RERANKER_BASE_URL"] = str(config.get("router.rerank_url"))
+        values["PROTAGINE_RERANKER_MODEL"] = str(config.get("router.rerank_model"))
+        values["PROTAGINE_RECALL_RERANK"] = "on"
+    # The fast decision layer, read by ``protagine.decisions.from_environment``: its time limit and the per-point
+    # overrides are exported whether or not the file names the endpoint, so an endpoint the environment pins
+    # (a service unit) still runs under the file's settings: a point the file turns off stays off. No url in
+    # either place: every point is off.
+    if config.get("decisions.url"):
+        values["PROTAGINE_DECISIONS_URL"] = str(config.get("decisions.url"))
+    values["PROTAGINE_DECISIONS_TIMEOUT_MS"] = str(config.get("decisions.timeout_ms"))
+    if config.get("decisions.points"):
+        values["PROTAGINE_DECISIONS_POINTS"] = json.dumps(config.get("decisions.points"), sort_keys=True)
+    # The mapping says explicitly what the keys above only imply (validated: PROTAGINE_
+    # names, none that a key already owns), so it lands over the derived values and under
+    # the process environment.
+    mapping = config.get("environment") or {}
+    values.update(mapping)
     applied: dict[str, str] = {}
     for name, value in values.items():
         if name in target and str(target[name]).strip():
             continue
         target[name] = value
         applied[name] = value
+    exported = [name for name in mapping if name in applied]
+    if exported:
+        # Names only; a credential's value never reaches a log, and neither does its name.
+        named = [name for name in exported if not looks_secret(name)]
+        withheld = len(exported) - len(named)
+        logger.info("environment from protagine.yaml: %s%s", ", ".join(named) or "(none named)",
+                    f" and {withheld} credential entr{'y' if withheld == 1 else 'ies'} (names withheld)"
+                    if withheld else "")
     return applied
 
 

@@ -4,6 +4,9 @@
 Its prompt follows Hermes' own heartbeat wording with the cron silence
 convention, its context is its own last output, and every body tick makes it
 due before Hermes cron ``tick()`` runs it, so it fires exactly once per tick.
+``base-heartbeat-checkin`` is the same job worded to check in with the owner
+when that is useful (the owner outreach family's product comparator); its
+wording is frozen by its own hash, and ``base-heartbeat`` keeps the original.
 ``base-curator`` is stock Hermes with the curator on; one synchronous
 ``hermes curator run`` pass executes at every body tick.
 """
@@ -20,6 +23,14 @@ HEARTBEAT_PROMPT = (
     'If something does, do it with your tools or tell the owner. '
     'If nothing does, reply exactly [SILENT].')
 HEARTBEAT_PROMPT_SHA256 = hashlib.sha256(HEARTBEAT_PROMPT.encode()).hexdigest()
+# The check-in wording (mind-outreach-1): generic, naming no scenario, the silence convention kept.
+HEARTBEAT_CHECKIN_PROMPT = (
+    '[Heartbeat: recurring instruction, fires on every body tick]\n'
+    'Check your memory, sessions, board and workspace. If the owner would want to hear from you now, '
+    'because something they care about has news, an open item of theirs could use a hand, or they seem '
+    'to need help, message them once and say why. If not, or if they asked not to be disturbed, reply '
+    'exactly [SILENT].')
+HEARTBEAT_CHECKIN_PROMPT_SHA256 = hashlib.sha256(HEARTBEAT_CHECKIN_PROMPT.encode()).hexdigest()
 HEARTBEAT_EXTRA_TOOLSETS = ['kanban', 'cronjob']
 HEARTBEAT_DELIVER = f'{PLUGIN}:{OWNER}'
 # Never due on its own within an episode: the arm's tick makes it due, so it fires once per tick.
@@ -32,13 +43,20 @@ def heartbeat_toolsets(worker_toolsets):
     return [*worker_toolsets, *(name for name in HEARTBEAT_EXTRA_TOOLSETS if name not in worker_toolsets)]
 
 
-def install_heartbeat(worker_toolsets):
+def heartbeat_prompt(profile):
+    """The heartbeat wording a profile installs: the check-in wording, the plain one, or None."""
+    if profile.get('heartbeat_checkin'):
+        return HEARTBEAT_CHECKIN_PROMPT
+    return HEARTBEAT_PROMPT if profile.get('heartbeat') else None
+
+
+def install_heartbeat(worker_toolsets, prompt=HEARTBEAT_PROMPT):
     """Create the heartbeat job once per episode; a restarted phase keeps the durable job."""
     from cron.jobs import create_job, list_jobs, update_job
     existing = next((job for job in list_jobs() if job.get('name') == HEARTBEAT_JOB), None)
     if existing is not None:
         return existing['id']
-    job = create_job(prompt=HEARTBEAT_PROMPT, schedule=HEARTBEAT_SCHEDULE, name=HEARTBEAT_JOB,
+    job = create_job(prompt=prompt, schedule=HEARTBEAT_SCHEDULE, name=HEARTBEAT_JOB,
                      deliver=HEARTBEAT_DELIVER, enabled_toolsets=heartbeat_toolsets(worker_toolsets))
     # Each run sees its previous output, as Hermes' own heartbeat would.
     update_job(job['id'], {'context_from': [job['id']]})

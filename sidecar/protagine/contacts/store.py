@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import hashlib
+import inspect
 import logging
 import re
+import sqlite3
 import time
 from abc import ABC, abstractmethod
+from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 import aiosqlite
 
@@ -17,11 +20,12 @@ from .config import ContactsConfig
 from .models import (
     Contact,
     ContactHandle,
+    MAY_CONTACT,
     ScopeMember,
     TrustScope,
     TRUST_TIERS,
-    TIER_DEFAULT_INTERACTION,
-    more_permissive_tier,
+    regular_or_above,
+    tier_rank,
 )
 
 logger = logging.getLogger("protagine.contacts.store")
@@ -41,8 +45,10 @@ def _gen_id(prefix: str) -> str:
 
 
 def _now_iso() -> str:
+    """UTC now from ``time.time``: the clock the mind compares contact stamps with. ``datetime.now``
+    reads the system clock directly, so a body that shifts ``time.time`` would split the two."""
     from datetime import datetime, timezone
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(time.time(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _normalize_phone(phone: str) -> str:
@@ -57,26 +63,75 @@ def _normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
-# A phone number is ONE identity across channels. Phone-bearing gateways resolve a number to the
-# same contact regardless of which transport it arrived on (sms/rcs/imessage/signal/whatsapp).
-from protagine.channels.phone_gateways import get_phone_gateways as _get_phone_gateways
-
-
-def _looks_like_phone(address: str) -> bool:
-    """True if `address` is a phone number (digits/+, no letters) — used to route an unknown-gateway
-    sender (e.g. a 'custom' platform) into the phone-identity resolution path."""
-    s = (address or "").strip()
-    if not s or any(c.isalpha() for c in s):
-        return False
-    digits = _PHONE_DIGITS.sub("", s.lstrip("+"))
-    return len(digits) >= 7
-
-
 def _phone_key(address: str) -> str:
-    """Canonical phone digits, retaining international country codes."""
-    digits = _PHONE_DIGITS.sub("", (address or "").split('@', 1)[0])
-    # The supported bare NANP form may omit +1; other country codes stay intact.
-    return '1' + digits if len(digits) == 10 and not (address or '').strip().startswith('+') else digits
+    """Canonical phone digits, retaining international country codes.
+
+    Only a bare ten-digit string (a legacy row stored without its ``+1``) is read as NANP. A phone
+    JID (``<number>@s.whatsapp.net``) always carries its country code, so ``6591234567@...`` is
+    +65 9123 4567, never +1 659 123 4567; an E.164 address carries its own."""
+    text = (address or "").strip()
+    digits = _PHONE_DIGITS.sub("", text.split('@', 1)[0])
+    return '1' + digits if len(digits) == 10 and not text.startswith('+') and '@' not in text else digits
+
+
+# C1: a phone number is ONE identity on every gateway. The rule is derived from the handle's
+# format, never from a channel name: an address written as an international number (``+`` and 7
+# to 15 digits, separators allowed) or a messaging id whose host says its local part is a phone
+# number (``<number>@s.whatsapp.net``, ``<number>@c.us``) matches on ``phone_key`` whatever
+# gateway it arrived on. A bare digit string is not a phone number by its format (numeric user
+# ids are common, and ``<number>@lid`` is an opaque id): it matches exactly, on its own gateway.
+_E164 = re.compile(r"^\+[1-9]\d{6,14}$")
+_PHONE_JID = re.compile(r"^[1-9]\d{6,14}@(s\.whatsapp\.net|c\.us)$", re.IGNORECASE)
+_BARE_DIGITS = re.compile(r"^\d{7,15}$")
+_PHONE_SEPARATORS = re.compile(r"[\s().\-]")
+_CONVERSATION_GAP = timedelta(minutes=30)   # C3: a longer silence starts a new conversation
+
+
+def is_e164(address: Optional[str]) -> bool:
+    """True when ``address`` is written as a phone number: E.164 with its ``+``, or a phone JID."""
+    text = (address or "").strip()
+    if "@" in text:
+        return bool(_PHONE_JID.match(text))
+    return bool(_E164.match(_PHONE_SEPARATORS.sub("", text)))
+
+
+def canonical_handle(gateway: Optional[str], address: Optional[str]) -> Tuple[str, str]:
+    """The identity a handle matches on: ``("email", lower)``, ``("phone", "+<digits>")`` for an
+    address written as a phone number on any gateway, else the exact ``(gateway, address)``."""
+    g, a = (gateway or "").strip().lower(), (address or "").strip()
+    if g == "email":
+        return "email", _normalize_email(a)
+    if is_e164(a):
+        return "phone", "+" + _phone_key(a)
+    return g, a
+
+
+def stored_handle(gateway: Optional[str], address: Optional[str]) -> Tuple[str, str]:
+    """The form a handle is stored and looked up exactly in: the transport gateway (needed for
+    sending) with a lower-cased email, a separator-free number, or the address as given (a
+    ``number@host`` id keeps its transport form)."""
+    kind, key = canonical_handle(gateway, address)
+    g, a = (gateway or "").strip().lower(), (address or "").strip()
+    if kind == "email":
+        return g, key
+    if (kind == "phone" and "@" not in a) or _BARE_DIGITS.match(_PHONE_SEPARATORS.sub("", a)):
+        return g, _normalize_phone(a)
+    return g, a
+
+
+def _cadence(minutes: Any) -> Optional[int]:
+    """A cadence is a positive whole number of minutes, or None for no cadence."""
+    if minutes is None:
+        return None
+    if isinstance(minutes, bool) or not isinstance(minutes, (int, float, str)):
+        raise ValueError("cadence_minutes must be a positive number of minutes or null")
+    try:
+        value = int(minutes)
+    except (TypeError, ValueError):
+        raise ValueError("cadence_minutes must be a positive number of minutes or null") from None
+    if value <= 0 or value > 60 * 24 * 366:
+        raise ValueError("cadence_minutes must be a positive number of minutes or null")
+    return value
 
 
 def _name_similarity(a: Optional[str], b: Optional[str]) -> float:
@@ -121,13 +176,14 @@ class ContactStore(ABC):
         family_name: Optional[str] = None,
         organization: Optional[str] = None,
         trust_tier: str = "unknown",
-        interaction_allowed: Optional[bool] = None,
+        may_contact: str = "ask",
+        cadence_minutes: Optional[int] = None,
         tags: Optional[List[str]] = None,
         privacy_level: str = "private",
         import_source: str = "manual",
         notes: Optional[str] = None,
     ) -> Contact:
-        """Create a new contact record."""
+        """Create a new contact record. A tier implies no permission: ``may_contact`` starts at ``ask``."""
 
     @abstractmethod
     async def add_handle(
@@ -141,25 +197,6 @@ class ContactStore(ABC):
         verified: bool = False,
     ) -> ContactHandle:
         """Add a gateway handle to an existing contact."""
-
-    @abstractmethod
-    async def provision_verified_handle(
-        self,
-        *,
-        operation_id: str,
-        performed_by: str,
-        gateway: str,
-        address: str,
-        display_name: Optional[str] = None,
-        contact_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Atomically create/map one exact owner-verified contact handle.
-
-        Exactly one of ``display_name`` (create) and ``contact_id`` (map) is
-        required.  Creation is always inert (``interaction_allowed=false``).
-        ``operation_id`` is a durable idempotency key bound to the exact input
-        and authenticated principal.
-        """
 
     @abstractmethod
     async def get_handles(self, contact_id: str) -> List[ContactHandle]:
@@ -180,10 +217,12 @@ class ContactStore(ABC):
         """Update the relationship_score for a contact (0.0–1.0)."""
 
     @abstractmethod
-    async def update_interaction_allowed(
-        self, contact_id: str, allowed: bool, performed_by: str = "operator"
-    ) -> None:
-        """Toggle the interaction_allowed flag."""
+    async def set_may_contact(self, contact_id: str, value: str, *, by: str, reason: str = "") -> Contact:
+        """The owner's path: move ``may_contact`` in any direction, audited."""
+
+    @abstractmethod
+    async def lower_may_contact(self, contact_id: str, *, reason: str, source_ref: str) -> Optional[Contact]:
+        """A contact's opt-out: to ``never`` only; None when already there."""
 
     @abstractmethod
     async def soft_delete(
@@ -199,7 +238,7 @@ class ContactStore(ABC):
     async def list(
         self,
         trust_tier: Optional[str] = None,
-        interaction_allowed: Optional[bool] = None,
+        may_contact: Optional[str] = None,
         tag: Optional[str] = None,
         include_deleted: bool = False,
         limit: int = 100,
@@ -212,11 +251,11 @@ class ContactStore(ABC):
         """Find contacts whose display_name is similar to name."""
 
     @abstractmethod
-    async def merge_contacts(
-        self, keep_id: str, merge_id: str, performed_by: str = "owner",
-    ) -> Optional[Contact]:
-        """Merge one contact into another: reassign handles, fold interaction
-        history, soft-delete the merged record. Audited and reversible."""
+    async def merge(self, keep_id: str, drop_id: str, *, performed_by: str, reattribute=None,
+                    sources_of=None) -> Contact:
+        """C2: fold ``drop_id`` into ``keep_id`` through the identity-correction path (handles and
+        their sources), fold recency, permission, cadence and digest, re-attribute the other
+        stores through ``reattribute`` hooks, soft-delete the dropped record. Audited both sides."""
 
     @abstractmethod
     async def list_handle_proposals(self, limit: int = 50) -> List[Dict[str, Any]]:
@@ -258,9 +297,19 @@ class ContactStore(ABC):
 class SQLiteContactStore(ContactStore):
     """SQLite-backed implementation of ContactStore."""
 
-    def __init__(self, config: Optional[ContactsConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[ContactsConfig] = None,
+        *,
+        sources_of: Optional[Callable[[str], Awaitable[Iterable[str]]]] = None,
+        reattribute: Iterable[Callable[[str, str], Any]] = (),
+    ) -> None:
         self._config = config or ContactsConfig()
         self._db: Optional[aiosqlite.Connection] = None
+        # Injected by the server: the source ids a contact holds in the ledger (moved with a merge
+        # through the identity-correction receipts) and the other stores' ``reattribute(old, new)``.
+        self.sources_of = sources_of
+        self.reattribute = list(reattribute)
 
     async def connect(self) -> None:
         path = self._config.sqlite_path
@@ -273,6 +322,7 @@ class SQLiteContactStore(ContactStore):
         # a data migration (the stored side is keyed at query time).
         await self._db.create_function(
             "phone_key", 1, lambda v: _phone_key(v) if v else "")
+        await self._db.create_function("is_phone", 1, lambda v: 1 if is_e164(v) else 0)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
         from protagine.migrations import run_migrations
@@ -311,7 +361,7 @@ class SQLiteContactStore(ContactStore):
             raise RuntimeError("ContactStore not connected. Use async with or call connect().")
         return self._db
 
-    async def _open_provision_connection(self) -> aiosqlite.Connection:
+    async def _open_durable_connection(self) -> aiosqlite.Connection:
         """Open one dedicated durable connection for a provisioning command.
 
         Provisioning promises crash-safe idempotency.  A process-local memory
@@ -341,11 +391,6 @@ class SQLiteContactStore(ContactStore):
         await db.execute("PRAGMA foreign_keys=ON")
         await db.execute("PRAGMA busy_timeout=5000")
         return db
-
-    async def _after_provision_contact_insert(self) -> None:
-        """Internal fault-injection seam; production has no side effect."""
-
-        return None
 
     # ── Read ops ──────────────────────────────────────────────────────────────
 
@@ -390,71 +435,76 @@ class SQLiteContactStore(ContactStore):
         return Contact.from_row(dict(row))
 
     async def resolve_handle(self, gateway: str, address: str) -> Optional[Contact]:
-        db = self._require_db()
-        norm = _normalize_email(address) if gateway == "email" else _normalize_phone(address) if gateway in ("imessage", "sms", "signal") else address
-        async with db.execute(
-            """
-            SELECT c.* FROM contacts c
-            JOIN contact_handles h ON h.contact_id = c.contact_id
-            WHERE h.gateway = ? AND h.address = ? AND c.deleted_at IS NULL
-              AND (h.verified=1 OR h.source!='auto:scoped-name')
-            """,
-            (gateway, norm),
-        ) as cur:
-            row = await cur.fetchone()
-        if row is None:
-            return None
-        return Contact.from_row(dict(row))
+        """The one live contact behind a handle's canonical identity (C1): an E.164 number on any
+        gateway matches on ``phone_key``, an email on its lower-cased form, anything else on the
+        exact gateway and address. Ambiguity is None, never a guess."""
+        return await self._match_canonical(gateway, address)
 
     async def resolve_messaging_handle(self, gateway: str, address: str) -> Optional[Contact]:
-        """Resolve a live sender, preferring a verified exact transport handle.
+        """Resolve a live sender: the exact transport handle (verified first, then any usable
+        one), else the unambiguous canonical phone/email match (C1).
 
         An explicit channel correction can split previously shared phone
-        attribution. Cross-gateway phone inference must not undo that decision.
-        Without an exact verified handle, retain the unambiguous normalized
-        phone/email fallback. This does not grant a contact any authority.
+        attribution, and a second contact may keep the same number as a
+        separate alias. Cross-gateway phone inference must not undo either:
+        a number held by two contacts is ambiguous and resolves to None.
+        This does not grant a contact any authority.
         """
+        g, stored = stored_handle(gateway, address)
+        if not stored:
+            return None
+        if g:
+            exact = await self.resolve_verified_handles(g, [stored])
+            if exact is None:
+                exact = await self._match_exact(g, stored)
+            if exact is not None:
+                return exact
+        return await self._match_canonical(g, address)
+
+    async def _match_exact(self, gateway: str, address: str) -> Optional[Contact]:
+        """The live contact holding this exact transport handle (never a name guess)."""
+        async with self._require_db().execute(
+            "SELECT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
+            "WHERE c.deleted_at IS NULL AND (h.verified=1 OR h.source!='auto:scoped-name') "
+            "AND h.gateway = ? AND h.address = ?", (gateway, address),
+        ) as cur:
+            row = await cur.fetchone()
+        return Contact.from_row(dict(row)) if row else None
+
+    async def _match_canonical(self, gateway: str, address: str) -> Optional[Contact]:
         db = self._require_db()
+        kind, key = canonical_handle(gateway, address)
+        if not key:
+            return None
+        base = ("SELECT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
+                "WHERE c.deleted_at IS NULL AND (h.verified=1 OR h.source!='auto:scoped-name') AND ")
         g = (gateway or "").strip().lower()
-        if g == "rcs":  # D1: RCS canonicalizes to the shared phone identity (no separate gateway)
-            g = "sms"
-        normalized = (_normalize_email(address) if g == 'email' else
-                      _normalize_phone(address) if g in ('sms', 'imessage', 'signal') else address)
-        exact = await self.resolve_verified_handles(g, [normalized])
-        if exact is not None:
-            return exact
-        if g == "email":
-            sql = ("SELECT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
-                   "WHERE h.gateway = 'email' AND lower(h.address) = ? AND c.deleted_at IS NULL LIMIT 1")
-            params: tuple = (_normalize_email(address),)
-        elif g in _get_phone_gateways() or _looks_like_phone(address):
-            _pgw = tuple(_get_phone_gateways())
-            placeholders = ",".join("?" for _ in _pgw)
-            sql = ("SELECT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
-                   f"WHERE h.gateway IN ({placeholders}) AND phone_key(h.address) = ? "
-                   "AND c.deleted_at IS NULL LIMIT 1")
-            params = (*_pgw, _phone_key(address))
+        if kind == "email":
+            sql, params = base + "h.gateway = 'email' AND lower(h.address) = ?", (key,)
+        elif kind == "phone":
+            # Every handle written as a phone number, and a legacy bare-digit row on the sender's
+            # own gateway; never a numeric id on another gateway that happens to share the digits.
+            sql, params = base + "phone_key(h.address) = ? AND (is_phone(h.address) OR h.gateway = ?)", (key[1:], g)
+        elif _BARE_DIGITS.match(_PHONE_SEPARATORS.sub("", key)):
+            sql, params = base + "h.gateway = ? AND phone_key(h.address) = ?", (g, _phone_key(key))
         else:
-            sql = ("SELECT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
-                   "WHERE h.gateway = ? AND h.address = ? AND c.deleted_at IS NULL LIMIT 1")
-            params = (g, address)
-        # Name-based legacy proposals must never become confirmed attribution.
-        # Multiple matching contacts are ambiguous, even on a normalized phone.
-        sql = sql.replace(' LIMIT 1', '') + " AND (h.verified=1 OR h.source!='auto:scoped-name')"
+            sql, params = base + "h.gateway = ? AND h.address = ?", stored_handle(gateway, address)
         async with db.execute(sql, params) as cur:
             rows = await cur.fetchall()
+        # Multiple matching contacts are ambiguous, even on one phone number.
         row = rows[0] if len({r['contact_id'] for r in rows}) == 1 else None
         return Contact.from_row(dict(row)) if row else None
 
     async def resolve_verified_handles(self, gateway: str, addresses: List[str]) -> Optional[Contact]:
-        values = list(dict.fromkeys(addresses))
-        if not 1 <= len(values) <= 5 or any(not isinstance(v, str) or not 1 <= len(v) <= 512 for v in values):
+        """Exact transport aliases only, when they identify one verified contact."""
+        values = list(dict.fromkeys(stored_handle(gateway, a)[1] for a in addresses if isinstance(a, str)))
+        if not 1 <= len(values) <= 5 or any(not 1 <= len(v) <= 512 for v in values):
             raise ValueError('bounded_exact_transport_aliases_required')
         db = self._require_db()
         async with db.execute('SELECT DISTINCT c.* FROM contacts c JOIN contact_handles h '
             'ON h.contact_id=c.contact_id WHERE c.deleted_at IS NULL AND h.verified=1 '
             'AND h.gateway=? AND h.address IN (' + ','.join('?' for _ in values) + ')',
-            [gateway, *values]) as cursor:
+            [(gateway or "").strip().lower(), *values]) as cursor:
             rows = await cursor.fetchall()
         return Contact.from_row(dict(rows[0])) if len(rows) == 1 else None
 
@@ -470,7 +520,7 @@ class SQLiteContactStore(ContactStore):
     async def list(
         self,
         trust_tier: Optional[str] = None,
-        interaction_allowed: Optional[bool] = None,
+        may_contact: Optional[str] = None,
         tag: Optional[str] = None,
         include_deleted: bool = False,
         limit: int = 100,
@@ -484,9 +534,9 @@ class SQLiteContactStore(ContactStore):
         if trust_tier:
             clauses.append("trust_tier = ?")
             params.append(trust_tier)
-        if interaction_allowed is not None:
-            clauses.append("interaction_allowed = ?")
-            params.append(1 if interaction_allowed else 0)
+        if may_contact is not None:
+            clauses.append("may_contact = ?")
+            params.append(may_contact)
         if tag:
             # SQL-02: escape LIKE wildcards to prevent contact enumeration
             safe_tag = tag.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
@@ -500,6 +550,33 @@ class SQLiteContactStore(ContactStore):
         ) as cur:
             rows = await cur.fetchall()
         return [Contact.from_row(dict(r)) for r in rows]
+
+    async def search(self, query: str, *, limit: int = 20) -> List[Contact]:
+        """``who``: the contact the text names (``resolve_reference``) first, then live contacts whose
+        name, organization or a handle address contains it, the most recently talked to first."""
+        text = (query or "").strip()
+        limit = max(1, min(int(limit), 100))
+        if not text:
+            return await self.list(limit=limit)
+        found: List[Contact] = []
+        exact = await self.resolve_reference(text)
+        if exact is not None:
+            found.append(exact)
+        pattern = "%" + text.lower().replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%"
+        db = self._require_db()
+        async with db.execute(
+            "SELECT DISTINCT c.* FROM contacts c LEFT JOIN contact_handles h ON h.contact_id = c.contact_id "
+            "WHERE c.deleted_at IS NULL AND (lower(coalesce(c.display_name, '')) LIKE ? ESCAPE '\\' "
+            "OR lower(coalesce(c.given_name, '')) LIKE ? ESCAPE '\\' OR lower(coalesce(c.family_name, '')) LIKE ? "
+            "ESCAPE '\\' OR lower(coalesce(c.organization, '')) LIKE ? ESCAPE '\\' "
+            "OR lower(coalesce(h.address, '')) LIKE ? ESCAPE '\\') "
+            "ORDER BY c.last_interaction_at IS NULL, c.last_interaction_at DESC, c.created_at DESC LIMIT ?",
+            (pattern, pattern, pattern, pattern, pattern, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        seen = {c.contact_id for c in found}
+        found += [Contact.from_row(dict(r)) for r in rows if r["contact_id"] not in seen]
+        return found[:limit]
 
     async def find_by_name(self, name: str, threshold: float = 0.5) -> List[Contact]:
         db = self._require_db()
@@ -537,7 +614,8 @@ class SQLiteContactStore(ContactStore):
         family_name: Optional[str] = None,
         organization: Optional[str] = None,
         trust_tier: str = "unknown",
-        interaction_allowed: Optional[bool] = None,
+        may_contact: str = "ask",
+        cadence_minutes: Optional[int] = None,
         tags: Optional[List[str]] = None,
         privacy_level: str = "private",
         import_source: str = "manual",
@@ -548,8 +626,9 @@ class SQLiteContactStore(ContactStore):
         db = self._require_db()
         if trust_tier not in TRUST_TIERS:
             raise ValueError(f"Invalid trust_tier: {trust_tier}")
-        if interaction_allowed is None:
-            interaction_allowed = TIER_DEFAULT_INTERACTION.get(trust_tier, True)
+        if may_contact not in MAY_CONTACT:
+            raise ValueError(f"Invalid may_contact: {may_contact!r} (never|ask|auto)")
+        cadence_minutes = _cadence(cadence_minutes)
         contact_id = _gen_id("cid")
         now = _now_iso()
         dn = display_name
@@ -559,14 +638,14 @@ class SQLiteContactStore(ContactStore):
             """
             INSERT INTO contacts
               (contact_id, display_name, given_name, family_name, organization,
-               trust_tier, interaction_allowed, tags_json, privacy_level,
+               trust_tier, may_contact, cadence_minutes, tags_json, privacy_level,
                import_source, notes, introduced_by, met_via_json,
                first_seen_at, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 contact_id, dn, given_name, family_name, organization,
-                trust_tier, 1 if interaction_allowed else 0,
+                trust_tier, may_contact, cadence_minutes,
                 json.dumps(tags or []), privacy_level,
                 import_source, notes, introduced_by,
                 json.dumps(met_via) if met_via else None,
@@ -592,7 +671,7 @@ class SQLiteContactStore(ContactStore):
 
         Used when an intro names someone Protagine already knows: we record who
         introduced them / how they were met without duplicating the contact, and
-        do NOT touch their trust_tier or interaction_allowed (an intro never
+        do NOT touch their trust_tier or may_contact (an intro never
         grants standing). Only fills blanks — an existing introduced_by/met_via
         is preserved (first introduction wins).
         """
@@ -684,383 +763,58 @@ class SQLiteContactStore(ContactStore):
         verified: bool = False,
     ) -> ContactHandle:
         db = self._require_db()
-        # Normalize address
-        if gateway == "email":
-            address = _normalize_email(address)
-        elif gateway in ("imessage", "sms", "signal"):
-            address = _normalize_phone(address)
+        gateway, address = stored_handle(gateway, address)
+        if not gateway or not address:
+            raise ValueError("a handle needs a gateway and an address")
 
-        # Check if address already belongs to another contact
+        # An exact handle belongs to one live contact. The same number on another gateway may be
+        # kept as a separate alias (an owner split); resolution treats that number as ambiguous.
         async with db.execute(
-            "SELECT contact_id FROM contact_handles WHERE gateway = ? AND address = ?",
+            "SELECT h.handle_id, h.contact_id, c.deleted_at FROM contact_handles h "
+            "JOIN contacts c ON c.contact_id = h.contact_id WHERE h.gateway = ? AND h.address = ?",
             (gateway, address),
         ) as cur:
             existing = await cur.fetchone()
-        if existing and existing["contact_id"] != contact_id:
+        if existing is not None and existing["contact_id"] != contact_id and existing["deleted_at"] is None:
             raise ValueError(
                 f"Handle ({gateway}, {address}) is already assigned to contact {existing['contact_id']}"
             )
-        if existing and existing["contact_id"] == contact_id:
-            # Already exists for this contact — return it
-            async with db.execute(
-                "SELECT * FROM contact_handles WHERE gateway = ? AND address = ?",
-                (gateway, address),
-            ) as cur:
+        if existing is not None and existing["contact_id"] == contact_id:
+            async with db.execute("SELECT * FROM contact_handles WHERE handle_id = ?",
+                                  (existing["handle_id"],)) as cur:
                 row = await cur.fetchone()
             return ContactHandle.from_row(dict(row))
 
-        handle_id = _gen_id("hdl")
         now = _now_iso()
-        await db.execute(
-            """
-            INSERT INTO contact_handles
-              (handle_id, contact_id, gateway, address, is_primary, verified, confidence, source, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            """,
-            (handle_id, contact_id, gateway, address, 1 if is_primary else 0,
-             1 if verified else 0, confidence, source, now),
-        )
+        if existing is not None:
+            # Held only by a deleted record: the sender is back, so the handle is theirs again.
+            handle_id = existing["handle_id"]
+            await db.execute(
+                "UPDATE contact_handles SET contact_id = ?, is_primary = ?, verified = ?, confidence = ?, "
+                "source = ?, created_at = ? WHERE handle_id = ?",
+                (contact_id, 1 if is_primary else 0, 1 if verified else 0, confidence, source, now, handle_id),
+            )
+        else:
+            handle_id = _gen_id("hdl")
+            await db.execute(
+                """
+                INSERT INTO contact_handles
+                  (handle_id, contact_id, gateway, address, is_primary, verified, confidence, source, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                (handle_id, contact_id, gateway, address, 1 if is_primary else 0,
+                 1 if verified else 0, confidence, source, now),
+            )
         await db.commit()
-        await self.record_audit(
-            contact_id, "handle_added",
-            {"gateway": gateway, "address": address, "source": source},
-        )
+        audit = {"gateway": gateway, "address": address, "source": source}
+        if existing is not None:
+            audit["released_from"] = existing["contact_id"]
+        await self.record_audit(contact_id, "handle_added", audit)
         async with db.execute(
             "SELECT * FROM contact_handles WHERE handle_id = ?", (handle_id,)
         ) as cur:
             row = await cur.fetchone()
         return ContactHandle.from_row(dict(row))
-
-    async def provision_verified_handle(
-        self,
-        *,
-        operation_id: str,
-        performed_by: str,
-        gateway: str,
-        address: str,
-        display_name: Optional[str] = None,
-        contact_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Atomically create/map an exact verified handle with an audit receipt.
-
-        This is intentionally generic at the store boundary.  The API layer
-        decides which gateway/address grammar and which authenticated principal
-        are authorized.  The store guarantees that create+handle cannot leave
-        an orphan contact, that an exact handle cannot cross contacts, and that
-        an operation retry cannot repeat or change the original mutation.
-        """
-
-        shared_db = self._require_db()
-        operation = str(operation_id or "")
-        principal = str(performed_by or "")
-        exact_gateway = str(gateway or "")
-        exact_address = str(address or "")
-        create_name = display_name if isinstance(display_name, str) else None
-        selected_id = contact_id if isinstance(contact_id, str) else None
-        creating = create_name is not None and selected_id is None
-        mapping = selected_id is not None and create_name is None
-        if not (creating or mapping):
-            raise ValueError("exactly one of display_name and contact_id is required")
-        if (
-            not operation
-            or operation != operation.strip()
-            or not principal
-            or principal != principal.strip()
-            or not exact_gateway
-            or exact_gateway != exact_gateway.strip()
-            or not exact_address
-            or exact_address != exact_address.strip()
-        ):
-            raise ValueError("provisioning identifiers must be exact non-empty text")
-        if creating and (
-            not create_name
-            or create_name != create_name.strip()
-            or any(
-                ord(character) < 0x20 or ord(character) == 0x7F
-                for character in create_name
-            )
-        ):
-            raise ValueError("display_name must be canonical text")
-        if mapping and (
-            not selected_id
-            or selected_id != selected_id.strip()
-        ):
-            raise ValueError("contact_id must be canonical text")
-
-        request_value = {
-            "contact_id": selected_id,
-            "display_name": create_name,
-            "gateway": exact_gateway,
-            "address": exact_address,
-        }
-        request_sha256 = hashlib.sha256(json.dumps(
-            request_value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")).hexdigest()
-        now = _now_iso()
-
-        # connect() applies migrations on the shared connection.  Prove the
-        # idempotency ledger exists before opening the dedicated operation
-        # connection; never create or migrate schema in the mutation window.
-        async with shared_db.execute(
-            "SELECT 1 FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'contact_provision_operations'"
-        ) as cur:
-            migration_ready = await cur.fetchone()
-        if migration_ready is None:
-            raise RuntimeError("contact provisioning migration is unavailable")
-
-        db = await self._open_provision_connection()
-        try:
-            await db.execute("BEGIN IMMEDIATE")
-            try:
-                async with db.execute(
-                    "SELECT request_sha256, performed_by, result_json "
-                    "FROM contact_provision_operations WHERE operation_id = ?",
-                    (operation,),
-                ) as cur:
-                    prior = await cur.fetchone()
-                if prior is not None:
-                    if (
-                        prior["request_sha256"] != request_sha256
-                        or prior["performed_by"] != principal
-                    ):
-                        raise ValueError(
-                            "operation_id is already bound to another "
-                            "provisioning request"
-                        )
-                    try:
-                        result = json.loads(prior["result_json"])
-                    except (TypeError, ValueError) as exc:
-                        raise RuntimeError(
-                            "stored provisioning receipt is invalid"
-                        ) from exc
-                    if not isinstance(result, dict):
-                        raise RuntimeError(
-                            "stored provisioning receipt is invalid"
-                        )
-                    await db.commit()
-                    return result
-
-                # Exact uniqueness remains authoritative for every gateway.
-                async with db.execute(
-                    "SELECT contact_id, handle_id, verified "
-                    "FROM contact_handles WHERE gateway = ? AND address = ?",
-                    (exact_gateway, exact_address),
-                ) as cur:
-                    existing_handle = await cur.fetchone()
-
-                # Phone identity is canonical across every configured
-                # phone-bearing gateway.  RCS is explicit because inbound RCS
-                # canonicalizes to SMS while legacy databases can retain rcs.
-                phone_gateways = tuple(sorted(
-                    set(_get_phone_gateways()) | {"rcs"}
-                ))
-                phone_equivalents = []
-                if exact_gateway in phone_gateways:
-                    identity_key = _phone_key(exact_address)
-                    if len(identity_key) < 7:
-                        raise ValueError(
-                            "phone-bearing handle has no canonical phone identity"
-                        )
-                    placeholders = ",".join("?" for _ in phone_gateways)
-                    async with db.execute(
-                        "SELECT h.contact_id, h.handle_id, h.gateway, "
-                        "h.address, h.verified FROM contact_handles h "
-                        "JOIN contacts c ON c.contact_id = h.contact_id "
-                        f"WHERE h.gateway IN ({placeholders}) "
-                        "AND phone_key(h.address) = ? "
-                        "AND c.deleted_at IS NULL "
-                        "ORDER BY h.contact_id, h.handle_id",
-                        (*phone_gateways, identity_key),
-                    ) as cur:
-                        phone_equivalents = await cur.fetchall()
-
-                created_contact = False
-                if creating:
-                    assert create_name is not None
-                    if existing_handle is not None:
-                        raise ValueError("exact handle is already assigned")
-                    if phone_equivalents:
-                        raise ValueError(
-                            "phone-equivalent handle is already assigned"
-                        )
-                    async with db.execute(
-                        "SELECT contact_id, display_name FROM contacts "
-                        "WHERE deleted_at IS NULL "
-                        "AND display_name IS NOT NULL"
-                    ) as cur:
-                        named_contacts = await cur.fetchall()
-                    if any(
-                        str(row["display_name"] or "").casefold()
-                        == create_name.casefold()
-                        for row in named_contacts
-                    ):
-                        raise ValueError("display_name is not unique")
-                    selected_id = _gen_id("cid")
-                    await db.execute(
-                        """
-                        INSERT INTO contacts
-                          (contact_id, display_name, trust_tier,
-                           interaction_allowed, tags_json, privacy_level,
-                           import_source, first_seen_at, created_at, updated_at)
-                        VALUES (?, ?, 'unknown', 0, '[]', 'private',
-                                'owner_operator', ?, ?, ?)
-                        """,
-                        (selected_id, create_name, now, now, now),
-                    )
-                    created_contact = True
-                    await self._after_provision_contact_insert()
-                    await db.execute(
-                        "INSERT INTO contact_audit "
-                        "(id, contact_id, action, detail, performed_by, "
-                        "created_at) VALUES (?, ?, 'created', ?, ?, ?)",
-                        (
-                            _gen_id("cau"),
-                            selected_id,
-                            json.dumps({"import_source": "owner_operator"}),
-                            principal,
-                            now,
-                        ),
-                    )
-                else:
-                    assert selected_id is not None
-                    async with db.execute(
-                        "SELECT display_name, interaction_allowed "
-                        "FROM contacts WHERE contact_id = ? "
-                        "AND deleted_at IS NULL",
-                        (selected_id,),
-                    ) as cur:
-                        selected = await cur.fetchone()
-                    if selected is None:
-                        raise ValueError("selected contact does not exist")
-                    create_name = selected["display_name"]
-
-                assert selected_id is not None
-                if (
-                    existing_handle is not None
-                    and existing_handle["contact_id"] != selected_id
-                ):
-                    raise ValueError(
-                        "exact handle is already assigned to another contact"
-                    )
-                if any(
-                    row["contact_id"] != selected_id
-                    for row in phone_equivalents
-                ):
-                    raise ValueError(
-                        "phone-equivalent handle is already assigned to "
-                        "another contact"
-                    )
-
-                handle_created = existing_handle is None
-                handle_changed = (
-                    handle_created or not bool(existing_handle["verified"])
-                )
-                if handle_created:
-                    handle_id = _gen_id("hdl")
-                    await db.execute(
-                        """
-                        INSERT INTO contact_handles
-                          (handle_id, contact_id, gateway, address, is_primary,
-                           verified, confidence, source, created_at)
-                        VALUES (?, ?, ?, ?, 1, 1, 1.0,
-                                'owner_operator', ?)
-                        """,
-                        (
-                            handle_id,
-                            selected_id,
-                            exact_gateway,
-                            exact_address,
-                            now,
-                        ),
-                    )
-                else:
-                    handle_id = str(existing_handle["handle_id"])
-                    if handle_changed:
-                        await db.execute(
-                            "UPDATE contact_handles SET verified = 1, "
-                            "confidence = 1.0, source = 'owner_operator' "
-                            "WHERE handle_id = ?",
-                            (handle_id,),
-                        )
-
-                address_sha256 = hashlib.sha256(
-                    exact_address.encode("utf-8")
-                ).hexdigest()
-                await db.execute(
-                    "INSERT INTO contact_audit "
-                    "(id, contact_id, action, detail, performed_by, created_at) "
-                    "VALUES (?, ?, 'contact_handle_owner_verified', ?, ?, ?)",
-                    (
-                        _gen_id("cau"),
-                        selected_id,
-                        json.dumps({
-                            "operation_id": operation,
-                            "gateway": exact_gateway,
-                            "address_sha256": address_sha256,
-                            "handle_created": handle_created,
-                            "verification_changed": handle_changed,
-                            "contact_created": created_contact,
-                        }, sort_keys=True),
-                        principal,
-                        now,
-                    ),
-                )
-
-                # Read standing in the same transaction.  This method never
-                # enables it; creation is always held.
-                async with db.execute(
-                    "SELECT interaction_allowed FROM contacts "
-                    "WHERE contact_id = ?",
-                    (selected_id,),
-                ) as cur:
-                    standing_row = await cur.fetchone()
-                if standing_row is None:
-                    raise RuntimeError("provisioned contact disappeared")
-                result = {
-                    "contact_id": selected_id,
-                    "display_name": create_name,
-                    "gateway": exact_gateway,
-                    "address": exact_address,
-                    "handle_id": handle_id,
-                    "created": created_contact,
-                    "handle_created": handle_created,
-                    "changed": created_contact or handle_changed,
-                    "verified": True,
-                    "interaction_allowed": bool(
-                        standing_row["interaction_allowed"]
-                    ),
-                    "operation_id": operation,
-                }
-                result_json = json.dumps(
-                    result,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                )
-                await db.execute(
-                    "INSERT INTO contact_provision_operations "
-                    "(operation_id, request_sha256, performed_by, contact_id, "
-                    "result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        operation,
-                        request_sha256,
-                        principal,
-                        selected_id,
-                        result_json,
-                        now,
-                    ),
-                )
-                await db.commit()
-                return result
-            except Exception:
-                await db.rollback()
-                raise
-        finally:
-            await db.close()
 
     async def update_tier(
         self,
@@ -1099,20 +853,77 @@ class SQLiteContactStore(ContactStore):
         )
         await db.commit()
 
-    async def update_interaction_allowed(
-        self, contact_id: str, allowed: bool, performed_by: str = "operator"
-    ) -> None:
+    async def _permission_row(self, contact_id: str) -> aiosqlite.Row:
+        db = self._require_db()
+        async with db.execute(
+            "SELECT may_contact, cadence_minutes FROM contacts WHERE contact_id = ? AND deleted_at IS NULL",
+            (contact_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise ValueError(f"Contact not found: {contact_id}")
+        return row
+
+    async def set_may_contact(self, contact_id: str, value: str, *, by: str, reason: str = "") -> Contact:
+        """The owner's path (7.4): ``may_contact`` moves in any direction, audited as ``may_contact_set``."""
+        if value not in MAY_CONTACT:
+            raise ValueError(f"Invalid may_contact: {value!r} (never|ask|auto)")
+        current = str((await self._permission_row(contact_id))["may_contact"])
         db = self._require_db()
         await db.execute(
-            "UPDATE contacts SET interaction_allowed = ?, updated_at = ? WHERE contact_id = ?",
-            (1 if allowed else 0, _now_iso(), contact_id),
+            "UPDATE contacts SET may_contact = ?, updated_at = ? WHERE contact_id = ?",
+            (value, _now_iso(), contact_id),
         )
         await db.commit()
-        await self.record_audit(
-            contact_id, "interaction_toggled",
-            {"interaction_allowed": allowed},
-            performed_by=performed_by,
+        await self.record_audit(contact_id, "may_contact_set",
+                                {"from": current, "to": value, "reason": reason or ""}, performed_by=by)
+        contact = await self.get(contact_id)
+        assert contact is not None
+        return contact
+
+    async def lower_may_contact(self, contact_id: str, *, reason: str, source_ref: str) -> Optional[Contact]:
+        """A contact's opt-out (4.7 item 9): to ``never`` only. None when unknown or already never."""
+        try:
+            current = str((await self._permission_row(contact_id))["may_contact"])
+        except ValueError:
+            return None
+        if current == "never":
+            return None
+        db = self._require_db()
+        await db.execute(
+            "UPDATE contacts SET may_contact = 'never', updated_at = ? WHERE contact_id = ?",
+            (_now_iso(), contact_id),
         )
+        await db.commit()
+        await self.record_audit(contact_id, "opt_out",
+                                {"from": current, "to": "never", "reason": reason, "source_ref": source_ref},
+                                performed_by="contact")
+        return await self.get(contact_id)
+
+    async def set_cadence(self, contact_id: str, minutes: Optional[int], *, by: str) -> Contact:
+        """The owner-set cadence in minutes (None clears it), audited as ``cadence_set``."""
+        minutes = _cadence(minutes)
+        row = await self._permission_row(contact_id)
+        current = int(row["cadence_minutes"]) if row["cadence_minutes"] is not None else None
+        db = self._require_db()
+        await db.execute(
+            "UPDATE contacts SET cadence_minutes = ?, updated_at = ? WHERE contact_id = ?",
+            (minutes, _now_iso(), contact_id),
+        )
+        await db.commit()
+        await self.record_audit(contact_id, "cadence_set", {"from": current, "to": minutes}, performed_by=by)
+        contact = await self.get(contact_id)
+        assert contact is not None
+        return contact
+
+    async def set_digest(self, contact_id: str, text: str, sources: List[str]) -> None:
+        """Write the per-contact digest and the source refs it was rendered from."""
+        db = self._require_db()
+        await db.execute(
+            "UPDATE contacts SET digest = ?, digest_sources = ?, updated_at = ? WHERE contact_id = ?",
+            (text or None, json.dumps([str(s) for s in sources or []]), _now_iso(), contact_id),
+        )
+        await db.commit()
 
     async def compute_cadence_overdue(
         self,
@@ -1125,21 +936,22 @@ class SQLiteContactStore(ContactStore):
         limit: int = 20,
         exclude_ids: Optional[set] = None,
     ) -> List[Dict[str, Any]]:
-        """Per-contact rhythm + silence (v0.21.0), SQLite-based.
+        """Per-contact rhythm and silence.
 
-        Estimates each contact's typical cadence from their own interaction
-        history (active span / interactions) and flags those overdue relative
-        to *their* rhythm — so a daily contact is overdue after a few days while
-        a monthly one isn't for weeks. Independent of the Neo4j graph.
+        An owner-set ``cadence_minutes`` is the cadence when present and is honoured exactly.
+        Otherwise the cadence is estimated from the contact's own conversations (C3: active span /
+        conversations, a conversation being turns less than 30 minutes apart), with the floor and
+        ``factor`` applied, so a daily contact is overdue after a few days while a monthly one is
+        not for weeks. ``never`` contacts are not listed.
         """
         from protagine.util import temporal as _t
         db = self._require_db()
         now = _t.parse_iso(now_iso) or _t.now_utc()
         exclude = set(exclude_ids or [])
         async with db.execute(
-            "SELECT contact_id, display_name, given_name, first_seen_at, "
-            "last_interaction_at, interaction_count, timezone "
-            "FROM contacts WHERE deleted_at IS NULL AND interaction_allowed = 1 "
+            "SELECT contact_id, display_name, given_name, first_seen_at, last_interaction_at, "
+            "interaction_count, timezone, may_contact, cadence_minutes "
+            "FROM contacts WHERE deleted_at IS NULL AND may_contact != 'never' "
             "AND last_interaction_at IS NOT NULL"
         ) as cur:
             rows = await cur.fetchall()
@@ -1155,46 +967,153 @@ class SQLiteContactStore(ContactStore):
             first = _t.parse_iso(r["first_seen_at"])
             count = int(r["interaction_count"] or 0)
             days_since = (now - last).total_seconds() / 86400.0
-            # cadence estimate
-            if count >= 2 and first is not None and last > first:
-                span = (last - first).total_seconds() / 86400.0
-                cadence = span / max(count - 1, 1)
+            minutes = r["cadence_minutes"]
+            if minutes is not None:
+                cadence = int(minutes) / 1440.0
+                threshold = cadence
+                is_overdue = days_since >= threshold
+                source = "owner"
             else:
-                cadence = default_cadence_days
-            cadence = max(0.5, min(cadence, 90.0))
-            threshold = max(min_silence_days, cadence * factor)
-            is_overdue = days_since > threshold
+                if count >= 2 and first is not None and last > first:
+                    span = (last - first).total_seconds() / 86400.0
+                    cadence = span / max(count - 1, 1)
+                else:
+                    cadence = default_cadence_days
+                cadence = max(0.5, min(cadence, 90.0))
+                threshold = max(min_silence_days, cadence * factor)
+                is_overdue = days_since > threshold
+                source = "estimate"
             if overdue_only and not is_overdue:
                 continue
             out.append({
                 "contact_id": cid,
                 "name": r["display_name"] or r["given_name"] or cid,
                 "timezone": r["timezone"],
+                "may_contact": r["may_contact"],
+                "cadence_minutes": int(minutes) if minutes is not None else None,
+                "cadence_source": source,
+                "first_seen_at": r["first_seen_at"],
                 "last_interaction_at": r["last_interaction_at"],
-                "days_since": round(days_since, 1),
-                "cadence_days": round(cadence, 1),
+                "interaction_count": count,
+                "days_since": round(days_since, 2),
+                "cadence_days": round(cadence, 2),
                 "overdue": is_overdue,
-                "overdue_ratio": round(days_since / max(cadence, 0.5), 2),
+                "overdue_ratio": round(days_since / max(cadence, 1e-6), 2),
             })
 
         out.sort(key=lambda x: x["overdue_ratio"], reverse=True)
         return out[:limit]
 
     async def record_interaction(self, contact_id: str, at_iso: Optional[str] = None) -> bool:
-        """Bump last_interaction_at (+count) for a contact. v0.21.0.
+        """An inbound turn from the contact (C3).
 
-        Returns True if a row was updated (i.e. the contact exists).
+        ``last_interaction_at`` only moves forward; ``interaction_count`` counts CONVERSATIONS: a
+        turn more than 30 minutes after the previous one starts a new conversation, a turn inside
+        that window belongs to the current one. Returns True when the contact exists.
         """
+        from protagine.util.temporal import parse_iso
         db = self._require_db()
         ts = at_iso or _now_iso()
-        cur = await db.execute(
-            "UPDATE contacts SET last_interaction_at = ?, "
-            "interaction_count = interaction_count + 1, updated_at = ? "
+        async with db.execute(
+            "SELECT last_interaction_at, first_seen_at FROM contacts WHERE contact_id = ? AND deleted_at IS NULL",
+            (contact_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return False
+        last, first = row["last_interaction_at"], row["first_seen_at"]
+        new_dt, last_dt, first_dt = parse_iso(ts), parse_iso(last), parse_iso(first)
+        if last is None or last_dt is None or new_dt is None:
+            conversation, latest = True, ts
+        else:
+            conversation = (new_dt - last_dt) > _CONVERSATION_GAP
+            latest = ts if new_dt >= last_dt else last
+        first_seen = ts if (first_dt is None or (new_dt is not None and new_dt < first_dt)) else first
+        await db.execute(
+            "UPDATE contacts SET last_interaction_at = ?, first_seen_at = ?, "
+            "interaction_count = interaction_count + ?, updated_at = ? "
             "WHERE contact_id = ? AND deleted_at IS NULL",
-            (ts, ts, contact_id),
+            (latest, first_seen, 1 if conversation else 0, _now_iso(), contact_id),
         )
         await db.commit()
-        return cur.rowcount > 0
+        return True
+
+    async def social_candidates(self, *, limit: int = 200) -> List[Dict[str, Any]]:
+        """The contacts the social drive may consider (architecture 4.5, 4.7): not the owner,
+        permission is not ``never`` and the owner set a cadence or the tier is ``regular`` or
+        above. Shadow and group-only contacts are never listed, so a group chat cannot become
+        check-in asks."""
+        from protagine.identity import get_owner_contact_id
+        db = self._require_db()
+        tiers = [t for t in TRUST_TIERS if regular_or_above(t)]
+        placeholders = ",".join("?" for _ in tiers)
+        async with db.execute(
+            "SELECT contact_id, display_name, trust_tier, may_contact, cadence_minutes, first_seen_at, "
+            "last_interaction_at, interaction_count, timezone FROM contacts "
+            "WHERE deleted_at IS NULL AND may_contact != 'never' AND contact_id != ? "
+            f"AND (cadence_minutes IS NOT NULL OR trust_tier IN ({placeholders})) "
+            "ORDER BY last_interaction_at IS NULL, last_interaction_at, created_at LIMIT ?",
+            (get_owner_contact_id() or "", *tiers, max(1, min(int(limit), 1000))),
+        ) as cur:
+            rows = await cur.fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "contact_id": r["contact_id"], "display_name": r["display_name"], "trust_tier": r["trust_tier"],
+                "may_contact": r["may_contact"],
+                "cadence_minutes": int(r["cadence_minutes"]) if r["cadence_minutes"] is not None else None,
+                "first_seen_at": r["first_seen_at"], "last_interaction_at": r["last_interaction_at"],
+                "interaction_count": int(r["interaction_count"] or 0), "timezone": r["timezone"],
+            })
+        return out
+
+    async def resolve_reference(self, reference: str, *, exact: bool = False) -> Optional[Contact]:
+        """One contact for the way the owner names people: a contact id, a handle address only one
+        contact holds, an E.164 number, an email, ``gateway:address``, and then (unless ``exact``) a
+        unique display or given name, or a unique first word of a display name. A name is a guess:
+        ``exact`` refuses it, so an owner's grant never sends to someone matched by name alone.
+        A shadow's handle address is a guess too: the sender chose it (a username can be anyone's
+        name), so only ``gateway:address``, a number or an email identifies a shadow exactly.
+        Ambiguity or an unknown reference is None."""
+        ref = (reference or "").strip()
+        if not ref:
+            return None
+        if ref.startswith("cid-"):
+            return await self.get(ref)
+        db = self._require_db()
+        async with db.execute(
+            "SELECT DISTINCT c.* FROM contacts c JOIN contact_handles h ON h.contact_id = c.contact_id "
+            "WHERE h.address = ? AND c.deleted_at IS NULL AND (h.verified=1 OR h.source!='auto:scoped-name')",
+            (ref,),
+        ) as cur:
+            holders = [Contact.from_row(dict(row)) for row in await cur.fetchall()]
+        if len(holders) == 1 and not holders[0].is_shadow:
+            return holders[0]
+        if is_e164(ref):
+            return await self._match_canonical("", ref)
+        if "@" in ref and ":" not in ref:
+            return await self._match_canonical("email", ref)
+        if ":" in ref:
+            gateway, _, address = ref.partition(":")
+            if gateway.strip() and address.strip():
+                found = await self.resolve_messaging_handle(gateway, address)
+                if found is not None:
+                    return found
+        if exact or len(holders) > 1:
+            return None
+        wanted = ref.lower()
+        async with db.execute(
+            "SELECT * FROM contacts WHERE deleted_at IS NULL AND (lower(display_name) = ? OR lower(given_name) = ?)",
+            (wanted, wanted),
+        ) as cur:
+            rows = await cur.fetchall()
+        if not rows and not holders:
+            async with db.execute("SELECT * FROM contacts WHERE deleted_at IS NULL AND display_name IS NOT NULL") as cur:
+                rows = [r for r in await cur.fetchall()
+                        if str(r["display_name"] or "").strip().lower().split(" ")[0] == wanted]
+        # A guess answers only when everyone the reference could mean is one person.
+        guesses = {c.contact_id: c for c in [*holders, *(Contact.from_row(dict(r)) for r in rows)]}
+        return next(iter(guesses.values())) if len(guesses) == 1 else None
 
     async def set_timezone(
         self, contact_id: str, timezone: Optional[str], performed_by: str = "operator"
@@ -1244,53 +1163,187 @@ class SQLiteContactStore(ContactStore):
         await db.execute("DELETE FROM contacts WHERE contact_id = ?", (contact_id,))
         await db.commit()
 
-    async def merge_contacts(
-        self, keep_id: str, merge_id: str, performed_by: str = "owner",
-    ) -> Optional[Contact]:
-        """Fold ``merge_id`` into ``keep_id``: move its handles, add its
-        interaction count, then soft-delete it. Audited on both records so
-        the merge is traceable and the loser is recoverable."""
-        db = self._require_db()
-        if keep_id == merge_id:
-            return await self.get(keep_id)
-        keep = await self.get(keep_id)
-        loser = await self.get(merge_id)
-        if keep is None or loser is None:
+    async def merge(self, keep_id: str, drop_id: str, *, performed_by: str, reattribute=None,
+                    sources_of=None) -> Contact:
+        """C2: fold ``drop_id`` into ``keep_id``.
+
+        Every handle of ``drop`` moves through ``identity_links.correct`` (one durable receipt per
+        handle, ``operation_id`` ``merge:<drop>:<handle_id>``); the dropped contact's sources
+        (``sources_of(drop_id)``) ride on receipts of their own (``merge:<drop>:sources:<n>``),
+        which the host's existing reconciliation of ``pending_identity_reconciliations`` moves in
+        the ledger. Every ``reattribute`` hook is then awaited as ``hook(drop_id, keep_id)`` (the
+        comms log and the affect store). Last, in one commit: ``last_interaction_at`` is the max,
+        ``first_seen_at`` the min, ``interaction_count`` the sum, the cadence the keeper's else the
+        dropped one's, ``may_contact`` ``never`` if either was (an opt-out survives a merge;
+        nothing else changes it), the tier the keeper's, the keeper's digest (the dropped one's
+        when the keeper has none; never two joined), tags and notes appended, group memberships
+        and identity candidates moved and ``drop`` soft-deleted, guarded so that a merge of the
+        same pair that finished meanwhile is not folded twice. Both records are audited. A merge
+        that stopped half way can be run again: moved handles and recorded sources are skipped.
+
+        ``reattribute`` and ``sources_of`` default to the store's own (set once by the server).
+        """
+        from .identity_links import correct, move_sources
+        from protagine.util.temporal import parse_iso
+        if keep_id == drop_id:
+            raise ValueError("a contact cannot be merged into itself")
+        keep, drop = await self.get(keep_id), await self.get(drop_id)
+        if keep is None or drop is None:
             raise ValueError("both contacts must exist to merge")
+        evidence = [f"merge:{keep_id}:{drop_id}"]
+        operations = []
+        for handle in await self.get_handles(drop_id):
+            receipt = await correct(
+                self, operation_id=f"merge:{drop_id}:{handle.handle_id}", performed_by=performed_by,
+                gateway=handle.gateway, address=handle.address, expected_contact_id=drop_id,
+                contact_id=keep_id, evidence_refs=evidence)
+            operations.append(receipt["operation_id"])
+        sources_of = sources_of if sources_of is not None else self.sources_of
+        sources = [str(s) for s in (await sources_of(drop_id) if sources_of else [])]
+        moves = await move_sources(self, operation_prefix=f"merge:{drop_id}:sources:", performed_by=performed_by,
+                                   old_contact_id=drop_id, contact_id=keep_id, evidence_refs=evidence,
+                                   source_ids=sources)
+        operations += [receipt["operation_id"] for receipt in moves]
+        for hook in (list(reattribute) if reattribute is not None else list(self.reattribute)):
+            result = hook(drop_id, keep_id)
+            if inspect.isawaitable(result):
+                await result
+
+        def _pick(values, choose):
+            stamped = [(parse_iso(v), v) for v in values if v]
+            stamped = [(dt, v) for dt, v in stamped if dt is not None]
+            return choose(stamped)[1] if stamped else None
+
         now = _now_iso()
-        moved = 0
-        for h in await self.get_handles(merge_id):
-            # Skip a handle the keeper already has (avoid a unique clash);
-            # otherwise reassign it to the keeper.
+        db = self._require_db()
+        digest = keep if keep.digest else drop
+        # The fold and the soft delete are one write guarded on the dropped record still being live:
+        # a merge of the same pair that finished meanwhile leaves this one nothing to fold twice.
+        folded = await db.execute(
+            "UPDATE contacts SET last_interaction_at = ?, first_seen_at = ?, interaction_count = ?, "
+            "cadence_minutes = ?, may_contact = ?, digest = ?, digest_sources = ?, tags_json = ?, notes = ?, "
+            "updated_at = ? WHERE contact_id = ? AND EXISTS (SELECT 1 FROM contacts d WHERE d.contact_id = ? "
+            "AND d.deleted_at IS NULL)",
+            (_pick([keep.last_interaction_at, drop.last_interaction_at], max),
+             _pick([keep.first_seen_at, drop.first_seen_at], min) or keep.first_seen_at,
+             int(keep.interaction_count) + int(drop.interaction_count),
+             keep.cadence_minutes if keep.cadence_minutes is not None else drop.cadence_minutes,
+             "never" if "never" in (keep.may_contact, drop.may_contact) else keep.may_contact,
+             digest.digest or None, json.dumps(list(digest.digest_sources) if digest.digest else []),
+             json.dumps(list(keep.tags) + [t for t in drop.tags if t not in keep.tags]),
+             "\n".join(n for n in (keep.notes, drop.notes) if n) or None, now, keep_id, drop_id),
+        )
+        if not folded.rowcount:
+            await db.rollback()
+            merged = await self.get(keep_id)
+            assert merged is not None
+            return merged
+        # Group memberships follow the person; one both records held stays one (current if either was).
+        await db.execute("UPDATE scope_members SET left_at = NULL WHERE contact_id = ? AND left_at IS NOT NULL "
+                         "AND scope_id IN (SELECT scope_id FROM scope_members WHERE contact_id = ? AND left_at IS NULL)",
+                         (keep_id, drop_id))
+        await db.execute("UPDATE OR IGNORE scope_members SET contact_id = ? WHERE contact_id = ?", (keep_id, drop_id))
+        await db.execute("DELETE FROM scope_members WHERE contact_id = ?", (drop_id,))
+        async with db.execute("SELECT candidate_id FROM contact_identity_candidates WHERE contact_id = ?",
+                              (drop_id,)) as cur:
+            candidates = [row["candidate_id"] for row in await cur.fetchall()]
+        for candidate_id in candidates:
             try:
-                await db.execute(
-                    "UPDATE contact_handles SET contact_id = ? "
-                    "WHERE handle_id = ?", (keep_id, h.handle_id))
-                moved += 1
-            except Exception:
-                # duplicate (gateway,address) already on keep -> drop the dup
-                await db.execute(
-                    "DELETE FROM contact_handles WHERE handle_id = ?",
-                    (h.handle_id,))
-        # Fold interaction history + keep the earlier last-seen.
-        new_count = int(getattr(keep, "interaction_count", 0) or 0) +\
-            int(getattr(loser, "interaction_count", 0) or 0)
-        await db.execute(
-            "UPDATE contacts SET interaction_count = ?, updated_at = ? "
-            "WHERE contact_id = ?", (new_count, now, keep_id))
+                await db.execute("UPDATE contact_identity_candidates SET contact_id = ? WHERE candidate_id = ?",
+                                 (keep_id, candidate_id))
+            except sqlite3.IntegrityError:  # the keeper already holds the same candidate
+                await db.execute("DELETE FROM contact_identity_candidates WHERE candidate_id = ?", (candidate_id,))
+        await db.execute("UPDATE contacts SET deleted_at = ?, updated_at = ? WHERE contact_id = ?",
+                         (now, now, drop_id))
         await db.commit()
         await self.record_audit(
             keep_id, "merged_in",
-            {"merged_contact_id": merge_id,
-             "merged_display_name": loser.display_name,
-             "handles_moved": moved},
+            {"merged_contact_id": drop_id, "merged_display_name": drop.display_name,
+             "operations": operations, "sources": sum(len(r["affected_source_ids"]) for r in moves)},
             performed_by=performed_by)
-        await self.soft_delete(
-            merge_id, reason=f"merged into {keep_id}", performed_by=performed_by)
+        await self.record_audit(drop_id, "merged_into", {"kept_contact_id": keep_id, "reason": f"merged into {keep_id}"},
+                                performed_by=performed_by)
+        merged = await self.get(keep_id)
+        assert merged is not None
+        return merged
+
+    async def _candidate(self, candidate_id: str) -> Dict[str, Any]:
+        db = self._require_db()
+        async with db.execute("SELECT * FROM contact_identity_candidates WHERE candidate_id = ?",
+                              (candidate_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None or row["status"] != "pending":
+            raise ValueError("identity_candidate_not_pending")
+        value = dict(row)
+        value["evidence_refs"] = json.loads(value.pop("evidence_refs_json") or "[]")
+        return value
+
+    async def _handle_holder(self, gateway: str, address: str) -> Optional[str]:
+        db = self._require_db()
+        async with db.execute("SELECT contact_id FROM contact_handles WHERE gateway = ? AND address = ?",
+                              (gateway, address)) as cur:
+            row = await cur.fetchone()
+        return row["contact_id"] if row else None
+
+    async def confirm_link(self, candidate_id: str, *, performed_by: str, reattribute=None,
+                           sources_of=None) -> Dict[str, Any]:
+        """The owner's yes to a name-only link proposal (A7).
+
+        The handle nobody holds is attached, verified, through ``identity_links.correct``. When a
+        shadow contact holds it (the sender kept a separate identity while the name only suggested
+        the link), confirming the identity folds that shadow into the proposed contact through
+        ``merge``, so its history follows the person. When an established contact holds it, nothing
+        moves: the proposal is closed and ``identity_handle_held`` raised.
+        """
+        from .identity_links import correct
+        candidate = await self._candidate(candidate_id)
+        target, gateway, address = candidate["contact_id"], candidate["gateway"], candidate["address"]
+        if await self.get(target) is None:
+            raise ValueError("identity_contact_not_found")
+        holder = await self._handle_holder(gateway, address)
+        evidence = list(candidate["evidence_refs"]) or [f"candidate:{candidate_id}"]
+        held_by = await self.get(holder) if holder is not None and holder != target else None
+        if held_by is not None and not held_by.is_shadow:
+            # An established, different person holds the handle (a number reassigned, a proposal
+            # anyone may file): a yes to the link never deletes them. The proposal is closed and the
+            # owner merges the two explicitly if they are one person.
+            db = self._require_db()
+            await db.execute("UPDATE contact_identity_candidates SET status = 'rejected', resolved_at = ? "
+                             "WHERE candidate_id = ? AND status = 'pending'", (_now_iso(), candidate_id))
+            await db.commit()
+            await self.record_audit(target, "link_refused", {"candidate_id": candidate_id, "gateway": gateway,
+                                                             "held_by": holder}, performed_by=performed_by)
+            raise ValueError("identity_handle_held")
+        if held_by is not None:
+            await self.merge(target, holder, performed_by=performed_by, reattribute=reattribute, sources_of=sources_of)
+            receipt = {"operation_id": f"merge:{holder}", "old_contact_id": holder, "contact_id": target, "merged": True}
+        else:
+            receipt = await correct(
+                self, operation_id=f"link:{candidate_id}", performed_by=performed_by, gateway=gateway,
+                address=address, expected_contact_id=holder if holder == target else None, contact_id=target,
+                evidence_refs=evidence)
+            receipt = dict(receipt, merged=False)
+        db = self._require_db()
+        await db.execute("UPDATE contact_identity_candidates SET status = 'confirmed', resolved_at = ? "
+                         "WHERE candidate_id = ? AND status = 'pending'", (_now_iso(), candidate_id))
+        await db.commit()
+        return {"candidate_id": candidate_id, "status": "confirmed", **receipt}
+
+    async def reject_link(self, candidate_id: str, *, performed_by: str) -> Dict[str, Any]:
+        """The owner's no: the candidate is closed; whoever holds the handle keeps it."""
+        candidate = await self._candidate(candidate_id)
+        db = self._require_db()
+        now = _now_iso()
+        await db.execute("UPDATE contact_identity_candidates SET status = 'rejected', resolved_at = ? "
+                         "WHERE candidate_id = ?", (now, candidate_id))
+        await db.commit()
         await self.record_audit(
-            merge_id, "merged_into", {"kept_contact_id": keep_id},
+            candidate["contact_id"], "link_rejected",
+            {"candidate_id": candidate_id, "gateway": candidate["gateway"],
+             "address_sha256": hashlib.sha256(candidate["address"].encode()).hexdigest()},
             performed_by=performed_by)
-        return await self.get(keep_id)
+        return {"candidate_id": candidate_id, "contact_id": candidate["contact_id"], "status": "rejected",
+                "resolved_at": now}
 
     async def list_handle_proposals(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Pending candidate associations, never installed identity links."""
@@ -1312,14 +1365,17 @@ class SQLiteContactStore(ContactStore):
             "notes", "person_node_id", "privacy_level",
             "last_interaction_at", "interaction_count",
             "enrichment_source", "enrichment_last_at",
+            "cadence_minutes", "digest", "digest_sources",
         }
         set_parts = []
         params = []
         for k, v in fields.items():
             if k not in allowed_fields:
                 continue
-            if k == "enrichment_source" and isinstance(v, list):
+            if k in ("enrichment_source", "digest_sources") and isinstance(v, list):
                 v = json.dumps(v)
+            if k == "cadence_minutes":
+                v = _cadence(v)
             # SQL-01: column name is validated against allowed_fields; double-quote the
             # identifier so SQLite treats it safely even if allowed_fields is later extended.
             set_parts.append(f'"{k}" = ?')
@@ -1352,6 +1408,27 @@ class SQLiteContactStore(ContactStore):
         )
         await db.commit()
 
+    async def audit_since(self, actions: List[str], since: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """Audit rows of ``actions`` recorded at or after ``since`` (ISO), oldest first, each with the
+        contact's display name and its detail parsed: the opt-outs the owner's digest lists."""
+        if not actions:
+            return []
+        db = self._require_db()
+        marks = ",".join("?" for _ in actions)
+        async with db.execute(
+            f"SELECT a.contact_id, a.action, a.detail, a.performed_by, a.created_at, c.display_name "  # noqa: S608
+            f"FROM contact_audit a LEFT JOIN contacts c ON c.contact_id = a.contact_id "
+            f"WHERE a.action IN ({marks}) AND a.created_at >= ? ORDER BY a.created_at LIMIT ?",
+            (*actions, since, limit),
+        ) as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+        for row in rows:
+            try:
+                row["detail"] = json.loads(row["detail"] or "{}")
+            except (TypeError, ValueError):
+                row["detail"] = {}
+        return rows
+
     async def get_audit_log(self, contact_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         db = self._require_db()
         async with db.execute(
@@ -1362,22 +1439,6 @@ class SQLiteContactStore(ContactStore):
         return [dict(r) for r in rows]
 
     # ── Deduplication helpers ─────────────────────────────────────────────────
-
-    async def find_by_handle(self, gateway: str, address: str) -> Optional[Contact]:
-        """Find contact by exact handle (including soft-deleted contacts)."""
-        db = self._require_db()
-        async with db.execute(
-            """
-            SELECT c.* FROM contacts c
-            JOIN contact_handles h ON h.contact_id = c.contact_id
-            WHERE h.gateway = ? AND h.address = ?
-            """,
-            (gateway, address),
-        ) as cur:
-            row = await cur.fetchone()
-        if row is None:
-            return None
-        return Contact.from_row(dict(row))
 
     async def find_dedup_candidates(
         self, given_name: Optional[str], family_name: Optional[str],
@@ -1391,11 +1452,9 @@ class SQLiteContactStore(ContactStore):
         norm_phones = [_normalize_phone(p) for p in phones if p]
         norm_emails = [_normalize_email(e) for e in emails if e]
 
-        # 1. Exact phone match
+        # 1. Exact phone match (one identity on every gateway)
         for phone in norm_phones:
-            contact = await self.resolve_handle("imessage", phone)
-            if contact is None:
-                contact = await self.resolve_handle("sms", phone)
+            contact = await self.resolve_handle("", phone)
             if contact and contact.contact_id not in seen_ids:
                 seen_ids.add(contact.contact_id)
                 candidates.append((0.99, contact.contact_id, f"exact_phone:{phone}"))
@@ -1552,17 +1611,19 @@ class SQLiteContactStore(ContactStore):
     async def group_promotion_candidates(
         self, *, min_interactions: int = 5, limit: int = 50
     ) -> List["Contact"]:
-        """Current members of an ACTIVE scope with sustained contact but no global 1:1 rights yet.
-        These are who the owner could promote (group_guest -> regular), or who get auto-promoted
-        when ``auto_promote_group_to_1on1`` is on. Group membership alone never promotes."""
+        """Current members of an ACTIVE scope with sustained conversations whose tier is still below
+        ``regular``: the people the owner could promote. Group membership alone never promotes,
+        and a tier never grants permission (``may_contact`` is the owner's alone)."""
         db = self._require_db()
+        below = [t for t in TRUST_TIERS if not regular_or_above(t)]
+        placeholders = ",".join("?" for _ in below)
         async with db.execute(
             "SELECT DISTINCT c.* FROM contacts c "
             "JOIN scope_members m ON m.contact_id = c.contact_id AND m.left_at IS NULL "
             "JOIN trust_scopes s ON s.scope_id = m.scope_id AND s.active = 1 "
-            "WHERE c.deleted_at IS NULL AND c.interaction_allowed = 0 "
+            f"WHERE c.deleted_at IS NULL AND c.trust_tier IN ({placeholders}) "
             "AND c.interaction_count >= ? ORDER BY c.interaction_count DESC LIMIT ?",
-            (int(min_interactions), int(limit)),
+            (*below, int(min_interactions), int(limit)),
         ) as cur:
             rows = await cur.fetchall()
         return [Contact.from_row(dict(r)) for r in rows]
@@ -1570,21 +1631,13 @@ class SQLiteContactStore(ContactStore):
     async def promote_scope_member(
         self, contact_id: str, *, to_tier: str = "regular", performed_by: str = "agent"
     ) -> bool:
-        """Grant a group-scope member global 1:1 rights (tier >= ``to_tier`` + interaction
-        allowed). Only ever RAISES standing; returns True iff something changed."""
-        from protagine.contacts.models import _TIER_RANK
+        """Raise a group-scope member's tier to ``to_tier``. Only ever raises the tier, never
+        ``may_contact``; returns True iff something changed."""
         c = await self.get(contact_id)
         if c is None:
             return False
-        changed = False
-        if _TIER_RANK.get(c.trust_tier, 0) < _TIER_RANK.get(to_tier, 0):
-            await self.update_tier(contact_id, to_tier, reason="promoted from group scope",
-                                   performed_by=performed_by)
-            changed = True
-        if not c.interaction_allowed:
-            await self.update_interaction_allowed(contact_id, True, performed_by=performed_by)
-            changed = True
-        if changed:
-            await self.record_audit(contact_id, "scope_promoted_to_1on1",
-                                    {"to_tier": to_tier}, performed_by=performed_by)
-        return changed
+        if tier_rank(c.trust_tier) >= tier_rank(to_tier):
+            return False
+        await self.update_tier(contact_id, to_tier, reason="promoted from group scope", performed_by=performed_by)
+        await self.record_audit(contact_id, "scope_promoted", {"to_tier": to_tier}, performed_by=performed_by)
+        return True

@@ -61,18 +61,19 @@ def test_http_run_reuses_extraction_and_rejects_unmarked_state(tmp_path):
                                        capture_output=True, text=True, timeout=60)
             assert completed.returncode == 0, completed.stderr
             result = json.loads(output.read_text())
-            assert len(result['results']) == 3 and len(result['caption_results']) == 6
+            assert len(result['results']) == 2 and len(result['caption_results']) == 6
+            assert {row['arm'] for row in result['results']} == {'lexical_only', 'canonical_hybrid'}
             assert result['ranking_format'] == ranking
             assert endpoint not in output.read_text() and 'smoke-key-never-in-artifact' not in output.read_text()
-            assert len(result['selection_sources']) == 3
+            assert len(result['selection_sources']) == 4
             for row in result['results'] + result['caption_results']:
                 assert row['replay']['parameters']['max_chars'] == 6000
                 assert row['replay']['query']
                 assert 'selected' in row['replay'] and 'rerank_calls' in row['replay']
         assert calls.count('/v1/chat/completions') == 1
-        # The new boundary uses the same real SQLite/Lance/selector pipeline,
-        # but no extraction, graph embedding or caption extras. This local
-        # fixture HTTP server is a transport stub, never a real model.
+        # The source-only boundary uses the same real SQLite/Lance/selector
+        # pipeline, but no extraction or caption extras. This local fixture
+        # HTTP server is a transport stub, never a real model.
         fixture['records'][0]['role'] = 'tool'
         fixture['records'][0]['content'] = json.dumps({'output': '1: Carton limit: 12'})
         fixture['annotations'] = [{'id':'correction', 'target':fixture['records'][0]['id'],
@@ -94,8 +95,8 @@ def test_http_run_reuses_extraction_and_rejects_unmarked_state(tmp_path):
         assert result['calibration']['candidate_format'] == 'grounded-quotation-bundles-v2-corrections-first'
         assert 'The carton limit is 9.' in result['results'][0]['context']
         assert calls.count('/v1/chat/completions') == 1
-        # Prevent the harness's disposable graph-table reset from ever opening
-        # an unmarked existing state directory, even with valid model settings.
+        # The harness never opens an unmarked existing state directory, even
+        # with valid model settings.
         (state / 'benchmark-state.json').unlink()
         before = len(calls)
         failed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=60)

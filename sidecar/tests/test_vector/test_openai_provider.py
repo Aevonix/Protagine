@@ -112,3 +112,48 @@ class TestRequestDimensionsConfig:
                                 base_url="http://fixture/v1", request_dimensions=2)
         with pytest.raises(ValueError, match="only for text API"):
             make_multimodal_provider(config)
+
+
+@pytest.mark.asyncio
+async def test_width_is_learned_from_the_endpoint_when_none_is_declared(monkeypatch):
+    """dimensions=0 means the endpoint's first vector defines the width; later vectors are held to it."""
+    import httpx
+
+    vector = [0.5, 0.25, 0.125]
+    def response(request):
+        return httpx.Response(200, json={"model": "served-neutral", "data": [
+            {"index": 0, "embedding": list(vector)}]})
+    client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: client(
+        transport=httpx.MockTransport(response), **kw))
+    provider = OpenAIAPIEmbeddingProvider(EmbeddingConfig(provider="openai_api", model_id="neutral", dimensions=0))
+    provider.configure("http://fixture/v1", "")
+    assert provider.dimensions == 0
+    await provider.warmup()
+    assert provider.dimensions == 3
+    assert await provider.embed("A copper key.") == [0.5, 0.25, 0.125]
+
+    from protagine.vector.embedder import EmbeddingPipeline
+    pipeline = EmbeddingPipeline(provider)
+    await pipeline.warmup()
+    assert pipeline.index_identity.dimensions == 3
+
+    vector.append(0.0)  # The endpoint changing its width is a mismatch, named after the setting.
+    with pytest.raises(ValueError, match="router.embed_dims"):
+        await provider.embed("A different key.")
+
+
+@pytest.mark.asyncio
+async def test_declared_width_mismatch_names_the_setting(monkeypatch):
+    import httpx
+
+    def response(request):
+        return httpx.Response(200, json={"model": "served-neutral", "data": [
+            {"index": 0, "embedding": [0.1] * 8}]})
+    client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: client(
+        transport=httpx.MockTransport(response), **kw))
+    provider = OpenAIAPIEmbeddingProvider(EmbeddingConfig(provider="openai_api", model_id="neutral", dimensions=4))
+    provider.configure("http://fixture/v1", "")
+    with pytest.raises(ValueError, match=r"dimension 8 differs from the configured 4 \(router.embed_dims"):
+        await provider.warmup()

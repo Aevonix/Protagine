@@ -57,35 +57,28 @@ provider-wide default.
 
 ## Context privacy contract
 
-For a guest turn the provider:
+For a guest turn the provider resolves the exact sender contact and requests
+that contact's context with `audience: viewer`. The sidecar assembles a guest's
+context from the contact-scoped set only: their own source evidence, claims and
+media, the commitments their sources prove shared, and their digest ("About this
+person"). It never includes the owner's graph, tasks, shared facts or global
+sections, and the guest's time brief carries no owner heads-up.
 
-1. resolves the exact sender contact;
-2. calls `GET /v1/host/context/projection-readiness`;
-3. requires a server-attested viewer matching that contact, a ready `p8` or
-   `canonical_sources` projection, and `legacy_global_allowed=false`;
-4. sends `projection_policy=scoped_viewer_required` with the assembly request;
-5. verifies the same attestation on the response.
-
-Failure, timeout, malformed posture, an unavailable projection, or a viewer
-mismatch yields no Protagine content. Guest time is local-clock-only. The old quote-based reply
-timeline lookup is disabled until a transport-attested scoped reply endpoint
-exists. Direct legacy read-tool endpoints are owner/system-only; guests use the
-scoped assembled context instead.
-
-With P8 off, the canonical-source projection supplies the guest's scoped
-source evidence and proven shared commitments. It omits unscoped graph,
-relationship and global producers. Exact scoped owners have their own context
-path. Retained global-credential paths are outside the supported baseline.
-The currently wired deployment canary is `PROTAGINE_RECIPIENT_SIMULATOR_MODE=shadow`; `live` is
-reserved by the protocol but is not wired by the present shared integration.
+Failure or timeout yields no Protagine content. Guest time is local-clock-only.
+The old quote-based reply timeline lookup is disabled until a transport-attested
+scoped reply endpoint exists. Direct legacy read-tool endpoints are owner/system-only;
+guests use the scoped assembled context instead. Exact scoped owners have their
+own context path. Retained global-credential paths are outside the supported baseline.
 
 ## General-plugin coexistence
 
 With `PROTAGINE_GENERAL_PLUGIN_ACTIVE=1`, this provider is read/context-only. Its
-model-visible catalog is exactly the owner's two writes:
+model-visible catalog is exactly the owner's one write:
 
 - `protagine_resolve_commitment`
-- `protagine_record_affect`
+
+Contact affect is not a model write: the sidecar records it from the appraisal
+of each contact's own turns.
 
 Person selectors are not model arguments: the provider binds the turn's
 participant. What the model used to read through tools here (commitments,
@@ -99,10 +92,9 @@ fallback turn writer; it still requires an exact per-turn participant.
 Every schema and the provider's one system block are sent with every model
 request, so both say only what the model needs; the static reading rules
 (quotations are evidence, each turn's clock is that turn's) live in the system
-block once rather than inside every turn's injected context. Recall tells the
-sidecar whether Hermes still shows this session's earlier turns
-(`session_history: intact`) so it never quotes them back; after a compression
-checkpoint they become recallable again.
+block once rather than inside every turn's injected context. Recall includes
+this session's own earlier turns, since no provider instance can tell whether
+Hermes still shows them verbatim after a compaction or an agent rebuild.
 
 Explicit memory search belongs to the general adapter's `protagine_memory_search`
 tool, which searches canonical evidence and supplies references for opening the

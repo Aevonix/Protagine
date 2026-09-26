@@ -29,6 +29,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,18 +40,22 @@ from protagine import config as configuration
 from protagine.config import (
     AUTONOMY_LEVELS,
     CONFIG_FILE,
+    CONSTITUTION_CHARS,
     IDENTITY_FILE,
     KEY_FILE,
     LLM_CONFIG_FILE,
     Config,
     ConfigError,
+    constitution_length,
     load_config,
     load_identity,
     read_api_key,
+    render_constitution,
     save_config,
     save_identity,
     write_api_key,
 )
+from protagine.util.temporal import now_utc
 
 ADAPTER_DISTRIBUTION = "protagine-hermes"
 HERMES_DISTRIBUTION = "hermes-agent"
@@ -78,7 +83,7 @@ def _say(message: str = "") -> None:
 
 
 def _utc_stamp() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return now_utc().strftime("%Y%m%dT%H%M%SZ")
 
 
 def _run(command: list[str], *, timeout: int = 900, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -241,6 +246,26 @@ def pip_check(python: Path) -> tuple[bool, str]:
     result = _run(_package_manager(python)("check"), timeout=300)
     output = (result.stdout + result.stderr).strip()
     return result.returncode == 0, output
+
+
+VECTOR_STORE_MODULE = "lancedb"
+
+
+def vector_store_available() -> bool:
+    """The vector store library imports in this interpreter (the sidecar's own).
+
+    It is a base dependency, so a missing module means a broken install, and
+    a sidecar started without it would serve keyword recall only.
+    """
+    import importlib.util
+    try:
+        return importlib.util.find_spec(VECTOR_STORE_MODULE) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+VECTOR_STORE_REMEDY = ("the vector store library (lancedb) is not importable in this interpreter; reinstall the "
+                       "sidecar: pipx install --force protagine (or pip install protagine into its environment)")
 
 
 def protagine_in_hermes_environment(python: Path) -> bool:
@@ -412,14 +437,59 @@ def write_hermes_config(path: Path, config: dict[str, Any], *, backup_dir: Path)
 # Worker profile
 # ---------------------------------------------------------------------------
 
+def worker_request_fields(cfg: Config) -> dict[str, Any]:
+    """``mind.worker_request`` without its nulls: the fields every worker request carries."""
+    fields = cfg.get("mind.worker_request") or {}
+    return {str(key): copy.deepcopy(value) for key, value in fields.items() if value is not None} \
+        if isinstance(fields, dict) else {}
+
+
+def _cap_worker_requests(profile: dict[str, Any], fields: dict[str, Any]) -> None:
+    """Put ``fields`` into the ``extra_body`` of every custom endpoint the worker may use.
+
+    Stock Hermes sends a custom endpoint's ``extra_body`` with each request (the named provider's
+    runtime, and the agent's own merge by base URL for ``provider: custom``); it sends no output
+    limit otherwise, so one runaway completion could hold the model for a run's whole budget. A
+    model or fallback given as a bare ``base_url`` gets an entry of its own for that. The worker's
+    fields win over the provider's; a field set to null in ``protagine.yaml`` is left to the provider.
+    """
+    if not fields:
+        return
+    providers = profile.get("providers")
+    for entry in providers.values() if isinstance(providers, dict) else ():
+        if isinstance(entry, dict):
+            entry["extra_body"] = {**(entry.get("extra_body") if isinstance(entry.get("extra_body"), dict) else {}),
+                                   **copy.deepcopy(fields)}
+    listed = profile.get("custom_providers")
+    for entry in listed if isinstance(listed, list) else ():
+        if isinstance(entry, dict):
+            entry["extra_body"] = {**(entry.get("extra_body") if isinstance(entry.get("extra_body"), dict) else {}),
+                                   **copy.deepcopy(fields)}
+    urls: list[str] = []
+    for key in ("model", "fallback_model", "fallback_providers"):
+        value = profile.get(key)
+        for source in value if isinstance(value, list) else [value]:
+            url = str(source.get("base_url") or "").strip() if isinstance(source, dict) else ""
+            if url and url not in urls:
+                urls.append(url)
+    if urls and (listed is None or isinstance(listed, list)):
+        profile["custom_providers"] = [*(listed or []), *(
+            {"name": WORKER_PROFILE if number == 1 else f"{WORKER_PROFILE}-{number}", "base_url": url,
+             "extra_body": copy.deepcopy(fields)} for number, url in enumerate(urls, 1))]
+
+
 def worker_profile_config(main_config: dict[str, Any], cfg: Config, *, sidecar_url: str,
                           key_file: Path) -> dict[str, Any]:
-    """The ``protagine-act`` profile: the main model, the mind toolsets and the deny list."""
+    """The ``protagine-act`` profile: the main model and its providers, capped per request
+    (``mind.worker_request``), the mind toolsets and the deny list."""
     profile: dict[str, Any] = {}
-    model = main_config.get("model")
-    if model:
-        profile["model"] = copy.deepcopy(model)
-    profile["toolsets"] = list(cfg.get("mind.worker_toolsets") or [])
+    # The model and every provider entry it or its fallbacks can name: a profile reads only its own config.
+    for key in ("model", "providers", "custom_providers", "fallback_providers", "fallback_model"):
+        if main_config.get(key):
+            profile[key] = copy.deepcopy(main_config[key])
+    _cap_worker_requests(profile, worker_request_fields(cfg))
+    # The dispatcher pins a worker's tools from ``platform_toolsets.cli``; a top-level ``toolsets`` is ignored.
+    profile["platform_toolsets"] = {"cli": list(cfg.get("mind.worker_toolsets") or [])}
     profile["approvals"] = {"deny": list(cfg.get("mind.deny.commands") or [])}
     profile["memory"] = {"provider": MEMORY_PROVIDER}
     profile["plugins"] = {
@@ -429,6 +499,38 @@ def worker_profile_config(main_config: dict[str, Any], cfg: Config, *, sidecar_u
     }
     profile["security"] = {"protected_instruction_extra_patterns": list(PROTECTED_PATTERNS)}
     return profile
+
+
+# Run under the Hermes interpreter: the dispatcher's own toolset pin and provider ladder, with the
+# main home's .env loaded because a dispatched worker inherits the gateway's environment.
+_WORKER_PROBE = """
+import json, sys
+from hermes_cli.env_loader import load_hermes_dotenv
+load_hermes_dotenv(hermes_home=sys.argv[1])
+from hermes_cli.kanban_db_dispatch import _resolve_worker_cli_toolsets
+from hermes_cli.runtime_provider import resolve_runtime_provider
+out = {"toolsets": _resolve_worker_cli_toolsets(sys.argv[2]) or []}
+try:
+    runtime = resolve_runtime_provider()
+    out.update(provider=runtime.get("provider"), base_url=runtime.get("base_url"),
+               api_key=bool(runtime.get("api_key")))
+except Exception as error:
+    out["error"] = f"{type(error).__name__}: {error}"
+print(json.dumps(out))
+"""
+
+
+def resolve_worker_profile(python: Path, hermes_home: Path) -> dict[str, Any]:
+    """What stock Hermes gives a dispatched ``protagine-act`` worker: its pinned toolsets and its model
+    (``provider``, ``base_url``, whether it has a key), or ``error`` when the model does not resolve."""
+    profile_home = profiles_root(hermes_home) / WORKER_PROFILE
+    try:
+        result = subprocess.run([str(python), "-c", _WORKER_PROBE, str(hermes_home), str(profile_home)],
+                                capture_output=True, text=True, timeout=120, check=False,
+                                env={**os.environ, "HERMES_HOME": str(profile_home)})
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as error:
+        return {"toolsets": [], "error": f"could not ask Hermes ({type(error).__name__})"}
 
 
 def render_worker_profile(profile: dict[str, Any]) -> str:
@@ -569,15 +671,50 @@ def write_llm_config(home: Path, *, base_url: str, model: str, api_key: str) -> 
     return True
 
 
+def _contacts_db(home: Path) -> Path:
+    db_path = home / "contacts.db"
+    return db_path if db_path.exists() else home / "protagine-contacts.db"
+
+
+def _unresolved_owner(contact_id: str, where: str) -> str:
+    return (f"owner.contact_id {contact_id} in protagine.yaml does not resolve to a live contact ({where}); "
+            "correct the id, or remove owner.contact_id to create a new owner contact")
+
+
+def seeded_owner_problem(home: Path, contact_id: str) -> str | None:
+    """Why a seeded ``owner.contact_id`` cannot be the owner, or None when it names a live contact.
+
+    Checked before init writes anything: a typo, or an id naming a missing or deleted row,
+    must not turn into a second, empty owner contact that the mind and recall then treat as
+    the owner (cutover data-6).
+    """
+    db_path = _contacts_db(home)
+    if not db_path.exists():
+        return _unresolved_owner(contact_id, f"there is no contacts store in {home}")
+    from protagine.contacts.config import ContactsConfig
+    from protagine.contacts.store import SQLiteContactStore
+
+    async def live() -> bool:
+        store = SQLiteContactStore(ContactsConfig(sqlite_path=str(db_path)))
+        await store.connect()
+        try:
+            return await store.get(contact_id) is not None
+        finally:
+            await store.close()
+
+    return None if asyncio.run(live()) else _unresolved_owner(contact_id, f"not in {db_path.name}, or deleted")
+
+
 def ensure_owner_contact(home: Path, cfg: Config, identity: dict[str, Any]) -> tuple[str, bool]:
-    """Create the owner contact once and return ``(contact_id, created)``."""
+    """Create the owner contact once and return ``(contact_id, created)``.
+
+    A recorded ``owner.contact_id`` that does not resolve is refused, never replaced.
+    """
     from protagine.contacts.config import ContactsConfig
     from protagine.contacts.store import SQLiteContactStore
     from protagine.setup import build_owner_contact
 
-    db_path = home / "contacts.db"
-    if not db_path.exists():
-        db_path = home / "protagine-contacts.db"
+    db_path = _contacts_db(home)
     existing = str(cfg.get("owner.contact_id") or "")
     owner = identity.get("owner", {})
     handles = [(str(item.get("platform") or ""), str(item.get("id") or ""))
@@ -587,7 +724,9 @@ def ensure_owner_contact(home: Path, cfg: Config, identity: dict[str, Any]) -> t
         store = SQLiteContactStore(ContactsConfig(sqlite_path=str(db_path)))
         await store.connect()
         try:
-            if existing and await store.get(existing) is not None:
+            if existing:
+                if await store.get(existing) is None:
+                    raise InitError(_unresolved_owner(existing, f"not in {db_path.name}, or deleted"))
                 return existing, False
             contact_id = await build_owner_contact(store, str(owner.get("name") or "Owner"), handles)
             return contact_id, True
@@ -626,10 +765,19 @@ def install_service(cfg: Config) -> str:
         return f"sidecar service not installed: {exc}"
     installed = f"sidecar service installed ({status['manager']}: {status['label']})"
     try:
-        service.start()  # enable alone starts nothing before the next login
+        started = service.start()  # enable alone starts nothing before the next login
     except (ServiceError, OSError) as exc:
         return f"{installed}, not running: {exc}; start it with 'protagine service start'"
-    return f"{installed} and running"
+    return f"{installed} and running{_health_words(started)}"
+
+
+def _health_words(result: Any) -> str:
+    """The served health verdict when it is not ``ok``: the status and its reasons, in words."""
+    health = (result or {}).get("health") if isinstance(result, dict) else None
+    if not health or health == "ok":
+        return ""
+    problems = "; ".join(str(item) for item in result.get("problems") or []) or "run 'protagine doctor'"
+    return f"; health {health}: {problems}"
 
 
 def service_status(cfg: Config) -> dict[str, Any] | None:
@@ -651,10 +799,10 @@ def restart_service(cfg: Config) -> str:
     if not status.get("running"):
         return "sidecar service is installed but not running; start it with 'protagine service start'"
     try:
-        _service(cfg).start(restart=True)
+        started = _service(cfg).start(restart=True)
     except (ServiceError, OSError) as exc:
         return f"sidecar service restart failed: {exc}"
-    return "sidecar service restarted"
+    return f"sidecar service restarted{_health_words(started)}"
 
 
 def uninstall_service(cfg: Config) -> str:
@@ -732,7 +880,15 @@ def run_store_migrations(home: Path) -> list[str]:
 # directed tasks, the response guard's ledgers, the agent bridge poller's
 # seen-lists and (since the drives milestone) the cognitive workspace, the
 # cognition spine, its evidence and drive-governance ledgers, the external
-# event inbox and the surprise store. An upgrade moves them into the backup
+# event inbox and the surprise store, (since the people milestone) the
+# second-order theory-of-mind stores, the engagement profiles, the relationship
+# briefs the per-contact digest replaced, the P8 shadow stores, the conversation
+# presence census (its readers went with P8) and the identity bootstrap report,
+# and (since the memory milestone) the belief engine, the chain's identity files,
+# keys and manifests and the world model; the Neo4j graph and the continuous
+# learner kept nothing local; and (since the self-improvement milestone) the
+# toolsmith's registry and library, the P4 experiments and their parameter store,
+# skills memory and the escalation miner. An upgrade moves them into the backup
 # instead of leaving orphans behind. A directory entry names a whole tree.
 RETIRED_STATE = (
     "approval_authority.db",
@@ -754,17 +910,50 @@ RETIRED_STATE = (
     "protagine-guard-audit.db",
     "protagine-context-provenance.db",
     "protagine-tom2-taint.db",
+    "protagine-tom2.db",
+    "protagine-tom2-exposure.db",
+    "protagine-engagement.db",
+    "protagine-relationships.db",
+    "protagine-p8-visibility.db",
+    "protagine-p8-arcs.db",
+    "protagine-p8-recipient-audit.db",
+    "protagine-presence.db",
+    "bootstrap.db",
     "bridge",
+    "protagine-beliefs.db",
+    "chain.db",
+    "protagine-id",
+    "node-id",
+    "node-cert.json",
+    "genesis.json",
+    "protagine-manifest.json",
+    "protagine_world_model.db",
+    "protagine-keys",
+    "node-keys",
+    "protagine-toolsmith.db",
+    "toolsmith_library",
+    "protagine-experiments.db",
+    "protagine-params.db",
+    "protagine-skills.db",
+    "protagine-mining.db",
 )
 # Tables inside surviving stores whose code was deleted: the goal subtask and DAG
 # tables (agent goals are intention rows) and the legacy perspective tables (the
-# automatic opinion revisions and the attention snapshot). The backup taken before
-# the migrations keeps their rows; the upgrade drops them from the live store.
+# automatic opinion revisions and the attention snapshot), and (since the people
+# milestone) the contact store's owner-provisioning receipts and its old merge-proposal,
+# merge-audit and confirmed-distinct tables (merges are identity-link receipts now), and (since
+# the self-improvement milestone) the trust ladder's stages and notices in the self-model
+# store, whose competence tables stay. The backup taken before the migrations keeps their
+# rows; the upgrade drops them from the live store.
 RETIRED_TABLES: dict[str, tuple[str, ...]] = {
     "protagine-goals.db": ("subtasks", "goal_dag_versions"),
-    "turn-idempotency.db": ("self_opinion_revisions", "self_attention"),
+    "turn-idempotency.db": ("self_opinion_revisions", "self_attention", "self_judgment_runs"),
+    "protagine-contacts.db": ("contact_provision_operations", "contact_merge_proposals", "contact_merge_audit",
+                              "contact_confirmed_distinct"),
+    "protagine-self-model.db": ("trust_stage", "trust_notices"),
 }
 INITIATIVES_DB = "initiatives.db"
+COMMS_DB = "protagine-comms.db"
 
 
 def retired_state_present(home: Path) -> list[str]:
@@ -772,9 +961,16 @@ def retired_state_present(home: Path) -> list[str]:
 
 
 def retire_state(home: Path, backup_dir: Path) -> list[str]:
-    """Move the retired stores (and SQLite side files) into ``backup_dir/retired``."""
+    """Move the retired stores (and SQLite side files) into ``backup_dir/retired``.
+
+    The chain's ``protagine-id`` is adopted as ``instance-id`` before it moves, so
+    the agent registry rows that name this instance keep matching.
+    """
     notes: list[str] = []
     destination = backup_dir / "retired"
+    if (home / "protagine-id").exists():
+        from protagine.instance import instance_id
+        instance_id(home)
     for name in retired_state_present(home):
         destination.mkdir(parents=True, exist_ok=True, mode=0o700)
         if (home / name).is_dir():
@@ -817,6 +1013,52 @@ def retire_tables(home: Path) -> list[str]:
     return notes
 
 
+def pending_ingress_adoption(home: Path) -> list[str]:
+    """Transport ingress receipts and coverage rows still stamped by a retired producer.
+
+    Earlier lines issued several client principals and stamped durable intake
+    rows with the principal's name; this line authenticates one key and stamps
+    every caller with its single producer. Rows left under another name can
+    never be read back or handed off by the transport that journaled them.
+    """
+    path = home / COMMS_DB
+    if not path.is_file():
+        return []
+    from protagine.api.auth import KEY_PRINCIPAL
+    from protagine.contacts.transport_ingress import retired_producer_rows
+    try:
+        with sqlite3.connect(path) as connection:
+            connection.row_factory = sqlite3.Row
+            found = retired_producer_rows(connection, KEY_PRINCIPAL)
+    except sqlite3.DatabaseError:
+        return []
+    pending: list[str] = []
+    if found["receipts"]:
+        pending.append(f"{COMMS_DB}:transport_ingress ({found['receipts']} receipts from "
+                       f"{len(found['producers'])} retired producers)")
+    if found["coverage"]:
+        pending.append(f"{COMMS_DB}:transport_ingress_coverage ({found['coverage']} rows)")
+    return pending
+
+
+def adopt_ingress_producers(home: Path) -> list[str]:
+    """Re-scope the retired producers' ingress rows to the instance key (idempotent)."""
+    if not pending_ingress_adoption(home):
+        return []
+    from protagine.api.auth import KEY_PRINCIPAL
+    from protagine.contacts.transport_ingress import adopt_retired_producers
+    with sqlite3.connect(home / COMMS_DB) as connection:
+        connection.row_factory = sqlite3.Row
+        result = adopt_retired_producers(connection, KEY_PRINCIPAL)
+    notes = [f"migration applied: {COMMS_DB}: {result['receipts']} transport ingress receipts and "
+             f"{result['coverage']} coverage rows re-scoped from retired producers "
+             f"({', '.join(result['producers'])}) to the instance key"]
+    if result["kept"]:
+        notes.append(f"{result['kept']} transport ingress receipts kept on their retired producer: "
+                     "the same event already exists under the instance key")
+    return notes
+
+
 def pending_initiative_columns(home: Path) -> list[str]:
     """The intention and audit columns an existing initiatives store still lacks."""
     path = home / INITIATIVES_DB
@@ -827,14 +1069,43 @@ def pending_initiative_columns(home: Path) -> list[str]:
         return [f"{INITIATIVES_DB}:{column}" for column in missing_mind_columns(connection)]
 
 
+def _initiative_rows(path: Path) -> int | None:
+    """The initiatives table's row count, read only; None when it cannot be read."""
+    try:
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+            return int(connection.execute("SELECT count(*) FROM initiatives").fetchone()[0])
+    except sqlite3.DatabaseError:
+        return None
+
+
 def migrate_initiatives(home: Path) -> list[str]:
-    """Add the intention and audit columns in place (architecture 5.2)."""
+    """Add the intention and audit columns in place (architecture 5.2).
+
+    The store is opened the way the sidecar opens it, then checked again: the
+    migration counts as applied only when every column is there and no row went
+    missing (cutover data-5). A store that cannot be opened (another process
+    holds its lock) is left as it is and the upgrade fails with the reason.
+    """
     pending = pending_initiative_columns(home)
     if not pending:
         return []
-    from protagine.initiatives.store import InitiativeStore
-    store = InitiativeStore(state_dir=home)
-    store.close()
+    from protagine.initiatives import store as initiative_store
+    path = home / INITIATIVES_DB
+    before = _initiative_rows(path)
+    try:
+        store = initiative_store.InitiativeStore(state_dir=home)
+        store.close()
+    except sqlite3.DatabaseError as exc:
+        raise InitError(f"{INITIATIVES_DB} could not be opened to add its columns ({exc}); it was left as it is. "
+                        "Stop every process that uses it ('protagine service stop') and run 'protagine upgrade' "
+                        "again") from None
+    still, after = pending_initiative_columns(home), _initiative_rows(path)
+    if still:
+        raise InitError(f"{INITIATIVES_DB} still lacks {', '.join(item.split(':', 1)[1] for item in still)} after "
+                        "the upgrade opened it; run 'protagine upgrade' again with the service stopped")
+    if after is None or (before is not None and after < before):
+        raise InitError(f"{INITIATIVES_DB} lost rows while it was opened ({before} rows before, {after} after); "
+                        f"restore it from the backup this upgrade took under {BACKUPS_DIR}/")
     return [f"migration applied: {item}" for item in pending]
 
 
@@ -870,7 +1141,7 @@ def _legacy_key(home: Path, env: dict[str, str]) -> str:
     keyring = home / LEGACY_KEYRING
     if not keyring.is_file():
         return configured
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = now_utc()
     usable: list[str] = []
     try:
         document = json.loads(keyring.read_text(encoding="utf-8"))
@@ -963,7 +1234,6 @@ def migrate_legacy_instance(home: Path, *, backup_dir: Path | None = None) -> li
     if not data["router"]["base_url"]:
         data["router"]["base_url"] = str(manifest.get("endpoint") or "")
         data["router"]["model"] = str(manifest.get("model") or "")
-    data["mind"]["faculties"]["semantic_recall"] = env.get("PROTAGINE_EMBED_PROVIDER", "skip") != "skip"
     save_config(data, home)
     notes.append("protagine.yaml written; autonomy starts at 'suggest' (edit mind.autonomy to choose "
                  "'standard' or 'trusted')")
@@ -1015,7 +1285,14 @@ def _parse_handles(values: list[str] | None) -> list[dict[str, str]]:
     return handles
 
 
+def _comma_list(raw: Any) -> list[str]:
+    return [part.strip() for part in str(raw).split(",") if part.strip()]
+
+
 def _collect_identity(args, existing: dict[str, Any], non_interactive: bool) -> dict[str, Any]:
+    """The owner's answers for ``identity.yaml``: the owner, and the agent's constitution (name, values,
+    boundaries) plus its time zone and quiet hours. Keys init does not ask about (``owner.contact_id``,
+    ``agent.interests``) are kept as they are. The rendered constitution must fit ``CONSTITUTION_CHARS``."""
     owner = dict(existing.get("owner") or {})
     agent = dict(existing.get("agent") or {})
     owner_name = _ask("Your name", getattr(args, "owner_name", None) or owner.get("name") or os.environ.get("USER", "Owner"),
@@ -1025,19 +1302,32 @@ def _collect_identity(args, existing: dict[str, Any], non_interactive: bool) -> 
         raw = _ask("Your messaging handles, PLATFORM=ID separated by commas (optional)", "", non_interactive)
         handles = _parse_handles([part.strip() for part in raw.split(",") if part.strip()])
     agent_name = _ask("Agent name", getattr(args, "agent_name", None) or agent.get("name") or "Assistant", non_interactive)
-    values_default = ", ".join(agent.get("values") or [])
-    values_raw = getattr(args, "agent_values", None) or _ask("Guiding values, comma separated (optional)",
-                                                             values_default, non_interactive)
-    values = [part.strip() for part in str(values_raw).split(",") if part.strip()]
+    values_raw = getattr(args, "agent_values", None)
+    if values_raw is None:
+        values_raw = _ask("Guiding values, comma separated (optional)", ", ".join(agent.get("values") or []),
+                          non_interactive)
+    boundaries_raw = getattr(args, "agent_boundaries", None)
+    if boundaries_raw is None:
+        boundaries_raw = _ask("Boundaries the agent never crosses, comma separated (optional)",
+                              ", ".join(agent.get("boundaries") or []), non_interactive)
     timezone = _ask("Time zone (optional)", getattr(args, "timezone", None) or agent.get("timezone") or "", non_interactive)
     quiet = _ask("Quiet hours HH:MM-HH:MM (optional)", getattr(args, "quiet_hours", None) or agent.get("quiet_hours") or "",
                  non_interactive)
     if quiet and not re.fullmatch(r"\d{2}:\d{2}-\d{2}:\d{2}", quiet):
         raise InitError("quiet hours must look like 22:00-07:00")
-    return {
-        "owner": {"name": owner_name, "handles": handles},
-        "agent": {"name": agent_name, "values": values, "timezone": timezone, "quiet_hours": quiet},
+    identity = {
+        "owner": {**owner, "name": owner_name, "handles": handles},
+        "agent": {**agent, "name": agent_name, "values": _comma_list(values_raw),
+                  "boundaries": _comma_list(boundaries_raw), "timezone": timezone, "quiet_hours": quiet},
     }
+    length = constitution_length(identity)
+    if length > CONSTITUTION_CHARS:
+        sizes = {name: len(render_constitution({"agent": {name: identity["agent"][name]}}))
+                 for name in ("values", "boundaries")}
+        longest = max(sizes, key=sizes.get)
+        raise InitError(f"the constitution renders to {length} characters and must fit in {CONSTITUTION_CHARS}; "
+                        f"shorten the {longest} ({sizes[longest]} characters rendered)")
+    return identity
 
 
 def _collect_autonomy(args, current: str, non_interactive: bool, *, fresh: bool) -> str:
@@ -1091,6 +1381,8 @@ def run_init(args) -> int:
         return run_uninstall(args)
     non_interactive = bool(getattr(args, "non_interactive", False))
     try:
+        if not vector_store_available():
+            raise InitError(VECTOR_STORE_REMEDY)
         home = configuration.instance_home(getattr(args, "home", None))
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
         if is_legacy_instance(home):
@@ -1099,6 +1391,9 @@ def run_init(args) -> int:
         cfg = load_config(home)
         fresh = not cfg.exists
         data = copy.deepcopy(cfg.data)
+        seeded = str(cfg.get("owner.contact_id") or "").strip()
+        if seeded and (problem := seeded_owner_problem(home, seeded)):
+            raise InitError(problem)
 
         # 1. Identity and autonomy.
         identity = _collect_identity(args, load_identity(home), non_interactive)
@@ -1124,12 +1419,18 @@ def run_init(args) -> int:
         data["router"]["model"] = model
         embed_url = getattr(args, "embed_url", None) or data["router"].get("embed_url") or ""
         data["router"]["embed_url"] = embed_url
+        if getattr(args, "embed_url", None):
+            # Giving init an endpoint is asking for semantic recall: it also clears the ``false`` the
+            # releases before the switch was live recorded whenever init found no endpoint.
+            data["mind"]["faculties"]["semantic_recall"] = True
         if getattr(args, "embed_model", None):
             data["router"]["embed_model"] = str(args.embed_model)
-        data["mind"]["faculties"]["semantic_recall"] = bool(embed_url)
+        if getattr(args, "embed_dims", None) is not None:
+            data["router"]["embed_dims"] = int(args.embed_dims)
 
         # 2. protagine.yaml, identity.yaml and api.key.
         save_identity(identity, home)
+        _say(f"  identity.yaml written; the constitution the agent is given: {render_constitution(identity)}")
         if read_api_key(home, environ={}) is None:
             write_api_key(secrets.token_urlsafe(32), home)
             _say(f"  api.key written ({home / KEY_FILE}, mode 600)")
@@ -1145,8 +1446,12 @@ def run_init(args) -> int:
             _say(f"  router pointed at {base_url} ({model or 'model chosen by Hermes'})")
         elif not base_url:
             _say("  no model endpoint found in Hermes' config; pass --model-url to point the router at one")
-        _say(f"  semantic recall {'on' if embed_url else 'off'} "
-             f"({'embedding endpoint ' + embed_url if embed_url else 'no embedding endpoint recorded'})")
+        if embed_url and cfg.get("mind.faculties.semantic_recall") is False:
+            _say("  semantic recall off (mind.faculties.semantic_recall is false; set it to true, or pass "
+                 f"--embed-url, to use the embedding endpoint {embed_url})")
+        else:
+            _say(f"  semantic recall {'on' if embed_url else 'off'} "
+                 f"({'embedding endpoint ' + embed_url if embed_url else 'no embedding endpoint recorded'})")
 
         # 4. The adapter in Hermes' environment.
         _say(f"  Hermes {hermes_version} at {python}")
@@ -1177,9 +1482,20 @@ def run_init(args) -> int:
     return 0
 
 
+def semantic_recall_note(cfg: Config) -> str | None:
+    """Releases before the switch was live wrote ``semantic_recall: false`` whenever init found no
+    endpoint; with an endpoint recorded since, recall stays keyword-only until the owner says otherwise."""
+    if cfg.get("router.embed_url") and cfg.get("mind.faculties.semantic_recall") is False:
+        return ("semantic recall is off although router.embed_url is set: set mind.faculties.semantic_recall: "
+                "true in protagine.yaml (or re-run 'protagine init --embed-url ...') to use the embedder")
+    return None
+
+
 def run_upgrade(args) -> int:
     """``protagine upgrade``: backup, migrations, adapter, config reconcile, service restart."""
     try:
+        if not vector_store_available():
+            raise InitError(VECTOR_STORE_REMEDY)
         home = configuration.instance_home(getattr(args, "home", None))
         notes: list[str] = []
         if is_legacy_instance(home):
@@ -1200,10 +1516,14 @@ def run_upgrade(args) -> int:
             profiles_root(hermes_home),
             worker_profile_config(updated, cfg, sidecar_url=cfg.sidecar_url, key_file=cfg.home / KEY_FILE))
         migrations_pending = (pending_store_migrations(home) + pending_initiative_columns(home)
-                              + retired_state_present(home) + retired_tables_present(home))
+                              + retired_state_present(home)
+                              + retired_tables_present(home) + pending_ingress_adoption(home))
+        lexical = semantic_recall_note(cfg)
         if not (notes or binding_changed or adapter_pending or config_changes or profile_pending
                 or migrations_pending):
             _say(f"Protagine {__version__}: nothing to do.")
+            if lexical:
+                _say("  " + lexical)
             return 0
         if not any(note.startswith("backup taken") for note in notes):
             backup = backup_instance(home)
@@ -1212,6 +1532,7 @@ def run_upgrade(args) -> int:
         notes.extend(migrate_initiatives(home))
         notes.extend(retire_state(home, backup))
         notes.extend(retire_tables(home))
+        notes.extend(adopt_ingress_producers(home))
         if binding_changed:
             cfg.data["hermes"]["python"] = str(python)
             cfg.data["hermes"]["home"] = str(hermes_home)
@@ -1226,6 +1547,8 @@ def run_upgrade(args) -> int:
                 f"    {python} -m pip uninstall protagine\n    pipx install protagine"
             )
         notes.append(restart_service(cfg))
+        if lexical:
+            notes.append(lexical)
     except (InitError, ConfigError) as exc:
         _say(f"protagine upgrade failed: {exc}")
         return 1
@@ -1302,6 +1625,7 @@ def add_parsers(sub) -> None:
                         help="One of your messaging handles; repeat per account")
     init_p.add_argument("--agent-name", help="The agent's name")
     init_p.add_argument("--agent-values", help="Comma-separated guiding values")
+    init_p.add_argument("--agent-boundaries", help="Comma-separated boundaries the agent never crosses")
     init_p.add_argument("--timezone", help="Named time zone, for example Europe/Paris")
     init_p.add_argument("--quiet-hours", help="Local quiet window, HH:MM-HH:MM")
     init_p.add_argument("--autonomy", choices=AUTONOMY_LEVELS, help="Autonomy level (default: suggest)")
@@ -1314,6 +1638,8 @@ def add_parsers(sub) -> None:
     init_p.add_argument("--model-key", help="API key for that endpoint")
     init_p.add_argument("--embed-url", help="OpenAI-compatible embeddings root; turns semantic recall on")
     init_p.add_argument("--embed-model", help="Embedding model at that endpoint")
+    init_p.add_argument("--embed-dims", type=int,
+                        help="Vector width of that model (default: learned from its first embedding)")
     init_p.add_argument("--adapter-source", help="Install the adapter from this wheel, directory or requirement")
     init_p.add_argument("--no-service", action="store_true", help="Do not install the sidecar user service")
 

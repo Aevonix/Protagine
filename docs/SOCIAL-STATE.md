@@ -1,21 +1,43 @@
 # Contacts, appraisals and current world state
 
-Protagine keeps one canonical contact identity across verified channel handles.
-Name similarity creates a proposal, never an authoritative merge. The owner can
-correct an exact handle and selected source attribution through `protagine_contacts`.
-The correction preserves its receipt, invalidates dependent projections and
-reconciles surviving sources. A relationship update grants no permission.
+Protagine keeps one canonical contact identity across verified channel handles:
+an E.164 number is one person on every gateway, an email on its lower-cased form.
+Name similarity creates a proposal, never an authoritative merge; the owner
+confirms or rejects it as an ask. Anyone may look people up and propose a link
+through `protagine_people` (`who`, `inspect`, `propose_link`; a guest sees only
+who someone is). Merging two records and setting `may_contact` or a check-in
+cadence are the owner's alone: `protagine_people` `merge`, `set_permission` and
+`set_cadence` in the owner's own session, or `protagine people` on the CLI.
+A merge moves every handle through an identity-correction receipt and the
+dropped record's sources through receipts of their own, so the host's
+reconciliation re-attributes them; recency, cadence and an opt-out survive it.
+The owner can also correct an exact handle and selected source attribution
+(`POST /v1/host/social/contacts/correct-identity`). A correction preserves its
+receipt, invalidates dependent projections and reconciles surviving sources.
+A relationship update grants no permission.
 
-The existing source ledger holds preferences, temporary appraisals and narrow
-person/topic judgments with quotations, contrary evidence, source revisions,
-processor provenance and owner corrections. `protagine_judgments` inspects these
-records. Recollection selects relevant records for the current participant;
-private owner opinions are not disclosed to other contacts. Erasing or correcting
-supporting evidence removes its influence. Delayed extraction cannot resurrect
+The existing source ledger holds preferences and temporary appraisals; the
+agent's own person, topic and approach views live in the opinion store
+(docs/OPINIONS.md) with their premises, revisions, processor provenance and owner
+corrections, and `protagine_self opinions` inspects them. Recollection selects
+relevant records for the current participant; private owner opinions are not
+disclosed to other contacts. Erasing or correcting supporting evidence removes its
+influence: the erasure or the attribution change deletes the appraisal records
+derived from that source version, with their heads and corrections, in the same
+transaction (no tombstones), and an attribution change queues the moved sources'
+appraisals again under the new contact. Delayed extraction cannot resurrect
 invalidated evidence.
 
 Appraisals use low/moderate intensity and bounded decay, not a validated measure
-of feelings. Repeated evidence does not acquire extra votes. A cited repair report
+of feelings. Repeated evidence does not acquire extra votes. The same extraction
+call also lists outcomes: how pieces of work went as the current evidence reports
+them (failed, succeeded, dismissed or corrected, with the topic and the approach
+used). Outcomes are counted occurrences, not votes: "the export failed twice" is
+two entries, a restatement of an earlier report adds nothing, and only the owner's
+own turns are stored, once per turn, deleted with their source. An outcome that
+does not validate is dropped on its own, never failing the rest of the answer, and
+a contact's turn is not held to outcomes at all. They are how the
+owner's statements reach the agent's own feelings (docs/MIND.md). A cited repair report
 can settle an exact prior incident; the report remains attributed evidence.
 Each bounded supplied incident requires an explicit unchanged, uncertain or
 resolved decision in the existing extraction call. Resolution retains its

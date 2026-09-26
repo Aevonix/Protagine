@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from protagine.qualification import paired, paired_arms, paired_body, paired_report
+from protagine.qualification import paired, paired_arms, paired_body, paired_report, paired_workflow_runtime
 from protagine.qualification.cli import add_parser, run as cli_run
 from protagine.qualification.paired_cases import cases as real_cases
 from protagine.qualification.records import CaseSpec, digest, read
@@ -65,11 +65,20 @@ def fixture(tmp_path, monkeypatch):
             'config_sha256': digest(supplied), 'native_runtime': {'status': 'ready', 'scope': 'container'},
             'container_payload': {'arm_profiles': paired.ARM_PROFILE_PROTOCOL,
                                   'heartbeat_prompt_sha256': paired.HEARTBEAT['prompt_sha256'],
+                                  'heartbeat_checkin_prompt_sha256': paired.HEARTBEAT_CHECKIN['prompt_sha256'],
+                                  'quiet_hours': paired.QUIET_HOURS_PROTOCOL,
                                   'mind_tick': paired.MIND_TICK_PROTOCOL,
                                   'body_protocol': paired_body.PROTOCOL,
+                                  'workflow_protocol': paired_workflow_runtime.PROTOCOL,
                                   'tool_loading': paired.TOOL_LOADING_PROTOCOL,
                                   'message_timestamps': paired.MESSAGE_TIMESTAMPS_PROTOCOL,
-                                  'environment_note': paired.ENVIRONMENT_NOTE_PROTOCOL}}
+                                  'environment_note': paired.ENVIRONMENT_NOTE_PROTOCOL,
+                                  'outbound': paired.OUTBOUND_PROTOCOL,
+                                  'people_instrument': paired.PEOPLE_INSTRUMENT_PROTOCOL,
+                                  'clock_start': paired_body.CLOCK_START_PROTOCOL,
+                                  'embedding': paired.EMBEDDING_PROTOCOL,
+                                  'skills_dir': paired.SKILLS_PROTOCOL,
+                                  'plugin_tools': paired.PLUGIN_TOOLS_PROTOCOL}}
 
     def context(config, recipe):
         return SimpleNamespace(binding=recipe['binding'], trace=trace, modes=modes, usage=usage)
