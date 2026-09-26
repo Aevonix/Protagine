@@ -105,6 +105,9 @@ OUTREACH_HISTORY = timedelta(days=30)
 # The findings outreach may share: the research-shaped reports of the agent's own work, never an
 # investigation of its own failures (that is the autobiography's).
 SHARED_FINDINGS = frozenset(FINDING_TYPES - {"mastery_investigation"})
+# An answer the owner asked for that ends unsent (the body away past its window) is formed again this many
+# times in all; after that its finding goes to the digest. It is owed: never dropped.
+ANSWER_TRIES = 3
 OWNER_MEMORY = timedelta(days=30)
 OWNER_MEMORY_TURNS = 300
 # Tasks formed to fulfil an owed item: each reports its outcome (done, failed, blocked) to the person the
@@ -2277,13 +2280,15 @@ class Mind:
     def _outreach_settled(self, row: StoredInitiative, outcome: str, now: datetime) -> None:
         """A research-shaped task that reported a finding waits for the owner branch (``pending``); a
         finding's outreach that expired unsent, or that the owner's pause cancelled before it went, hands
-        the finding to the digest; one cancelled by a mute of its topic is ``muted``."""
+        the finding to the digest; one cancelled by a mute of its topic is ``muted``. An answer the owner
+        asked for that ended unsent is owed still: its finding waits for the owner branch again (the answer's
+        key given back, so it forms anew) up to ``ANSWER_TRIES`` answers in all, then goes to the digest."""
         o = outreach_functions
         context = row.context if isinstance(row.context, dict) else {}
         if (outcome == "done" and row.type in SHARED_FINDINGS and str(row.result or "").strip()
                 and not context.get("reflector")):
             self._mark_finding(row.id, "pending", now)
-        elif row.type == "outreach_finding" and outcome in {"expired", "cancelled"}:
+        elif row.type in {"outreach_finding", OUTREACH_ANSWER} and outcome in {"expired", "cancelled"}:
             source = str(context.get("source_ref") or "")
             if not source.startswith("intention:"):
                 return
@@ -2292,7 +2297,16 @@ class Mind:
                 float(item.get("level") or 0.0) >= o.MUTE_FLOOR
                 and (item["key"] == f"{o.MUTE_PREFIX}{slug(topic)}" or o.similar(str(item.get("text") or ""), topic))
                 for item in self.mind_state.items(o.MUTE_PREFIX))
-            self._mark_finding(source[len("intention:"):], "muted" if muted else "digest", now)
+            finding = source[len("intention:"):]
+            if muted or row.type == "outreach_finding":
+                self._mark_finding(finding, "muted" if muted else "digest", now)
+                return
+            found = self.store.get(finding)
+            tries = int((((found.result_metadata or {}) if found is not None else {}).get("outreach") or {})
+                        .get("answer_tries") or 0) + 1
+            if tries < ANSWER_TRIES:
+                self.store.update(row.id, dedup_key=None)
+            self._mark_finding(finding, "pending" if tries < ANSWER_TRIES else "digest", now, answer_tries=tries)
 
     def _on_blocked(self, row: StoredInitiative) -> None:
         """A blocked task stays open; the person its obligation is owed to hears that it is stuck, once."""

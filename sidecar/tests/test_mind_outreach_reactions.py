@@ -639,6 +639,29 @@ def test_capture_records_the_turn_a_row_came_from(tmp_path):
     assert row["metadata"]["source_turn"] == "t-dig"
 
 
+# -- an answer the owner asked for is never lost -------------------------------------------------------------
+
+async def test_a_requested_answer_that_expires_unsent_goes_out_once_the_body_is_back(make):
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    await fx.mind.tick(force=True)                   # formed; the body is not pulling
+    first, = fx.outreach_rows("outreach_answer")
+    assert first.status == "approved"
+    fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    assert fx.store.get(first.id).status == "expired"
+    for _ in range(2):
+        await fx.tick()                              # the body is back
+    sent = [row for row in fx.outreach_rows("outreach_answer") if row.status == "sent"]
+    assert len(sent) == 1 and "KD-83" in sent[0].context["text"]
+
+
 def test_a_promise_keeps_a_followup_only_when_it_does_what_the_reply_asked():
     item = outreach.Followup(outreach_id="o-1", topic="tidal energy", slug="tidal-energy",
                              shared="QX-41: A practical study of tidal energy was published.")
@@ -652,3 +675,25 @@ def test_a_promise_keeps_a_followup_only_when_it_does_what_the_reply_asked():
     assert outreach.keeps_followup("Draft the parcel receipt email to the courier", offer,
                                    "Yes please, draft the parcel receipt email to the courier")
     assert not outreach.keeps_followup("Cancel the parcel receipt order", offer, "Yes please, draft the email")
+
+
+async def test_a_requested_answer_the_body_never_takes_goes_to_the_digest_after_its_tries(make):
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    for _ in range(4):
+        await fx.mind.tick(force=True)
+        fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    answers = fx.outreach_rows("outreach_answer")
+    assert len(answers) == 3 and all(fx.store.get(row.id).status == "expired" for row in answers)
+    assert fx.store.get(task.id).result_metadata["outreach"]["state"] == "digest"
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.tick()
+    digest, = [p["text"] for p in fx.sent if p["type"] == "digest"]
+    assert "KD-83" in digest
