@@ -230,6 +230,21 @@ def _warn(reason: str) -> None:
         logger.debug("context selection unavailable (%s); the assembled context is used", reason)
 
 
+def _stem(word: str) -> str:
+    return word[:5]
+
+
+def _lexical_ranks(query: str, documents: list[str]) -> list[float]:
+    """A cheap first ranking of every candidate against the message (the message's terms each document shares,
+    rarer terms weighing more; a five-letter stem absorbs inflections), so a cap on the judge's candidates keeps
+    the ones the message asks about instead of the first ones by lane priority."""
+    from protagine.memory.recall import lexical_terms
+    terms = {_stem(term) for term in lexical_terms(query)}
+    stems = [{_stem(word) for word in re.findall(r"\w+", document.casefold())} & terms for document in documents]
+    frequency = {term: sum(term in shared for shared in stems) for term in terms}
+    return [sum(math.log1p(len(documents) / frequency[term]) for term in shared) for shared in stems]
+
+
 def _scores(results, count: int) -> list[float]:
     scores: dict[int, float] = {}
     for row in results or []:
@@ -313,11 +328,16 @@ async def select_context(sections: list, query: str, rerank_fn, *, settings: Sel
         logger.debug("context selection skipped: no reranker configured")
         return sections, {**report, "status": "fallback", "reason": "no_reranker"}
     priority = {s: -(sections[s].priority or 0) for s in range(len(sections))}
-    judged = sorted(candidates, key=lambda item: (priority[item.section], item.section, item.index))
-    judged, unjudged = judged[:settings.candidates], judged[settings.candidates:]
     passages = {ref: _readable(provider.text) for ref, provider in providers.items()}
-    documents = [_document(item, sections[item.section].title or sections[item.section].id, passages)
-                 for item in judged]
+    written = {id(item): _document(item, sections[item.section].title or sections[item.section].id, passages)
+               for item in candidates}
+    # Every candidate is ranked against the message before the cap; lane priority only breaks ties.
+    lexical = (dict(zip(written, _lexical_ranks(str(query), list(written.values()))))
+               if len(candidates) > settings.candidates else {})
+    judged = sorted(candidates, key=lambda item: (-lexical.get(id(item), 0.0), priority[item.section],
+                                                  item.section, item.index))
+    judged, unjudged = judged[:settings.candidates], judged[settings.candidates:]
+    documents = [written[id(item)] for item in judged]
     started = time.monotonic()
     try:
         results = await asyncio.wait_for(rerank_fn(str(query)[:4000], documents, top_k=len(documents)),

@@ -149,7 +149,10 @@ remaining text names. An assertion card's shared quotation (`evidence_ref`)
 follows the card that cites it. The judge reads each item's words with its
 section title, without identifiers, hashes or timestamps, at most 600
 characters of it; at most `PROTAGINE_CONTEXT_SELECTION_CANDIDATES` (48) items
-are judged, the higher-priority sections first.
+are judged. Above that cap every candidate is first ranked against the message
+by the words it shares with it (rarer words weigh more, a five-letter stem
+absorbs inflections), lane priority breaking ties, so the cap never drops the
+item the message asks about in favour of a higher-priority lane.
 
 Pinned items are never judged and never dropped: Current Time, Expected replies
 (the open asks), the owner's communication preferences and priority

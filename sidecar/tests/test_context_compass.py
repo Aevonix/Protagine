@@ -412,3 +412,20 @@ def test_a_second_reschedule_corrects_a_value_first_served_as_a_correction():
     assert f'rescheduled to "{b}"' in note
     compass.SERVED.remember(key, note)
     assert f'rescheduled to "{c}"' in compass.SERVED.corrections(key, second)
+
+
+@pytest.mark.asyncio
+async def test_the_candidate_cap_keeps_the_items_the_message_asks_about():
+    """Finding 3: candidates are ranked against the message before the reranker's cap."""
+    memory = "Unverified recalled evidence:\n" + "\n".join(
+        f"- Note {n}: the garden shed paint is drying in batch {n}." for n in range(48))
+    sections = [ContextSection(id="protagine-memory", title="Relevant Memories", body=memory, priority=90),
+                ContextSection(id="protagine-commitments", title="Pending Commitments", priority=72, body="\n".join([
+                    "Open commitments:", commitment_line("c-9", "Renew the insurance policy",
+                                                         "2026-11-02T09:00:00+00:00")]))]
+    judge = keyword_judge("insurance")
+    selected, report = await compass.select_context(sections, "When is the insurance policy renewal due?", judge,
+                                                    settings=settings(budget=400), now=NOW)
+    assert "insurance" in body_of(selected) and report["judged"] == 48
+    ((_, documents),) = judge.calls
+    assert any("insurance" in doc for doc in documents)
