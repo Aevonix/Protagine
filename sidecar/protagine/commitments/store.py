@@ -142,6 +142,18 @@ class CommitmentResolutionConflict(ValueError):
     settlement_error_code = "operation_conflict"
 
 
+def _metadata_still(stored: Optional[str], listed: Optional[Dict[str, Any]]) -> bool:
+    """True when every metadata key ``listed`` names still holds its listed value (absent reads as None)."""
+    if not listed:
+        return True
+    try:
+        metadata = json.loads(stored) if stored else {}
+    except (json.JSONDecodeError, TypeError):
+        metadata = {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    return all(metadata.get(key) == value for key, value in listed.items())
+
+
 class CommitmentConflict(ValueError):
     """The row is no longer what the writer listed (``expect``); nothing was written."""
 
@@ -451,16 +463,20 @@ class CommitmentStore:
         """A writer that acted on a listing must still be looking at that row.
 
         ``expect`` carries the description and canonical ``due_at`` the writer
-        listed; the row must also still be open. Checked inside the write
-        transaction, so an edit or a resolution that landed in between (the
-        owner correcting a deadline while an extraction was still thinking)
-        is never overwritten by the older reading.
+        listed, and optionally ``metadata``: the listed value of each metadata
+        key it names (None for a key the row did not have), each of which
+        must still be the stored one. The row must also still be open.
+        Checked inside the write transaction, so an edit or a resolution that
+        landed in between (the owner correcting a deadline while an
+        extraction was still thinking, a reminder becoming a check-in) is
+        never overwritten by the older reading.
         """
         if expect is None:
             return
         if (current["status"] not in OPEN_STATUSES
                 or current["description"] != expect.get("description")
-                or current["due_at"] != expect.get("due_at")):
+                or current["due_at"] != expect.get("due_at")
+                or not _metadata_still(current["metadata"], expect.get("metadata"))):
             raise CommitmentConflict("commitment changed since it was listed")
 
     @staticmethod
@@ -667,8 +683,8 @@ class CommitmentStore:
         ``pending`` again so the overdue event fires once more at the new
         time. ``metadata`` is merged over what is stored, so a snooze or a
         reschedule note never drops a deliverable's content or a resolution.
-        ``expect`` makes the write a compare-and-set against the description
-        and deadline the caller listed (``_check_expectation``): a row that
+        ``expect`` makes the write a compare-and-set against the description,
+        deadline and metadata keys the caller listed (``_check_expectation``): a row that
         changed since raises ``CommitmentConflict`` and is left alone.
 
         Validates status transitions:

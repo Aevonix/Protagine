@@ -636,6 +636,14 @@ def _restated(listed: List[Dict[str, Any]], description: Any, due_at: Any,
     return alike[0] if listed_due is not None and listed_due != due else None
 
 
+def _expectation(row: Dict[str, Any]) -> Dict[str, Any]:
+    """The compare-and-set a write on a listed row carries: its description, deadline, kind, obligor,
+    counterpart and recipient as listed. Any of them changed since is a conflict (rerun), never a move."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    return {"description": row.get("description"), "due_at": row.get("due_at"),
+            "metadata": {key: metadata.get(key) for key in IDENTITY_KEYS}}
+
+
 DUE_TEXT_CHARS = 120
 
 
@@ -864,8 +872,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     without a time is a hold: the deadline is cleared, the row stays open; an
     absolute heads-up moves with the deadline (``_heads_up_patch``). Actions
     whose target or wording does not fit are ignored, not guessed. Every
-    action is written against the listed description and deadline
-    (``expect``); a row that changed since is a ``conflict``, counted for the
+    action is written against the listed description, deadline, kind, obligor, counterpart and
+    recipient (``_expectation``); a row that changed since is a ``conflict``, counted for the
     caller to rerun the extraction, and left as the newer writer left it.
     A message to a third party (case 3) is stored through ``message_metadata``:
     the owner's grant only when ``person_id`` is ``owner_id`` and the owner's words asking for it were
@@ -935,7 +943,7 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             if target is None:
                 ignored += 1
                 continue
-            expect = {"description": target.get("description"), "due_at": target.get("due_at")}
+            expect = _expectation(target)
             try:
                 if action == "reschedule":
                     due_at = item.get("due_at") or None
@@ -997,8 +1005,7 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             restate.update(_heads_up_patch(again, due_at, None))
             try:
                 row = commitment_store.update(again["id"], due_at=due_at, metadata=restate,
-                                              expect={"description": again.get("description"),
-                                                      "due_at": again.get("due_at")})
+                                              expect=_expectation(again))
                 if row is not None:
                     updated.append(row["id"])
             except CommitmentConflict:

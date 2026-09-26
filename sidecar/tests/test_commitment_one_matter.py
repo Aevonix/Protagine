@@ -641,3 +641,30 @@ def test_a_duplicate_is_decided_against_the_rows_as_they_are_when_recorded(tmp_p
     assert sorted(row["description"] for row in _open(store)) == ["Call the bank", "Call the lawyer"]
     again = _record(store, [_reminder("Call the bank", _at(60))], existing=[])
     assert again["skipped_duplicates"] == 1 and again["created"] == [] and len(_open(store)) == 2
+
+
+@pytest.mark.parametrize("way", ["restated", "reschedule", "complete"])
+@pytest.mark.parametrize("change", [None, "kind", "obligor", "counterpart", "recipient"])
+def test_a_listed_item_whose_kind_or_parties_changed_since_is_a_conflict_never_a_move(tmp_path, change, way):
+    """A reminder is listed; before the capture records its new time (restated, or an explicit reschedule or
+    completion), the row became a check-in, or another party's. The write is a conflict to rerun, and the
+    row keeps its deadline and stays open. Unchanged, it is written."""
+    store = CommitmentStore(tmp_path / "c.db")
+    base = {"kind": "reminder", "obligor": "owner", "counterpart": "p-41", "recipient": "p-41"}
+    listed = store.create(person_id=OWNER, description="Chase the floor plan", due_at=_at(60),
+                          source_type="cognition", metadata=base)
+    if change:
+        store.update(listed["id"], metadata={change: {"kind": "check_in", "obligor": "assistant"}.get(change, "p-52")})
+    if way == "restated":
+        item = _create("Chase the floor plan", _at(120), metadata={"kind": "reminder", "recipient": "p-41"},
+                       counterpart="p-41")
+    else:
+        item = {"action": way, "target": 1, "description": "Chase the floor plan", "due_at": _at(120),
+                "listed_due": listed["due_at"]}
+    result = _record(store, [item], existing=[listed])
+    row = store.get(listed["id"])
+    if change is None:
+        assert result["conflicts"] == 0 and (result["updated"] or result["resolved"]) == [listed["id"]], way
+        return
+    assert result["conflicts"] == 1 and result["created"] == result["updated"] == result["resolved"] == [], change
+    assert row["due_at"] == listed["due_at"] and row["status"] == "pending"
