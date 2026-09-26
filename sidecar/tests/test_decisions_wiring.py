@@ -21,7 +21,7 @@ from protagine.turns import TurnIdempotencyLedger
 from test_commitment_first_mention_hold import _Router, _item
 from test_mind_interest_settled import CaptureRouter, fx  # noqa: F401  (fx is a pytest fixture)
 from test_mind_lessons_night import OWN_RULE, add, judged, label, make as lesson_fixture, night, two_requests
-from test_mind_loop import OWNER
+from test_mind_loop import OWNER, pinned_clock  # noqa: F401  (pinned_clock: autouse pytest fixture)
 from test_mind_outreach_loop import make  # noqa: F401  (make is a pytest fixture)
 from test_mind_outreach_reactions import reaction, say, shared
 
@@ -96,6 +96,21 @@ async def test_a_stop_the_decision_model_reads_in_a_linked_reply_pauses_outreach
     summary = await say(fx, NO_CUE, "t-1", "owner-2")
     assert reaction(fx, row)["class"] == "stop" and "paused" in summary["applied"]
     assert outreach.pause_until(fx.mind.mind_state.get(outreach.PAUSE_KEY)) is not None
+
+
+async def test_the_decision_models_stop_never_overrides_the_typed_decision_that_the_stop_is_someone_elses(make):
+    """The instruction question is the typed decision's once it has answered: the reply model is not asked again."""
+    from test_mind_typed_decisions import DecisionRouter
+    fx = make()
+    row = await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    fx.mind.router = DecisionRouter(instruction="none")
+    fx.mind.decisions = Decider(outreach_reply="stop")
+    summary = await say(fx, 'About the tidal energy item: my boss wrote "stop checking in on the team". How do I answer?',
+                        "t-1", "owner-2")
+    assert "paused" not in summary["applied"] and outreach.pause_until(
+        fx.mind.mind_state.get(outreach.PAUSE_KEY)) is None
+    assert fx.mind.decisions.calls == [] and reaction(fx, row)["class"] != "stop"
 
 
 async def test_a_stop_read_from_a_malformed_choice_leaves_the_reply_as_engagement(make):

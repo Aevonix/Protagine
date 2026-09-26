@@ -36,7 +36,7 @@ from protagine.contacts.comms import MIND_REF, conversation_cadence_minutes
 from protagine.contacts.digest import TEMPLATE_SOURCES, render_digest
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
 
-from . import audit, decisions, drives as drive_functions, outreach as outreach_functions, reactions
+from . import audit, decisions as typed_decisions, drives as drive_functions, outreach as outreach_functions, reactions
 from .affect import SECTION_CHARS, Affect, postponable
 from .authority import (
     Authority, CLASSES, LEVELS, MAY_CONTACT, Policy, Verdict, ask_expiry, boundary_crossed, in_quiet_hours,
@@ -1158,7 +1158,7 @@ class Mind:
 
     async def _decide_findings(self, now: datetime) -> None:
         """Whether a report the reader leaves undecided (``outreach.needs_decision``) is a finding: the model's
-        typed decision (``decisions.report_substance``), recorded on the finding (``substance_decision``) so it
+        typed decision (``typed_decisions.report_substance``), recorded on the finding (``substance_decision``) so it
         is asked once. Unavailable or unsure, nothing is recorded and the report goes to the digest
         (``_age_findings``): never sent on its own, never discarded."""
         if self.router is None:
@@ -1167,7 +1167,7 @@ class Mind:
             finding = self._finding(row, now)
             if not outreach_functions.needs_decision(finding):
                 continue
-            verdict = await decisions.report_substance(self.router, finding.summary, finding.topic,
+            verdict = await typed_decisions.report_substance(self.router, finding.summary, finding.topic,
                                                        tokens_allowed=self.authority.tokens_allowed)
             if verdict is not None:
                 self._mark_finding(row.id, "pending", now, substance_decision=verdict, decided_by="model")
@@ -1460,11 +1460,13 @@ class Mind:
         body = reactions.strip_prefix(text)
         summary: Dict[str, Any] = {"linked": None, "classes": [], "applied": []}
         reading = reactions.read(body, contacts=await self._contact_names())
+        settled = False
         if reading.unsure:
             # Whose instruction a stop, a pause or a resume beside someone else's words is: the model's typed
             # decision; unavailable or unsure, the reader's conservative fallback stands.
-            reading.decided(await decisions.owner_instruction(self.router, body,
-                                                              tokens_allowed=self.authority.tokens_allowed))
+            reading.decided(await typed_decisions.owner_instruction(self.router, body,
+                                                                    tokens_allowed=self.authority.tokens_allowed))
+            settled = not reading.unsure
         summary["classes"] = reading.classes
         cause = f"turn:{turn}"
         if self._answers_ask(body):
@@ -1481,7 +1483,8 @@ class Mind:
         if how == "position" and cls is None:
             row, how = None, ""    # nothing in the turn is about what was sent
         read = ""
-        if row is not None and cls is None:
+        if row is not None and cls is None and not settled:
+            # A typed decision that answered whose instruction this is stands: the reply model is not asked again.
             cls = await self._decided_reply(body, row)
             read = "decision" if cls is not None else ""
         self._apply_holds(reading, summary, cause=cause, now=now, linked=cls, replied=row is not None)
@@ -1517,8 +1520,9 @@ class Mind:
                      linked: Optional[str], replied: bool = False) -> None:
         """The owner's stop, resume or pause for today: an explicit one always, a bare "stop" or a vague
         "not today" only as the reaction of a reply linked to an outreach (``linked``). A resume nobody could
-        attribute (no model decision) lifts the pause only as a reply linked to an outreach (``replied``)."""
-        if reading.stop_explicit or (reading.stop and linked == "stop"):
+        attribute (no model decision) lifts the pause only as a reply linked to an outreach (``replied``). A linked
+        stop is the phrase reader's or the decision model's (``_decided_reply``)."""
+        if reading.stop_explicit or linked == "stop":
             self.pause_outreach(None, by=cause, now=now)
             summary["applied"].append("paused")
         elif reading.resume or (reading.resume_if_linked and replied):
