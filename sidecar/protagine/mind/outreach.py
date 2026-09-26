@@ -214,6 +214,7 @@ class OutreachInputs:
     lessons: List[Any] = field(default_factory=list)           # owner-verified outreach lessons
     followups: List[Followup] = field(default_factory=list)
     seen: List[str] = field(default_factory=list)              # findings the digest listed or holds (30 days)
+    held: Dict[str, str] = field(default_factory=dict)         # commitment id -> a matter the owner holds
 
     def paused(self) -> bool:
         return self.paused_until is not None and self.now < self.paused_until
@@ -428,6 +429,22 @@ def interruption_cost(inputs: OutreachInputs) -> float:
         if last is not None else 0.0
     hour = min(1.0, max(0.0, float(inputs.timing.get(inputs.local_hour, 0.0))))
     return round(min(0.9, recent + 0.15 * ignored_streak(inputs) + 0.10 * inputs.queued_24h + 0.20 * hour), 4)
+
+
+def held(inputs: OutreachInputs, topic: str = "", *, commitment: Optional[str] = None, turn: Optional[str] = None
+         ) -> Optional[str]:
+    """The matter the owner holds that an outreach is about, or None: a held item (a hold, listed or from its
+    first mention) it names or is about, or a turn of the owner's that asked for no reminders (its care). Every
+    kind of outreach (a finding, its answer, a follow-up, an open loop, care) is held by it alike."""
+    from protagine.commitments.extract import asks_no_reminders
+    if commitment and str(commitment) in inputs.held:
+        return inputs.held[str(commitment)]
+    for matter in inputs.held.values():
+        if topic and (similar(topic, matter) or similar(matter, topic)):
+            return matter
+    if turn and asks_no_reminders(inputs.quotes.get(turn, "")):
+        return topic or "what the owner asked no reminders about"
+    return None
 
 
 def holds(inputs: OutreachInputs, *, slug: str = "", topic: str = "", requested: bool = False) -> Optional[str]:
@@ -708,32 +725,38 @@ def candidates(inputs: OutreachInputs) -> Tuple[float, List[Candidate]]:
     for finding in inputs.findings:
         if finding.requested_by is not None:
             continue
-        if holds(inputs, slug=finding.slug, topic=finding.topic):
+        if holds(inputs, slug=finding.slug, topic=finding.topic) or held(inputs, finding.topic,
+                                                                          commitment=finding.bound_commitment):
             continue
         made = finding_candidate(finding, inputs)
         if made is not None:
             unprompted.append(made)
     for loop in inputs.loops:
         loop_slug = _slug(loop.description)
-        if holds(inputs, slug=loop_slug, topic=loop.description):
+        if holds(inputs, slug=loop_slug, topic=loop.description) or held(inputs, loop.description, commitment=loop.id):
             continue
         made = loop_candidate(loop, inputs)
         if made is not None:
             unprompted.append(made)
     for care in inputs.cares:
-        if holds(inputs, slug=care.slug, topic=care.thing):
+        if holds(inputs, slug=care.slug, topic=care.thing) or held(inputs, care.thing, commitment=care.commitment,
+                                                                     turn=care.turn):
             continue
         made = care_candidate(care, inputs)
         if made is not None:
             unprompted.append(made)
     chosen = sorted(unprompted, key=lambda item: (-(item.salience * (1 - item.cost)), item.dedup_key))
     answers = [made for made in (answer_candidate(finding, inputs) for finding in inputs.findings
-                                 if finding.requested_by is not None) if made is not None]
+                                 if finding.requested_by is not None
+                                 and not held(inputs, finding.topic, commitment=finding.bound_commitment))
+               if made is not None]
     return round(level, 3), [*chosen, *answers]
 
 
 def followups(inputs: OutreachInputs) -> List[Candidate]:
-    return [followup_candidate(item, inputs) for item in inputs.followups]
+    """The digs the owner asked for, except about a matter they hold (``held``): formed once the hold lifts."""
+    return [followup_candidate(item, inputs) for item in inputs.followups
+            if not held(inputs, item.topic, commitment=item.commitment)]
 
 
 def digest_value(finding: Finding, inputs: OutreachInputs) -> float:
@@ -764,5 +787,5 @@ __all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "CHECK_IN_OFFERS", "CONVERSATION_GAP
            "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NO_SUBSTANCE", "NULL_REPORT", "repeated", "says_something", "settle",
            "NOT_NOW_HOLD", "OWNER_TURN_KEY", "OutreachInputs", "PAUSE_KEY", "REPLY_HOURS", "Sent", "TIMING_PREFIX", "answer_candidate",
            "backoff_until", "candidates", "care_candidate", "digest_value", "excerpt", "finding_candidate",
-           "followup_candidate", "followups", "holds", "binds_followup", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
+           "followup_candidate", "followups", "held", "holds", "binds_followup", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
            "novelty", "open_loops", "overlap", "pause_until", "pressure", "quote", "relevance", "similar", "terms", "weight"]

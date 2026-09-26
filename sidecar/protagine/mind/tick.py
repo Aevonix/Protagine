@@ -1286,7 +1286,7 @@ class Mind:
                                                     recipient=self.owner_id,
                                                     exclude_types=self.authority.REQUESTED_TYPES),
             goals=[*owner_items, *[str(item.get("title") or "") for item in inputs.hermes_goals]],
-            followups=followups)
+            followups=followups, held=self._held_matters(inputs.commitments))
         if findings:
             state.memory = self._owner_memory(now)
             state.lessons = self._outreach_lessons()
@@ -1298,6 +1298,17 @@ class Mind:
             item.words = reactions.strip_prefix(replies.get(item.words, ""))[:400]
         self._age_findings(state)
         return state
+
+    @staticmethod
+    def _held_matters(commitments: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+        """The open items the owner holds (a hold: rescheduled with no date, listed or from its first mention),
+        by id: no outreach of any kind about them (``outreach.held``)."""
+        matters = {}
+        for row in commitments:
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if not row.get("due_at") and metadata.get("reschedule") and row.get("status") in {"pending", "overdue"}:
+                matters[str(row.get("id"))] = " ".join(str(row.get("description") or "").split())
+        return matters
 
     def _followups(self, now: datetime, inputs: DriveInputs) -> List[outreach_functions.Followup]:
         """The owner's "dig deeper" (or "yes, help me with it") replies of the last week not yet made a task.

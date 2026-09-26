@@ -901,3 +901,63 @@ async def test_the_owners_own_report_of_a_stop_pauses_outreach(make, text):
     fx = make()
     await say(fx, text, "t-stop")
     assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+
+
+# -- round 2: a hold on a matter holds every outreach about it -------------------------------------------------
+
+HELD = {"from": None, "by": "conversation", "note": "turn:t-hold", "hold": "first_mention"}
+
+
+@pytest.mark.parametrize("said", [
+    "I'm stressed about the parcel receipt. I am handling it myself. No reminders about it.",
+    "I’m stressed about the parcel receipt. I’m handling it myself, don’t remind me about it.",
+    "I am really stressed about the parcel receipt; leave it with me, don't ping me about it.",
+])
+async def test_a_held_matter_gets_no_care_offer_nor_a_loop(make, said):
+    """Re-check F8: the strain and the hold of the same turn: the hold, and no care offer or open-loop offer about
+    the receipt, however long the owner stays quiet."""
+    fx = make()
+    await say(fx, said, "t-hold")
+    fx.owner_commitment("Handle the parcel receipt", created=fx.now - 2 * H, reschedule=HELD)
+    for _ in range(3):
+        await fx.mind.tick(force=True)
+        fx.shift(30 * H)
+    assert fx.outreach_rows("outreach_care") == [] and fx.outreach_rows("outreach_loop") == []
+
+
+async def test_a_listed_hold_holds_the_care_offer_about_that_item(make):
+    fx = make()
+    fx.owner_commitment("Finish the grant report", created=fx.now - 2 * H,
+                        reschedule={"from": (fx.now + 24 * H).isoformat(), "by": "conversation", "note": "turn:t-p"})
+    await say(fx, "I am really stressed about the grant report; I am behind on it.", "t-stress")
+    await fx.mind.tick(force=True)
+    assert fx.outreach_rows("outreach_care") == []
+
+
+async def test_a_held_matter_holds_its_finding_and_its_followup_and_the_answer_waits(make):
+    """A finding, a dig and its answer about a held matter wait while the hold stands; lifted, the answer goes."""
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    held = fx.owner_commitment("Look at the tidal energy plans", created=fx.now - 2 * H, reschedule=HELD)
+    await fx.tick()
+    assert [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"] == []
+    fx.commitments.update(held["id"], due_at=(fx.now + 72 * H).isoformat(), metadata={"reschedule": None})
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.commitments.update(held["id"], clear_due_at=True, metadata={"reschedule": HELD})
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    await fx.tick()
+    assert fx.outreach_rows("outreach_answer") == []
+    fx.commitments.resolve(held["id"], outcome="done", resolved_by="owner")
+    await fx.tick()
+    assert [row.status for row in fx.outreach_rows("outreach_answer")] == ["sent"]
+
+
+@pytest.mark.parametrize("said", ["Don’t remind me about it.", "Dont remind me", "No more reminders please",
+                                  "donʼt remind me", "Please don't ping me about it", "No nudges about this."])
+def test_every_apostrophe_and_wording_of_no_reminders_holds(said):
+    from protagine.commitments.extract import asks_no_reminders
+    assert asks_no_reminders(said), said

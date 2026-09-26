@@ -246,8 +246,15 @@ SYSTEM = (
 # start: open, with no time, so nothing is ever said about it unasked (a later time reinstates it). ``record_items``
 # marks it held as a listed hold is marked (``metadata.reschedule`` with no date), so nothing that leaves a
 # held item alone (an offer of help about an open loop, ``outreach.open_loops``) takes it for an undated one.
-_NO_REMINDERS = re.compile(r"\b(?:no|without|skip(?:\s+the)?)\s+(?:more\s+)?reminders?\b"
-                           r"|\b(?:don't|dont|do\s+not|no\s+need\s+to|never|stop)\s+remind(?:ing)?\s+me\b", re.IGNORECASE)
+_NO_REMINDERS = re.compile(r"\b(?:no|without|skip(?:\s+the)?)\s+(?:more\s+)?(?:reminders?|pings?|nudges?)\b"
+                           r"|\b(?:don't|dont|do\s+not|no\s+need\s+to|never|stop)\s+"
+                           r"(?:remind(?:ing)?|ping(?:ing)?|nudg(?:e|ing)|chas(?:e|ing))\s+me\b", re.IGNORECASE)
+_APOSTROPHE_FORMS = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u2032": "'", "`": "'"})
+
+
+def asks_no_reminders(text: Any) -> bool:
+    """Whether the words ask for no reminders (a hold), whatever apostrophe they are typed with."""
+    return bool(_NO_REMINDERS.search(str(text or "").translate(_APOSTROPHE_FORMS)))
 
 ITEM_SCHEMA = {
     "type": "object",
@@ -1225,7 +1232,7 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             metadata["due_text"] = _due_text(item, owner_text)
         if turn_id:
             metadata["source_turn"] = str(turn_id)    # the turn it came from (a follow-up keeps only its own)
-        if not item.get("due_at") and owner_text and _NO_REMINDERS.search(str(owner_text)):
+        if not item.get("due_at") and owner_text and asks_no_reminders(owner_text):
             # Held from its first mention: undated because the person wants no word about it.
             metadata["reschedule"] = {"from": None, "by": "conversation", "note": note, "hold": "first_mention"}
         try:
