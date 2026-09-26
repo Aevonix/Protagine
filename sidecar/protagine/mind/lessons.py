@@ -56,6 +56,7 @@ LESSON_TASK = "mind_lessons"
 WATERMARK = "lessons.scanned"            # mind_state: the newest owner turn the night has read
 FIRST_LOOK = timedelta(days=7)           # how far back a first night reads
 LESSON_SESSIONS, LESSON_SESSION_TURNS, MESSAGE_CHARS = 6, 8, 500
+REPLY_CHARS = 300   # the agent's reply before an owner message, as the decision model reads it
 EVENT_WINDOW, LESSON_EVENTS, PACKET_LESSONS, PLAN_CHARS = timedelta(days=14), 6, 8, 400
 MAX_OPS, MIN_QUOTE, OUTPUT_TOKENS = 6, 12, 1200
 OPS = ("add", "supersede", "retire")
@@ -258,6 +259,8 @@ class Lessons:
         self.clock = clock or (lambda: now_utc())
         self.enabled = bool(enabled)
         self.mind_state = mind_state
+        # The fast decision layer (``protagine.decisions``): None is the process's, from its environment.
+        self.decisions: Any = None
 
     @property
     def available(self) -> bool:
@@ -749,7 +752,7 @@ class Lessons:
             used = sorted({ident for row in uses.get(session["session_id"], []) for ident in lesson_ids_of(row)})
             lines.append(f"Session {session['session_id']}"
                          + (f" (lessons used: {', '.join(used)})" if used else "") + ":")
-            replied = False
+            replied, reply = False, ""
             for turn in session["turns"]:
                 for role, text in turn["messages"]:
                     clipped = _clean(text, MESSAGE_CHARS)
@@ -758,11 +761,11 @@ class Lessons:
                         # ``after_work``: an agent reply precedes it in its session, so it can judge work.
                         owner[label] = {"turn_id": turn["turn_id"], "text": text, "at": turn["at"],
                                         "session_id": session["session_id"], "after_work": replied,
-                                        "key": served_key(text)}
+                                        "key": served_key(text), "reply": reply}
                         order.setdefault(session["session_id"], []).append(label)
                         lines.append(f"{label} [{turn['at'][:16]}] owner: {clipped}")
                     else:
-                        replied = True
+                        replied, reply = True, _clean(text, REPLY_CHARS)
                         lines.append(f"    agent: {clipped}")
         events: Dict[str, Any] = {}
         rows = self._events(now)
@@ -807,6 +810,24 @@ class Lessons:
                 continue
             judged.setdefault(label, verdict["work_was"])
         return judged
+
+    async def _vetted(self, judged: Dict[str, str], packet: Mapping[str, Any], night: Any) -> Dict[str, str]:
+        """The checked verdicts less those the decision model reads as no verdict on the reply before them
+        (point ``owner_verdict``: a new request or other talk). It can only withdraw one: no answer, or an
+        unsure one, leaves the verdict standing."""
+        from protagine import decisions
+        decider = self.decisions or decisions.shared()
+        if not judged or not decider.enabled("owner_verdict"):
+            return judged
+        kept: Dict[str, str] = {}
+        for label, work_was in judged.items():
+            owner = packet["owner"][label]
+            decision = await decider.decide("owner_verdict", reply=owner.get("reply") or "", text=owner["text"])
+            if decision is not None and decision.label == "no":
+                night.count("lesson_verdicts_vetoed")
+                continue
+            kept[label] = work_was
+        return kept
 
     def _sources(self, cites: Sequence[str], packet: Mapping[str, Any]) -> Optional[Dict[str, str]]:
         """``{label: verifier}`` of the cited items, or None when a citation is not in the packet."""
@@ -1017,7 +1038,7 @@ class Lessons:
                                 schema=LESSON_SCHEMA, max_output_tokens=OUTPUT_TOKENS)
             if answer is None:
                 return
-            judged = self._verdicts(answer.get("verdicts"), packet, night)
+            judged = await self._vetted(self._verdicts(answer.get("verdicts"), packet, night), packet, night)
             applied = 0
             for op in list(answer.get("ops") or [])[:3 * MAX_OPS]:
                 plan, why = self._validate(op, packet, judged)

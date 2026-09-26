@@ -1,9 +1,12 @@
 """A contact's opt-out (architecture 4.7 item 9, 7.4).
 
 Two detectors end here: this deterministic phrase match on the contact's own
-words and the appraisal call's ``opt_out`` flag (Part B's writer). Both call
-``lower_may_contact``; nothing in this module, or anywhere but the owner's
-``set_may_contact`` path, ever raises ``may_contact``.
+words and the appraisal call's ``opt_out`` flag (Part B's writer). Where the
+phrases miss, the fast decision layer (``protagine.decisions``, point
+``opt_out``) may read the words as an opt-out when that point is enabled; its
+silence leaves the phrases' answer. All call ``lower_may_contact``; nothing in
+this module, or anywhere but the owner's ``set_may_contact`` path, ever raises
+``may_contact``.
 """
 
 from __future__ import annotations
@@ -50,15 +53,24 @@ def detects_opt_out(text: Optional[str]) -> Optional[str]:
 
 
 async def apply_opt_out(store: Any, contact_id: str, text: str, *, source_ref: str,
-                        owner_id: Optional[str]) -> Any:
-    """Lower ``may_contact`` to ``never`` when the contact's words opt out.
+                        owner_id: Optional[str], decider: Any = None) -> Any:
+    """Lower ``may_contact`` to ``never`` when the contact's words opt out: the phrases, else the decision
+    model's yes (``decider``, default the process's ``protagine.decisions.shared()``).
 
     Never for the owner (the owner's permission is by identity) and never for the
-    ``system`` sentinel. Returns the updated contact, or None when nothing changed.
+    ``system`` sentinel. Returns the updated contact, or None when nothing changed. The audit keeps the
+    matched phrase, or for the decision model only that it read one (the contact's words stay out of it).
     """
     if not contact_id or contact_id == "system" or (owner_id and contact_id == owner_id):
         return None
     phrase = detects_opt_out(text)
+    if phrase is None and isinstance(text, str) and text.strip():
+        from protagine import decisions
+        decider = decider or decisions.shared()
+        if decider.enabled("opt_out"):
+            decision = await decider.decide("opt_out", text=text)
+            if decision is not None and decision.label == "yes":
+                phrase = f"the decision model read an opt-out (p={decision.probability:.2f})"
     if phrase is None:
         return None
     return await store.lower_may_contact(contact_id, reason=phrase, source_ref=source_ref)

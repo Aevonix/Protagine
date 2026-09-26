@@ -223,6 +223,10 @@ mind:
               skills: false}
 projections:
   backlog_per_hour: 12               # model projections queued a day before this release started
+decisions:                           # a decision model for short typed decisions (docs/DECISIONS.md)
+  url: ""                            # its endpoint; empty keeps every decision on its existing path
+  timeout_ms: 250                    # one answer's limit; later is no answer
+  points: {}                         # per point: {enabled, temperature, abstain: [lo, hi]}
 ```
 
 `projections.backlog_per_hour` bounds the model work an upgrade inherits. Claim
@@ -255,6 +259,16 @@ sidecar still serves, but `/v1/host/health` reports `degraded` with the reason
 in `problems` ("semantic recall is off: ..."), and `protagine doctor` fails its
 `semantic-recall` check with that reason. Recall does not quietly fall back to
 keywords.
+
+`decisions.url` names a non-generative decision model (`POST /v1/decide`,
+typed choice or yes/no answers with probabilities) that some short typed
+decisions may ask: the owner's reply to an outreach, a contact's opt-out, a
+first mention the person wants no reminders about, a settled interest, and
+whether an owner message is a verdict on the agent's work. Each point is
+enabled by default only where it measured at least as accurate as the path it
+falls back to, and any failure, timeout or unsure answer keeps that path; see
+[DECISIONS.md](DECISIONS.md) for the points, the measurements and the
+overrides. With no url nothing is asked.
 
 The mind itself (the tick, authority, asks, the audit log, the outbox and the
 off switch) and the `protagine mind` command are described in
