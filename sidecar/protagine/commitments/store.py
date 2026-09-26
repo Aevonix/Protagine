@@ -10,7 +10,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
@@ -140,6 +140,18 @@ class CommitmentResolutionConflict(ValueError):
     """A terminal commitment does not match a bound cascade operation."""
 
     settlement_error_code = "operation_conflict"
+
+
+def _metadata_still(stored: Optional[str], listed: Optional[Dict[str, Any]]) -> bool:
+    """True when every metadata key ``listed`` names still holds its listed value (absent reads as None)."""
+    if not listed:
+        return True
+    try:
+        metadata = json.loads(stored) if stored else {}
+    except (json.JSONDecodeError, TypeError):
+        metadata = {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    return all(metadata.get(key) == value for key, value in listed.items())
 
 
 class CommitmentConflict(ValueError):
@@ -451,16 +463,20 @@ class CommitmentStore:
         """A writer that acted on a listing must still be looking at that row.
 
         ``expect`` carries the description and canonical ``due_at`` the writer
-        listed; the row must also still be open. Checked inside the write
-        transaction, so an edit or a resolution that landed in between (the
-        owner correcting a deadline while an extraction was still thinking)
-        is never overwritten by the older reading.
+        listed, and optionally ``metadata``: the listed value of each metadata
+        key it names (None for a key the row did not have), each of which
+        must still be the stored one. The row must also still be open.
+        Checked inside the write transaction, so an edit or a resolution that
+        landed in between (the owner correcting a deadline while an
+        extraction was still thinking, a reminder becoming a check-in) is
+        never overwritten by the older reading.
         """
         if expect is None:
             return
         if (current["status"] not in OPEN_STATUSES
                 or current["description"] != expect.get("description")
-                or current["due_at"] != expect.get("due_at")):
+                or current["due_at"] != expect.get("due_at")
+                or not _metadata_still(current["metadata"], expect.get("metadata"))):
             raise CommitmentConflict("commitment changed since it was listed")
 
     @staticmethod
@@ -533,9 +549,12 @@ class CommitmentStore:
         source_type: str = "manual",
         source_context: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        *, dedupe: bool = False, allow_overdue: bool = False,
+        *, dedupe: Union[bool, Callable[[Dict[str, Any]], bool]] = False, allow_overdue: bool = False,
     ) -> Dict[str, Any]:
         """Create, optionally reusing the same open obligation under one write lock.
+
+        ``dedupe`` is True for the similar-description predicate, or a predicate
+        over the person's open rows deciding which one is the same obligation.
 
         ``allow_overdue`` imports an obligation whose deadline has already
         passed (a promise captured late, after an outage or a backlog): it
@@ -561,7 +580,8 @@ class CommitmentStore:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 if dedupe:
-                    existing = self._find_open_duplicate(conn, person_id, description)
+                    existing = self._find_open_duplicate(conn, person_id, description,
+                                                         None if dedupe is True else dedupe)
                     if existing is not None:
                         conn.commit()
                         return {**existing, "deduped": True}
@@ -663,8 +683,8 @@ class CommitmentStore:
         ``pending`` again so the overdue event fires once more at the new
         time. ``metadata`` is merged over what is stored, so a snooze or a
         reschedule note never drops a deliverable's content or a resolution.
-        ``expect`` makes the write a compare-and-set against the description
-        and deadline the caller listed (``_check_expectation``): a row that
+        ``expect`` makes the write a compare-and-set against the description,
+        deadline and metadata keys the caller listed (``_check_expectation``): a row that
         changed since raises ``CommitmentConflict`` and is left alone.
 
         Validates status transitions:
@@ -890,15 +910,16 @@ class CommitmentStore:
                 out.append(item)
         return out
 
-    def _find_open_duplicate(self, conn, person_id, description):
+    def _find_open_duplicate(self, conn, person_id, description, same=None):
         norm = _normalize_desc(description)
-        if not norm:
+        if not norm and same is None:
             return None
         rows = conn.execute(
             "SELECT * FROM commitments WHERE person_id=? AND status IN (?,?) ORDER BY made_at DESC",
             (person_id, *OPEN_STATUSES))
         for row in rows:
-            if _similar_desc(norm, _normalize_desc(row["description"] or "")):
+            if (same(self._row_to_dict(row)) if same is not None
+                    else _similar_desc(norm, _normalize_desc(row["description"] or ""))):
                 return self._row_to_dict(row)
         return None
 

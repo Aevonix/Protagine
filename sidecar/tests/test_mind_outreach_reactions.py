@@ -154,8 +154,9 @@ async def test_a_followup_keeps_the_promise_captured_from_the_reply_and_duty_for
     await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
     promise = fx.commitments.create(person_id=OWNER, description="Send the owner the tidal energy details",
                                     due_at=(fx.now + 2 * H).isoformat(), source_type="cognition",
-                                    metadata={"obligor": "assistant"})
-    with fx.commitments._connect() as conn:          # captured from the reply, on the mind's clock
+                                    metadata={"obligor": "assistant", "source_turn": "t-dig", "kind": "answer",
+                                              "outreach": row.id})
+    with fx.commitments._connect() as conn:          # captured from the reply (linked to it), on the mind's clock
         conn.execute("UPDATE commitments SET made_at=? WHERE id=?", (fx.now.isoformat(), promise["id"]))
     await fx.tick()
     task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
@@ -592,3 +593,544 @@ async def test_an_unrelated_dismissal_seen_by_the_appraisal_touches_no_outreach(
     fx2.shift(timedelta(minutes=10))
     await fx2.tick()
     assert fx2.store.get(row.id).verdict == "not_useful"
+
+
+# -- a follow-up keeps only the promise its own reply made -----------------------------------------------
+
+def _promise(fx, description, *, turn=None, kind=None):
+    metadata = {"obligor": "assistant", **({"source_turn": turn} if turn else {}), **({"kind": kind} if kind else {})}
+    row = fx.commitments.create(person_id=OWNER, description=description, due_at=(fx.now + 2 * H).isoformat(),
+                                source_type="cognition", metadata=metadata)
+    with fx.commitments._connect() as conn:
+        conn.execute("UPDATE commitments SET made_at=? WHERE id=?", (fx.now.isoformat(), row["id"]))
+    return row
+
+
+@pytest.mark.parametrize("turn", [None, "t-earlier", "t-dig"])
+async def test_a_followup_never_keeps_a_promise_of_another_turn_or_another_action(make, turn):
+    """"Cancel the tidal energy newsletter" captured half a minute before the "dig deeper" (from another turn,
+    or from no known turn), or from that very turn: none of them is the research the owner asked for, so
+    delivering the research never marks it done."""
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    other = _promise(fx, "Cancel the tidal energy newsletter subscription", turn=turn)
+    fx.shift(timedelta(seconds=30))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert "bound_commitment" not in task.context and not task.dedup_key.startswith(f"commitment:{other['id']}")
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The tidal energy study ran at KD-83.")
+    await fx.tick()
+    assert fx.outreach_rows("outreach_answer")[0].status == "sent"
+    assert fx.commitments.get(other["id"])["status"] in {"pending", "overdue"}
+
+
+def test_capture_records_the_turn_a_row_came_from(tmp_path):
+    from protagine.commitments.extract import record_items
+    from protagine.commitments.store import CommitmentStore
+    store = CommitmentStore(tmp_path / "c.db")
+    item = {"action": "create", "target": None, "description": "Look further into tidal energy for the owner",
+            "due_at": None, "priority": 70, "source_type": "cognition", "metadata": None, "listed_due": None,
+            "counterpart": None, "obligor": "assistant"}
+    record_items([item], person_id=OWNER, commitment_store=store, existing=[], rejections=[], turn_id="t-dig",
+                 owner_id=OWNER, owner_text="Dig deeper into it.")
+    row, = store.list(status=["pending"], person_id=OWNER)["commitments"]
+    assert row["metadata"]["source_turn"] == "t-dig"
+
+
+# -- an answer the owner asked for is never lost -------------------------------------------------------------
+
+async def test_a_requested_answer_that_expires_unsent_goes_out_once_the_body_is_back(make):
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    await fx.mind.tick(force=True)                   # formed; the body is not pulling
+    first, = fx.outreach_rows("outreach_answer")
+    assert first.status == "approved"
+    fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    assert fx.store.get(first.id).status == "expired"
+    for _ in range(2):
+        await fx.tick()                              # the body is back
+    sent = [row for row in fx.outreach_rows("outreach_answer") if row.status == "sent"]
+    assert len(sent) == 1 and "KD-83" in sent[0].context["text"]
+
+
+# -- a hold is the owner's own instruction --------------------------------------------------------------------
+
+async def test_a_quoted_resume_never_lifts_the_owners_pause(make):
+    fx = make()
+    await say(fx, "Please stop checking in with me unprompted.", "t-stop")
+    assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+    fx.shift(timedelta(minutes=30))
+    summary = await say(fx, 'Alice said: "you can check in again". What should I say?', "t-quote", "owner-2")
+    assert "resumed" not in summary["applied"]
+    assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+    fx.shift(timedelta(minutes=30))
+    await say(fx, "You can check in again.", "t-resume", "owner-3")
+    assert fx.mind.state()["outreach"]["paused_until"] is None
+
+
+def test_only_an_answer_the_turn_asked_for_keeps_a_followup():
+    """The binding is typed and linked: a promise binds only when capture typed it an answer (finding out and
+    reporting back) linked to that outreach; what the finding shared never makes an action an answer."""
+    item = outreach.Followup(outreach_id="o-1", topic="tidal energy", slug="tidal-energy",
+                             shared="The tidal energy board will cancel the pilot trial next week.")
+    answer = {"description": "Find out the tidal energy study's field site",
+              "metadata": {"kind": "answer", "outreach": "o-1"}}
+    assert outreach.binds_followup(answer, item)
+    for record in ({"description": "Cancel the tidal energy pilot trial", "metadata": {}},
+                   {"description": "Cancel the tidal energy pilot trial", "metadata": None},
+                   {"description": "Send the owner the tidal energy details", "metadata": {"kind": "deliverable"}},
+                   {"description": "Cancel the tidal energy pilot trial", "metadata": {"kind": "reminder"}},
+                   {"description": "Research kelp farming", "metadata": {"kind": "answer"}}):
+        assert not outreach.binds_followup(record, item), record
+    offer = outreach.Followup(outreach_id="o-2", topic="parcel receipt", slug="parcel-receipt", shared="", offer=True)
+    assert outreach.binds_followup({"description": "Look into the parcel receipt",
+                                    "metadata": {"kind": "answer", "outreach": "o-2"}}, offer)
+    assert not outreach.binds_followup({"description": "Draft the parcel receipt email", "metadata": {}}, offer)
+
+
+async def test_a_requested_answer_the_body_never_takes_goes_to_the_digest_after_its_tries(make):
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    for _ in range(4):
+        await fx.mind.tick(force=True)
+        fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    answers = fx.outreach_rows("outreach_answer")
+    assert len(answers) == 3 and all(fx.store.get(row.id).status == "expired" for row in answers)
+    assert fx.store.get(task.id).result_metadata["outreach"]["state"] == "digest"
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.tick()
+    digest, = [p["text"] for p in fx.sent if p["type"] == "digest"]
+    assert "KD-83" in digest
+
+
+@pytest.mark.parametrize("action", ["Cancel the tidal energy pilot trial", "Cancel the pilot trial next week",
+                                    "Tell the tidal energy board to cancel the pilot trial",
+                                    "Send the owner the tidal energy details"])
+async def test_research_delivered_never_fulfils_an_action_asked_in_the_same_reply(make, action):
+    """Re-check F4: the finding shared "The tidal energy board will cancel the pilot trial next week"; the reply
+    asks for more and for the cancellation, both captured from that turn. The research answer is sent and the
+    action stays open: only an answer-typed promise is the follow-up's."""
+    fx = make()
+    await say(fx, "I care a lot about tidal energy; anything new on it is worth hearing about.", "t-declare")
+    fx.shift(timedelta(minutes=15))
+    await fx.research("tidal energy", "finding: The tidal energy board will cancel the pilot trial next week.")
+    await fx.tick()
+    fx.shift(timedelta(minutes=5))
+    other = _promise(fx, action, turn="t-dig")
+    await say(fx, "Yes, dig deeper into the tidal energy item, and cancel the pilot trial.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert "bound_commitment" not in task.context
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The trial site is KD-83 and runs until May.")
+    await fx.tick()
+    assert fx.outreach_rows("outreach_answer")[0].status == "sent"
+    assert fx.commitments.get(other["id"])["status"] in {"pending", "overdue"}
+
+
+async def test_two_answers_from_one_reply_leave_the_followup_unbound(make):
+    """Which one the dig keeps is not certain: neither is bound, and duty keeps both."""
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    first = _promise(fx, "Find out more about the tidal energy study", turn="t-dig", kind="answer")
+    second = _promise(fx, "Look into tidal energy grants", turn="t-dig", kind="answer")
+    await say(fx, "Yes, dig deeper into the tidal energy item.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert "bound_commitment" not in task.context
+    assert {first["id"], second["id"]} <= {row["id"] for row in fx.commitments.list(
+        status=["pending"], person_id=OWNER)["commitments"]}
+
+
+def test_capture_keeps_the_answer_kind_it_is_given(tmp_path):
+    from protagine.commitments.extract import record_items
+    from protagine.commitments.store import CommitmentStore
+    store = CommitmentStore(tmp_path / "c.db")
+    item = {"action": "create", "target": None, "description": "Look further into tidal energy for the owner",
+            "due_at": None, "priority": 70, "source_type": "cognition", "metadata": {"kind": "answer"},
+            "listed_due": None, "counterpart": None, "obligor": "assistant"}
+    record_items([item], person_id=OWNER, commitment_store=store, existing=[], rejections=[], turn_id="t-dig",
+                 owner_id=OWNER, owner_text="Dig deeper into it.")
+    row, = store.list(status=["pending"], person_id=OWNER)["commitments"]
+    assert row["metadata"]["kind"] == "answer" and row["metadata"]["source_turn"] == "t-dig"
+
+
+
+# -- round 2: a finding is found by its state, and listed only once the digest carrying it is delivered -------
+
+async def _requested_answer(fx):
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    return task
+
+
+def _state(fx, task):
+    return fx.store.get(task.id).result_metadata["outreach"]
+
+
+@pytest.mark.parametrize("days", [8, 15, 40])
+async def test_a_requested_answer_waiting_longer_than_a_week_is_still_found_and_sent(make, days):
+    """Re-check F5: an interruption of more than seven days before the queued answer expires; the finding set back
+    to pending is found again by its state (no creation-time window) and answered once the body is back."""
+    fx = make()
+    task = await _requested_answer(fx)
+    await fx.mind.tick(force=True)                   # the answer forms; the body is away
+    first, = fx.outreach_rows("outreach_answer")
+    fx.shift(timedelta(days=days))
+    await fx.mind.tick(force=True)
+    assert fx.store.get(first.id).status == "expired" and _state(fx, task)["state"] != "listed"
+    for _ in range(3):
+        await fx.tick()
+        fx.shift(timedelta(minutes=5))
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.tick()
+    assert [p for p in fx.sent if p["type"] in {"outreach_answer", "digest"} and "KD-83" in p["text"]]
+
+
+@pytest.mark.parametrize("uncollected_hours", [21, 30, 200])
+async def test_a_digest_that_expires_unsent_gives_its_findings_back(make, uncollected_hours):
+    """Re-check new P1: after three unsent answers the finding goes to the digest; the digest is queued but never
+    collected and expires. The finding is not ``listed`` (nothing delivered it): it is pending again, and the
+    answer reaches the owner once the body is back."""
+    fx = make()
+    task = await _requested_answer(fx)
+    for _ in range(4):
+        await fx.mind.tick(force=True)
+        fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    assert _state(fx, task)["state"] == "digest"
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.mind.tick(force=True)                   # queued; the body is away
+    digest, = [row for row in fx.store.intentions(kind=["message"], limit=100) if row.type == "digest"]
+    assert _state(fx, task)["state"] != "listed"
+    fx.shift(timedelta(hours=uncollected_hours))
+    await fx.mind.tick(force=True)
+    assert fx.store.get(digest.id).status == "expired"
+    assert _state(fx, task)["state"] not in {"listed", "queued"}      # given back: formed again or waiting
+    for _ in range(3):
+        await fx.tick()
+        fx.shift(timedelta(minutes=5))
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    fx.mind._daily.pop("digest", None)
+    await fx.tick()
+    assert [p for p in fx.sent if p["type"] in {"outreach_answer", "digest"} and "KD-83" in p["text"]]
+
+
+async def test_a_finding_is_listed_only_when_its_digest_is_delivered(make):
+    fx = make()
+    task = await _requested_answer(fx)
+    for _ in range(4):
+        await fx.mind.tick(force=True)
+        fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.mind.tick(force=True)
+    digest, = [row for row in fx.store.intentions(kind=["message"], limit=100) if row.type == "digest"]
+    assert _state(fx, task)["state"] == "queued" and _state(fx, task)["digest"] == digest.id
+    await fx.tick()                                  # the body collects and delivers it
+    assert fx.store.get(digest.id).status == "sent" and _state(fx, task)["state"] == "listed"
+    fx.shift(timedelta(days=1))
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.tick()
+    assert sum("KD-83" in p["text"] for p in fx.sent if p["type"] == "digest") == 1
+
+
+@pytest.mark.parametrize("result", ["failed", "uncertain"])
+async def test_a_digest_the_body_could_not_deliver_gives_its_findings_back(make, result):
+    fx = make()
+    task = await _requested_answer(fx)
+    for _ in range(4):
+        await fx.mind.tick(force=True)
+        fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.mind.tick(force=True)
+    payload, = [p for p in await fx.mind.outbox_ready() if p["type"] == "digest"]
+    fx.mind.outbox.sending(payload["id"], target="capture:owner")
+    fx.mind.outbox.sent(payload["id"], result=result)
+    await fx.mind.tick(force=True)
+    assert _state(fx, task)["state"] not in {"listed", "queued"}
+    await fx.tick()
+    assert [p for p in fx.sent if p["type"] == "outreach_answer" and "KD-83" in p["text"]]
+
+
+@pytest.mark.parametrize("quoted", ["Alice said:\nYou can check in again.\nWhat should I say?",
+                                    "> You can check in again.\nHow do I answer Alice?",
+                                    "Alice:\nyou can check in again\nthoughts?"])
+async def test_a_resume_quoted_across_lines_never_lifts_the_owners_pause(make, quoted):
+    """Re-check F7: reported speech over several lines and blockquotes keeps the pause."""
+    fx = make()
+    await say(fx, "Please stop checking in with me unprompted.", "t-stop")
+    fx.shift(timedelta(minutes=30))
+    summary = await say(fx, quoted, "t-quote", "owner-2")
+    assert "resumed" not in summary["applied"]
+    assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+
+
+@pytest.mark.parametrize("text", ["I just said stop checking in.", "I already told you to stop checking in!",
+                                  "I’ve already said it: stop checking in."])
+async def test_the_owners_own_report_of_a_stop_pauses_outreach(make, text):
+    """Re-check new P2: "I just said stop checking in" is the owner's instruction: an indefinite pause."""
+    fx = make()
+    await say(fx, text, "t-stop")
+    assert fx.mind.state()["outreach"]["paused_until"] == outreach.INDEFINITE
+
+
+# -- round 2: a hold on a matter holds every outreach about it -------------------------------------------------
+
+HELD = {"from": None, "by": "conversation", "note": "turn:t-hold", "hold": "first_mention"}
+
+
+@pytest.mark.parametrize("said", [
+    "I'm stressed about the parcel receipt. I am handling it myself. No reminders about it.",
+    "I’m stressed about the parcel receipt. I’m handling it myself, don’t remind me about it.",
+    "I am really stressed about the parcel receipt; leave it with me, don't ping me about it.",
+])
+async def test_a_held_matter_gets_no_care_offer_nor_a_loop(make, said):
+    """Re-check F8: the strain and the hold of the same turn: the hold, and no care offer or open-loop offer about
+    the receipt, however long the owner stays quiet."""
+    fx = make()
+    await say(fx, said, "t-hold")
+    fx.owner_commitment("Handle the parcel receipt", created=fx.now - 2 * H, reschedule=HELD)
+    for _ in range(3):
+        await fx.mind.tick(force=True)
+        fx.shift(30 * H)
+    assert fx.outreach_rows("outreach_care") == [] and fx.outreach_rows("outreach_loop") == []
+
+
+async def test_a_listed_hold_holds_the_care_offer_about_that_item(make):
+    fx = make()
+    fx.owner_commitment("Finish the grant report", created=fx.now - 2 * H,
+                        reschedule={"from": (fx.now + 24 * H).isoformat(), "by": "conversation", "note": "turn:t-p"})
+    await say(fx, "I am really stressed about the grant report; I am behind on it.", "t-stress")
+    await fx.mind.tick(force=True)
+    assert fx.outreach_rows("outreach_care") == []
+
+
+async def test_a_held_matter_holds_its_finding_and_its_followup_and_the_answer_waits(make):
+    """A finding, a dig and its answer about a held matter wait while the hold stands; lifted, the answer goes."""
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    held = fx.owner_commitment("Look at the tidal energy plans", created=fx.now - 2 * H, reschedule=HELD)
+    await fx.tick()
+    assert [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"] == []
+    fx.commitments.update(held["id"], due_at=(fx.now + 72 * H).isoformat(), metadata={"reschedule": None})
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.commitments.update(held["id"], clear_due_at=True, metadata={"reschedule": HELD})
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    await fx.tick()
+    assert fx.outreach_rows("outreach_answer") == []
+    fx.commitments.resolve(held["id"], outcome="done", resolved_by="owner")
+    await fx.tick()
+    assert [row.status for row in fx.outreach_rows("outreach_answer")] == ["sent"]
+
+
+@pytest.mark.parametrize("said", ["Don’t remind me about it.", "Dont remind me", "No more reminders please",
+                                  "donʼt remind me", "Please don't ping me about it", "No nudges about this."])
+def test_every_apostrophe_and_wording_of_no_reminders_holds(said):
+    from protagine.commitments.extract import asks_no_reminders
+    assert asks_no_reminders(said), said
+
+
+# -- round 3: a follow-up binds only the promise capture linked to THAT outreach --------------------------------
+
+class _CaptureRouter:
+    supports_function_routing = True
+
+    def __init__(self, items):
+        self.items, self.prompts = items, []
+
+    def function_deadline_seconds(self, *, context=None):
+        return 20
+
+    async def complete(self, messages, *, context=None, **_):
+        import json
+        from types import SimpleNamespace
+        self.prompts.append(messages[1]["content"])
+        return SimpleNamespace(content=json.dumps(self.items))
+
+
+def _answer_item(description, **metadata):
+    return {"action": "create", "target": None, "description": description, "due_at": None, "priority": 70,
+            "source_type": "cognition", "metadata": {"kind": "answer", **metadata}, "listed_due": None,
+            "counterpart": None, "obligor": "assistant"}
+
+
+async def _exchange(fx, text, reply, turn, session="owner-1"):
+    """An owner turn with the assistant's reply, queued for capture, then through the turn path's hook."""
+    fx.ledger.record_source(turn, contact_id=OWNER, session_id=session, scope="person", occurred_at=fx.now.isoformat(),
+                            messages=[{"role": "user", "content": text}, {"role": "assistant", "content": reply}])
+    return await fx.mind.owner_turn(text, turn_id=turn, occurred_at=fx.now, session_id=session)
+
+
+DIG_AND_ASK = ("Dig deeper into the tidal energy item. Also find out whether my tidal energy grant application "
+               "was approved.")
+
+
+async def test_research_never_fulfils_a_separate_answer_asked_in_the_dig_reply(make):
+    """Re-check round 2, item 4: the reply asks for the dig and a separate question; capture records the question
+    as the turn's sole, correctly typed answer promise. The research answer goes, and the question stays open."""
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, DIG_AND_ASK, "t-dig", "owner-2")
+    grant = _promise(fx, "Find out whether the owner's tidal energy grant application was approved", turn="t-dig",
+                     kind="answer")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert "bound_commitment" not in task.context
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    await fx.tick()
+    assert fx.outreach_rows("outreach_answer")[0].status == "sent"
+    assert fx.commitments.get(grant["id"])["status"] in {"pending", "overdue"}
+
+
+async def test_capture_links_only_the_promise_that_follows_up_that_outreach(make):
+    """The reply is linked to the outreach when capture runs: the promise the extractor marks as following that
+    outreach up carries its id; the separate question does not, nor does a forged id. The dig binds the linked
+    promise alone: delivering the research fulfils it, and the grant question stays duty's."""
+    from protagine.commitments.extract import CommitmentExtractor
+    fx = make()
+    row = await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await _exchange(fx, DIG_AND_ASK, "I will dig deeper and find out about the application.", "t-dig", "owner-2")
+    capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments, interests=lambda: fx.mind)
+    router = _CaptureRouter([_answer_item("Dig deeper into the tidal energy item and report back", follows_up=True),
+                             _answer_item("Find out whether the owner's tidal energy grant application was approved",
+                                          outreach=row.id)])
+    assert await capture.process_one(router) is True
+    assert "replies to the assistant's own earlier message" in router.prompts[0] and "tidal energy" in router.prompts[0]
+    rows = {item["description"]: item for item in fx.commitments.list(status=["pending"], person_id=OWNER)["commitments"]}
+    dig = rows["Dig deeper into the tidal energy item and report back"]
+    grant = rows["Find out whether the owner's tidal energy grant application was approved"]
+    assert dig["metadata"]["outreach"] == row.id and "follows_up" not in dig["metadata"]
+    assert "outreach" not in grant["metadata"]
+    with fx.commitments._connect() as conn:
+        conn.execute("UPDATE commitments SET made_at=?", (fx.now.isoformat(),))
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert task.context["bound_commitment"] == dig["id"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    await fx.tick()
+    assert fx.commitments.get(dig["id"])["status"] == "fulfilled"
+    assert fx.commitments.get(grant["id"])["status"] in {"pending", "overdue"}
+
+
+async def test_a_turn_linked_to_no_outreach_links_no_promise(make):
+    from protagine.commitments.extract import CommitmentExtractor
+    fx = make()
+    await _exchange(fx, "Find out whether my tidal energy grant application was approved.", "I will find out.", "t-ask")
+    capture = CommitmentExtractor(fx.ledger, lambda: fx.commitments, interests=lambda: fx.mind)
+    router = _CaptureRouter([_answer_item("Find out whether the grant application was approved", follows_up=True)])
+    assert await capture.process_one(router) is True
+    assert "replies to the assistant's own earlier message" not in router.prompts[0]
+    row, = fx.commitments.list(status=["pending"], person_id=OWNER)["commitments"]
+    assert "outreach" not in row["metadata"] and "follows_up" not in row["metadata"]
+
+
+def test_a_promise_binds_only_the_outreach_it_was_linked_to():
+    item = outreach.Followup(outreach_id="o-1", topic="tidal energy", slug="tidal-energy", shared="")
+    linked = {"description": "Report back on it", "metadata": {"kind": "answer", "outreach": "o-1"}}
+    assert outreach.binds_followup(linked, item)
+    for record in ({"description": "Find out more about tidal energy", "metadata": {"kind": "answer"}},
+                   {"description": "Find out more about tidal energy", "metadata": {"kind": "answer", "outreach": "o-2"}},
+                   {"description": "Cancel the tidal energy trial", "metadata": {"kind": "reminder", "outreach": "o-1"}},
+                   {"description": "Report back on it", "metadata": None}):
+        assert not outreach.binds_followup(record, item), record
+
+
+# -- round 3: a hold is re-checked at send time: a queued offer about a held matter is withdrawn --------------
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("hold_words", ["No reminders about it.", "I'm handling the parcel receipt myself, don’t remind me."])
+async def test_a_queued_care_offer_is_withdrawn_once_its_matter_is_held(make, linked, hold_words):
+    """Re-check round 2, item 8: a parcel-receipt care offer is queued and not yet collected; the owner then holds
+    the matter. The next pull carries no care payload, and the offer is withdrawn (cancelled), not left waiting."""
+    fx = make()
+    fx.owner_spoke(fx.now - 3 * H)
+    item = fx.owner_commitment("Handle the parcel receipt", due=fx.now + timedelta(days=3), created=fx.now - 2 * H) \
+        if linked else None
+    fx.mind.mind_state.set("care:parcel-receipt", level=1.0, text="parcel receipt",
+                           causes=["turn:t-5", *([f"commitment:{item['id']}"] if item else [])],
+                           half_life_s=72 * 3600, now=fx.now)
+    await fx.mind.tick(force=True)
+    care, = fx.outreach_rows("outreach_care")
+    assert care.status == "approved"
+    if item is not None:
+        fx.commitments.update(item["id"], clear_due_at=True, metadata={"reschedule": HELD})
+    else:
+        fx.owner_commitment("Handle the parcel receipt", created=fx.now, reschedule=HELD)
+    await say(fx, hold_words, "t-hold")
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "outreach_care"] == []
+    assert fx.store.get(care.id).status == "cancelled"
+
+
+async def test_a_queued_finding_is_withdrawn_once_its_matter_is_held_and_the_digest_keeps_it(make):
+    fx = make()
+    fx.owner_spoke()
+    fx.mind.add_interest("tidal energy", by="turn:t-1")
+    done = await fx.research("tidal energy", report("QX-41", "tidal energy"))
+    fx.shift(timedelta(minutes=30))
+    await fx.mind.tick(force=True)
+    row, = fx.outreach_rows("outreach_finding")
+    fx.owner_commitment("Look at the tidal energy plans", created=fx.now, reschedule=HELD)
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "outreach_finding"] == []
+    assert fx.store.get(row.id).status == "cancelled"
+    assert fx.store.get(done.id).result_metadata["outreach"]["state"] == "digest"
+
+
+async def test_a_queued_offer_about_a_matter_no_one_holds_still_goes(make):
+    fx = make()
+    fx.owner_spoke(fx.now - 3 * H)
+    fx.mind.mind_state.set("care:parcel-receipt", level=1.0, text="parcel receipt", causes=["turn:t-5"],
+                           half_life_s=72 * 3600, now=fx.now)
+    await fx.mind.tick(force=True)
+    fx.owner_commitment("Renew the car insurance", created=fx.now, reschedule=HELD)
+    assert [p["type"] for p in await fx.mind.outbox_ready()] == ["outreach_care"]
+
+
+async def test_a_queued_offer_is_held_while_the_owners_holds_cannot_be_read(make, monkeypatch):
+    import sqlite3
+    fx = make()
+    fx.owner_spoke(fx.now - 3 * H)
+    fx.mind.mind_state.set("care:parcel-receipt", level=1.0, text="parcel receipt", causes=["turn:t-5"],
+                           half_life_s=72 * 3600, now=fx.now)
+    await fx.mind.tick(force=True)
+    care, = fx.outreach_rows("outreach_care")
+    listing = fx.commitments.list
+
+    def failing(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(fx.commitments, "list", failing)
+    assert await fx.mind.outbox_ready() == [] and fx.store.get(care.id).status == "approved"
+    monkeypatch.setattr(fx.commitments, "list", listing)
+    assert [p["type"] for p in await fx.mind.outbox_ready()] == ["outreach_care"]

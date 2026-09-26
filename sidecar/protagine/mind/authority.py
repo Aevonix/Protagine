@@ -20,7 +20,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 from protagine.util.temporal import now_utc
 
-from .rank import OUTREACH_ANSWER, OUTREACH_TYPES
+from .rank import OUTREACH_ANSWER, OUTREACH_TYPES, TASK_OUTCOME
 
 LEVELS = ("off", "suggest", "standard", "trusted")
 CLASSES = ("internal", "owner", "contact", "external", "floor")
@@ -305,8 +305,13 @@ class Authority:
     # Words to the owner that are not the mind's initiative: its own reports, the reminders and
     # heads-ups the owner asked for, and the question a message the owner asked for raises (who is
     # the recipient the owner named). ``suggest`` does not hold them for the digest.
+    # Words owed to the owner for what they asked: the answer to a follow-up, and the report of a task done
+    # for an obligation to them. Decided like every word to the owner (the off switch, the level, the floor,
+    # the deny list), they are the obligation's own delivery: bounded by what was asked (a task budget, a
+    # follow-up), never held by the daily owner budget and never spending a slot of it.
+    OWED_OWNER_TYPES = (OUTREACH_ANSWER, TASK_OUTCOME)
     REQUESTED_TYPES = DIGEST_TYPES + ("commitment_reminder", "commitment_due_soon", "recipient_unknown",
-                                      OUTREACH_ANSWER)
+                                      *OWED_OWNER_TYPES)
     # Unprompted outreach has its own daily budget and never takes a slot of the owner budget, so it can
     # never defer a reminder the owner asked for; the answer to a follow-up the owner asked for is neither.
     OUTREACH_OWNER_TYPES = tuple(sorted(OUTREACH_TYPES)) + (OUTREACH_ANSWER,)
@@ -407,7 +412,7 @@ class Authority:
                 return None
             day_ago = now - timedelta(days=1)
             if recipient and recipient == self.owner_id:
-                if type == OUTREACH_ANSWER:
+                if type in self.OWED_OWNER_TYPES:
                     return None
                 if type in OUTREACH_TYPES:
                     sent = self.store.count_transitions(self.BUDGET_ACTION, day_ago, kind="message",
@@ -418,7 +423,8 @@ class Authority:
                     return None
                 sent = self.store.count_transitions(self.BUDGET_ACTION, day_ago, kind="message",
                                                     recipient=recipient,
-                                                    exclude_types=self.DIGEST_TYPES + self.OUTREACH_OWNER_TYPES)
+                                                    exclude_types=(self.DIGEST_TYPES + self.OUTREACH_OWNER_TYPES
+                                                                   + self.OWED_OWNER_TYPES))
                 if sent >= budgets.owner_messages_per_day:
                     return f"budget: {budgets.owner_messages_per_day} owner messages per day reached"
                 return None

@@ -530,6 +530,7 @@ async def asks(viewer: Optional[str] = None) -> Dict[str, Any]:
         return {"asks": [], "text": "(no open asks)"}
     entries = mind.asks()
     lines = [f"[{item['ask_code']}] {item['title']} ({item['decision_reason']}; expires {item['expires_at']})"
+             + (f"\n  would send to {item['recipient']}: \"{item['message']}\"" if item.get("message") is not None else "")
              for item in entries]
     return {"asks": entries, "text": "\n".join(lines) if lines else "(no open asks)"}
 

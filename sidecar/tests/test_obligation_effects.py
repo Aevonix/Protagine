@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from protagine.commitments import extract
 from protagine.commitments.extract import record_items
 from protagine.commitments.store import CommitmentStore
@@ -194,3 +196,149 @@ def test_a_reminder_on_a_contacts_lane_is_a_word_never_a_task(tmp_path, fx):
                due=fx.now - timedelta(minutes=2), description="Remind them to send the signed form")
     candidates = duty(DriveInputs(now=fx.now, owner_id=OWNER, commitments=[store.get(row["id"])]))[1]
     assert [(c.type, c.kind, c.recipient) for c in candidates] == [("commitment_reminder", "message", OWNER)]
+
+
+async def test_the_owner_sees_the_exact_words_a_contact_report_would_send_before_saying_yes(fx):
+    """A worker's report for a contact may carry what only the owner may see: every place the owner is asked
+    about it (the ask notice, the digest, ``asks`` and ``why``) shows the exact text that would be sent."""
+    from protagine.mind.outbox import message_payload
+    row, task = await _one_task(fx, person=CONTACT, description="Send the contact the delivery date")
+    fx.mind.outcomes.record(task["id"], status="done",
+                            summary="Delivery is Friday. Owner confidential: acquisition offer is $2 million.")
+    await fx.mind.tick(force=True)
+    report, = _reports(fx, CONTACT)
+    assert report.status == "asked" and report.ask_code
+    words = message_payload(report, owner_id=OWNER)["text"]
+    assert "acquisition offer is $2 million" in words
+    fx.shift(minutes=1)
+    notice = fx.mind.outbox.notify_asks([report], force=True)
+    assert notice is not None and words in notice.context["text"]
+    listed, = [item for item in fx.mind.asks() if item["ask_code"] == report.ask_code]
+    assert listed["message"] == words
+    assert words in audit.why(fx.store, report.id)["sentence"]
+    assert words in fx.mind.outbox.build_digest(since=fx.now - timedelta(days=1), level="standard")
+
+
+SECRETS = "Owner private phone +14155552671; PASSWORD=notforthiscontact"
+
+
+def _every_preview(fx, report):
+    """Every place the owner is shown an ask: the ask notice, ``asks``, ``why``, the digest and the context
+    packet's waiting line."""
+    notice = fx.mind.outbox.notify_asks([report], force=True)
+    listed, = [item for item in fx.mind.asks() if item["ask_code"] == report.ask_code]
+    return {"notice": notice.context["text"], "asks": listed["message"],
+            "why": audit.why(fx.store, report.id)["sentence"],
+            "digest": fx.mind.outbox.build_digest(since=fx.now - timedelta(days=1), level="standard"),
+            "packet": fx.mind.section()}
+
+
+@pytest.mark.parametrize("summary", [
+    f"Delivery is Friday. {SECRETS}.",
+    f"Delivery is Friday.\n{SECRETS}\nToken: sk-abcdefghijklmnopqrstuvwxyz0123456789",
+    "Delivery is Friday, nothing private.",
+])
+async def test_the_words_the_owner_approves_are_byte_for_byte_the_words_sent(fx, summary):
+    """Re-check F2: a redacted preview approved an unredacted send. What the owner is shown in every place is
+    exactly what the contact receives after the yes: a value hidden from the preview is hidden in the send."""
+    from protagine.mind.outbox import message_payload
+    from protagine.redact import redact_sensitive_text
+    row, task = await _one_task(fx, person=CONTACT, description="Send the contact the delivery date")
+    fx.mind.outcomes.record(task["id"], status="done", summary=summary)
+    await fx.mind.tick(force=True)
+    report, = _reports(fx, CONTACT)
+    assert report.status == "asked" and report.ask_code
+    fx.shift(minutes=1)
+    previews = _every_preview(fx, report)
+    await fx.mind.answer(report.ask_code, yes=True, contact_id=OWNER)
+    sent, = [p for p in await fx.mind.outbox_ready() if p["id"] == report.id]
+    words = sent["text"]
+    assert words == message_payload(fx.store.get(report.id), owner_id=OWNER)["text"]
+    assert words == redact_sensitive_text(words)                  # nothing the preview would hide goes out
+    assert "notforthiscontact" not in words and "4155552671" not in words
+    for where, shown in previews.items():
+        assert words in shown, where
+    assert previews["asks"] == words
+
+
+async def test_the_packet_never_offers_a_message_ask_by_its_title_alone(fx):
+    """The conversational context shows a waiting message's exact words with its code, or no code to answer
+    at all: an owner never approves in conversation what they could not read."""
+    row, task = await _one_task(fx, person=CONTACT, description="Send the contact the delivery date")
+    fx.mind.outcomes.record(task["id"], status="done", summary="Delivery is Friday. " + "More detail. " * 60)
+    await fx.mind.tick(force=True)
+    report, = _reports(fx, CONTACT)
+    section = fx.mind.section()
+    words = audit.outgoing_text(report)
+    assert report.ask_code not in section and "its words are in the ask notice" in section
+    assert words not in section
+
+
+async def test_owner_reports_go_through_authority_and_never_take_a_reminders_budget(fx):
+    """A report of work owed to the owner is decided by authority like every word to them (the off switch, the
+    level, the floor and the budgets), and, as the answer to what they asked for, it neither spends nor is held
+    by the daily owner budget: two reports and the reminder the owner asked for all go on a budget of one."""
+    fx.mind.policy.budgets.owner_messages_per_day = 1
+    for description in ("Draft the offsite agenda", "Book the offsite venue"):
+        fx.commitments.create(person_id=OWNER, description=description,
+                              due_at=(fx.now + timedelta(minutes=5)).isoformat())
+    fx.shift(minutes=10)
+    await fx.mind.tick(force=True)
+    tasks = fx.mind.dispatch()
+    assert len(tasks) == 2
+    for task in tasks:
+        fx.mind.bound(task["id"], f"kanban:{task['id'][:8]}")
+        fx.mind.outcomes.record(task["id"], status="done", summary="Done as asked.")
+    reports = _reports(fx)
+    assert len(reports) == 2 and all(row.decision == "act" and row.decision_reason != "owner notice"
+                                     for row in reports)
+    assert fx.mind.authority.budget_check(kind="message", recipient=OWNER, type="task_outcome") is None
+    ready = {p["id"] for p in await fx.mind.outbox_ready()}
+    assert {row.id for row in reports} <= ready
+    fx.commitments.create(person_id=OWNER, description="Call the landlord about the boiler",
+                          due_at=(fx.now + timedelta(minutes=5)).isoformat(), metadata={"kind": "reminder"})
+    fx.shift(minutes=10)
+    formed = (await fx.mind.tick(force=True))["formed"]
+    reminder, = [entry for entry in formed if entry["type"] == "commitment_reminder"]
+    assert reminder["status"] == "approved"
+
+
+async def test_with_the_mind_off_a_task_report_is_not_queued(fx):
+    row, task = await _one_task(fx)
+    fx.mind.authority.set_enabled(False)
+    fx.mind.outcomes.record(task["id"], status="done", summary="Agenda drafted.")
+    assert [report.status for report in _reports(fx)] in ([], ["proposed"])
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"] == []
+
+
+@pytest.mark.parametrize("switch", ["authority", "off"])
+async def test_a_report_of_a_task_finished_while_the_mind_is_off_goes_once_it_is_back_on(fx, switch):
+    """Re-check new P2: the task was dispatched, the mind turned off, the task completed: the report waits and
+    reaches the owner when the mind is back on (the commitment is fulfilled; the report is its only word)."""
+    row, task = await _one_task(fx)
+    if switch == "off":
+        fx.mind.off(reason="test")
+    else:
+        fx.mind.authority.set_enabled(False)
+    fx.mind.outcomes.record(task["id"], status="done", summary="Agenda drafted: three sessions.")
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"] == []
+    if switch == "off":
+        fx.mind.on(by="owner")
+    else:
+        fx.mind.authority.set_enabled(True)
+    await fx.mind.tick(force=True)
+    sent = [p for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"]
+    assert len(sent) == 1 and "three sessions" in sent[0]["text"]
+
+
+async def test_a_report_waiting_to_go_when_the_mind_is_turned_off_goes_once_it_is_back_on(fx):
+    row, task = await _one_task(fx)
+    fx.mind.outcomes.record(task["id"], status="done", summary="Agenda drafted: three sessions.")
+    report, = _reports(fx)
+    assert report.status == "approved"
+    fx.mind.off(reason="test")
+    assert fx.store.get(report.id).status != "cancelled"
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"] == []
+    fx.mind.on(by="owner")
+    await fx.mind.tick(force=True)
+    assert [p["id"] for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"] == [report.id]

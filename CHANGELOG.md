@@ -128,16 +128,16 @@ deadline key (`commitment:<id>:overdue:<due>`) counts as formed (`drives.former_
 on a contact's lane too, never a task. The extractor no longer reads work the assistant promised ("I'll look
 up X and tell you by 5") as a reminder.
 
-**One matter is one item.** On the owner's turn, a reminder about an item of the same turn or a listed
-open item is that item's own word only when it is the same word to the owner: the item's word at its
-deadline is a reminder to the owner (not a message to someone else, not work the assistant owes), its
-deadline is still ahead, the reminder adds no matter of its own, and it falls at the deadline, before it
-where the item has no heads-up yet (it becomes the heads-up, compare-and-set on an open row of the owner's),
-or within 30 minutes after it at no time the owner named. Anything else stays its own item: a word the owner
-asked for is never dropped, moved to a time they did not ask for, or turned into a heads-up to a contact. A
-new item with a listed item's own wording and a different deadline moves it, compare-and-set; a merely
-similar one never does. A deliverable whose counterpart is a name the turn's own person goes by stays
-theirs. `record_items` reports `owner_reminders` and `folded`.
+**A word is never merged away.** A reminder the owner asks for is its own item, beside an item of the same
+turn or an open one, whatever its wording: nothing is folded into another item, and a heads-up is only what
+the extractor states on the item itself (`metadata.heads_up_at`). A new item is skipped as a duplicate only
+when an open item is the same item exactly: the same kind (reminder, check-in, notice, deliverable or plain),
+obligor, counterpart, recipient and deadline, and the same description after only Unicode NFC
+normalisation, casefolding and whitespace collapsing; an extraction rejected as invalid or a duplicate
+blocks only that exact description. A duplicate row is acceptable, a lost word is not. A new item with a
+listed item's own wording and kind and a different deadline moves it, compare-and-set; a merely similar one
+never does. A deliverable whose counterpart is a name the turn's own person goes by stays theirs.
+`record_items` reports `owner_reminders`.
 
 A contact's turn still sees only its own items proven in its own source: an owner's item that names the
 contact (a promise to them, a reminder about them) is the owner's record in the owner's words, and a display

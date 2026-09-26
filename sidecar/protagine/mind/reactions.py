@@ -217,6 +217,145 @@ def strip_prefix(text: str) -> str:
     return _PREFIX.sub("", str(text or ""))
 
 
+# Someone else's words the owner passes on are never the owner's instruction: a quotation ("...", '...', and the
+# typographic forms), a blockquote line ("> ..."), what a reporting verb whose speaker is not the owner introduces
+# ("Alice said ...", "my boss wrote that ...", "they told me ..."), "according to X, ...", a chat line naming its
+# speaker ("Alice: ..."), and the lines a frame ending in ":" introduces ("Alice said:" on its own line). The
+# speaker of a reporting verb is the word before it once adverbs, auxiliaries and negations are set aside ("I
+# just said", "I've already told you": the owner's own report of their own instruction). The owner saying they
+# did NOT say something ("I never said ...") is no instruction either.
+_TYPOGRAPHIC = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "′": "'", "`": "'",
+                              "“": '"', "”": '"', "„": '"', "«": '"', "»": '"'})
+_QUOTED = re.compile(r'"[^"]*"|(?<![\w\'])\'[^\'\n]+\'(?![\w\'])')
+_UNCLOSED = re.compile(r'"[^"]*$')
+_REPORT_VERB = re.compile(r"\b(?:said|says|say|told|tells|tell|wrote|writes|write|texted|texts|messaged|emailed"
+                          r"|asked|asks|ask|replied|replies|reply|answered|mentioned|added|commented|posted|tweeted"
+                          r"|put\s+it)\b", re.IGNORECASE)
+_ACCORDING = re.compile(r"\baccording to\b", re.IGNORECASE)
+_SPEAKER_SKIP = frozenset("""
+just already literally only also again really clearly even then earlier yesterday today before previously
+specifically explicitly once twice repeatedly basically actually simply kindly politely firmly always ever so now
+recently have has had 've 'd did do does was were is am be been will would could should can may might must
+""".split())
+_NEGATIONS = frozenset("never not didn't don't doesn't haven't hasn't hadn't wasn't weren't won't wouldn't no".split())
+_OWN_SPEAKERS = frozenset("i we i've we've i'd we'd i'm me myself ourselves".split())
+_CHAT_LABELS = frozenset("""
+ps p.s also update note fyi btw edit reminder seriously ok okay anyway again important urgent re subject todo
+question answer so and but please thanks today tonight tomorrow now then first second finally
+""".split())
+_CHAT_LINE = re.compile(r"^\s*(?P<who>[^\W\d][\w' .-]{0,38}?)\s*:\s*(?P<rest>.*)$")
+_SEGMENT = re.compile(r"[^.?!;]*[.?!;]*")
+
+
+def _speaker(before: str) -> tuple:
+    """``(own, negated)`` for the words before a reporting verb in its sentence."""
+    negated = False
+    for word in reversed(re.findall(r"[\w']+", before.casefold())):
+        if word in _NEGATIONS or word.endswith("n't"):
+            negated = True
+            continue
+        if word in _SPEAKER_SKIP:
+            continue
+        return word in _OWN_SPEAKERS, negated
+    return True, negated                       # "Said it already: ..." with no speaker named is the owner's
+
+
+def _reported_from(segment: str) -> int:
+    """Where someone else's words begin in one sentence (a reporting verb whose speaker is not the owner, or one
+    the owner denies saying; "according to"), or -1."""
+    match = _ACCORDING.search(segment)
+    if match is not None:
+        return match.start()
+    for match in _REPORT_VERB.finditer(segment):
+        own, negated = _speaker(segment[:match.start()])
+        if not own or negated:
+            return match.start()
+    return -1
+
+
+def _chat_speaker(line: str) -> Optional[tuple]:
+    """``(own, rest)`` for a line naming its speaker ("Alice: ...", "Me: ..."), else None."""
+    match = _CHAT_LINE.match(line)
+    if match is None:
+        return None
+    who = match.group("who").strip().casefold()
+    if who in _CHAT_LABELS or len(who.split()) > 4 or _REPORT_VERB.search(who):
+        return None             # a label, a clause, or a reporting verb (read as one, with its speaker)
+    return who in _OWN_SPEAKERS or who == "owner", match.group("rest")
+
+
+# The markers of words that may be someone else's: any quotation mark, a blockquote, a colon (a speaker label,
+# a frame, "I insist: ..."), "according to", "I quote", and a verb that reports or relays speech (its noun forms,
+# "messages", "texts", aside). Beside one of
+# these, whose instruction a stop, a pause or a resume is cannot be read reliably from the words alone: it is
+# the model's to decide (``decisions.owner_instruction``), and without it the conservative fallback applies.
+_MARKERS = re.compile(
+    r'["\'«»“”„‘’]|^\s*>|:|\baccording to\b|\bquot(?:e|es|ed|ing)\b|\b(?:fwd|forward(?:s|ed|ing)?)\b'
+    r"|\b(?:said|says|say|saying|told|tell|tells|telling|wrote|write|writes|writing|texted|texting"
+    r"|messaged|messaging|emailed|emailing|asks|asked|asking|replies|replied|replying|answered|answering"
+    r"|mention(?:s|ed|ing)?|added|commented|posted|tweeted|claim(?:s|ed|ing)?|insist(?:s|ed|ing)?|put\s+it)\b",
+    re.IGNORECASE | re.MULTILINE)
+
+
+def reported_speech(text: str) -> bool:
+    """Whether a turn carries any marker of someone else's words (``_MARKERS``), apostrophes inside words aside."""
+    return bool(_MARKERS.search(re.sub(r"(?<=\w)['’](?=\w)", "", str(text or ""))))
+
+
+def own_words(text: str, *, strict: bool = False) -> str:
+    """The owner's own words in a turn, with every quotation and reported speech blanked out (``" "``), line by
+    line. Where the extent of someone else's words is uncertain the two readings differ: ``strict`` (for words
+    that would lift the owner's pause) blanks a reported sentence to the end of its line and every line a frame
+    ending in ":" introduces, to the next blank line; the default (for a stop or a pause) blanks to the end of the
+    sentence and the first line the frame introduces. An uncertain stop is taken, an uncertain resume is not."""
+    def blank(match: re.Match) -> str:           # a quotation over several lines keeps its line breaks
+        return re.sub(r"[^\n]+", " ", match.group(0))
+    text = _QUOTED.sub(blank, str(text or "").translate(_TYPOGRAPHIC))
+    if strict:
+        text = _UNCLOSED.sub(blank, text)        # an unclosed quotation runs on to the end
+    kept: List[str] = []
+    framed = False            # the lines a frame introduced are someone else's
+    seen = False              # a framed line was blanked already (the default reading blanks only the first)
+    for line in text.split("\n"):
+        body = line.strip()
+        if framed:
+            if not body:
+                if seen:
+                    framed = False
+                kept.append("")
+                continue
+            if strict or not seen:
+                seen = True
+                kept.append(" ")
+                continue
+            framed = False
+        if body.startswith(">"):
+            kept.append(" ")
+            continue
+        chat = _chat_speaker(body)
+        if chat is not None and not chat[0]:
+            kept.append(" ")
+            framed, seen = not chat[1].strip(), False
+            continue
+        out = []
+        for segment in _SEGMENT.findall(line):
+            at = _reported_from(segment)
+            if at < 0:
+                out.append(segment)
+                continue
+            out.append(segment[:at] + " ")
+            if segment.rstrip().endswith(":") or segment[at:].rstrip().endswith(":"):
+                framed, seen = True, False
+            if strict:
+                break          # the rest of the line may still be theirs
+        line_out = "".join(out)
+        if strict and body.endswith(":") and not framed:
+            own_frame = _speaker(body[:-1]) == (True, False) and _REPORT_VERB.search(body)
+            framed, seen = not own_frame, False
+        kept.append(line_out)
+    return "\n".join(kept)
+
+
 def refers_back(text: str) -> bool:
     """Whether a turn reads as a reply to something just sent: short, or referring back to it. A position
     link (the owner's first turn after an outreach) needs this, so a long turn about something else that
@@ -410,6 +549,28 @@ class Reading:
     strains: List[str] = field(default_factory=list)
     reliefs: List[str] = field(default_factory=list)
     relieved: bool = False     # a relief that names nothing ("all good now")
+    # The instructions the reader could not attribute (a cue beside reported-speech markers): the model's to decide
+    # (``decided``). Until then, and when it cannot, the fallback stands: a stop or a pause is taken, a resume is
+    # not, unless it is a reply linked to an outreach and the strict reading finds it the owner's
+    # (``resume_if_linked``).
+    unsure: List[str] = field(default_factory=list)
+    resume_if_linked: bool = False
+
+    def decided(self, instruction: Optional[str]) -> None:
+        """Apply the model's typed decision on the unsure instructions: ``stop``, ``pause_today``, ``resume`` or
+        ``none`` settles each (taken when named, dropped otherwise). None (unavailable, unsure), or a decision
+        naming an instruction the reader never saw, leaves the fallback as it is."""
+        if instruction is None or not self.unsure or (instruction != "none" and instruction not in self.unsure):
+            return
+        for kind in self.unsure:
+            taken = instruction == kind
+            if kind == "stop" and not taken:
+                self.stop = self.stop_explicit = False
+            elif kind == "pause_today" and not taken:
+                self.pause_today = self.pause_explicit = False
+            elif kind == "resume":
+                self.resume = taken
+        self.unsure, self.resume_if_linked = [], False
 
     def reaction(self, about: Optional[Callable[[str], bool]] = None) -> Optional[str]:
         """The one reaction a linked outreach takes from this turn, strongest first. With ``about`` (whether a
@@ -453,14 +614,34 @@ def read(text: str, *, contacts: Iterable[str] = ()) -> Reading:
     reading = Reading()
     if not body.strip():
         return reading
-    reading.stop_explicit = bool(_find(body, STOP_CUES, contacts))
-    reading.stop = reading.stop_explicit or bool(_find(body, BARE_STOP_CUES, contacts))
-    reading.resume = bool(_find(body, RESUME_CUES, contacts))
-    reading.pause_explicit = bool(_find(body, PAUSE_TODAY_CUES, contacts))
-    reading.pause_today = reading.pause_explicit or bool(_find(body, VAGUE_PAUSE_CUES, contacts))
+    # A stop, a resume or a pause is an instruction to the assistant, the owner's own. Without reported-speech
+    # markers the turn is theirs and the cues decide (the fast path). Beside a marker, whose instruction it is
+    # stays unsure (``unsure``, the model's to decide): meanwhile a stop or a pause is taken, a resume is not.
+    own = own_words(body)
+    raw = body.translate(_TYPOGRAPHIC)
+    reported = reported_speech(body)
+    reading.stop_explicit = bool(_find(own, STOP_CUES, contacts))
+    reading.stop = reading.stop_explicit or bool(_find(own, BARE_STOP_CUES, contacts))
+    strict_resume = bool(_find(own_words(body, strict=True), RESUME_CUES, contacts))
+    reading.resume = strict_resume
+    reading.pause_explicit = bool(_find(own, PAUSE_TODAY_CUES, contacts))
+    reading.pause_today = reading.pause_explicit or bool(_find(own, VAGUE_PAUSE_CUES, contacts))
+    said_stop = bool(_find(raw, STOP_CUES, contacts)) or any(
+        phrase.casefold().startswith(("stop sending", "quit sending")) and (target is None or target.casefold() in _GENERIC)
+        for phrase, target, _ in _hits(raw, NEGATIVE_CUES, contacts))
+    if reported and said_stop:
+        reading.unsure.append("stop")
+        reading.stop = reading.stop_explicit = True
+    if reported and _find(raw, (*PAUSE_TODAY_CUES, *VAGUE_PAUSE_CUES), contacts):
+        reading.unsure.append("pause_today")
+        reading.pause_explicit = reading.pause_explicit or bool(_find(raw, PAUSE_TODAY_CUES, contacts))
+        reading.pause_today = True
+    if reported and _find(raw, RESUME_CUES, contacts):
+        reading.unsure.append("resume")
+        reading.resume, reading.resume_if_linked = False, strict_resume
     reading.not_now = bool(_find(body, NOT_NOW_CUES, contacts))
     negatives = _hits(body, NEGATIVE_CUES, contacts)
-    stop_sending = [target for phrase, target, _ in negatives
+    stop_sending = [target for phrase, target, _ in _hits(own, NEGATIVE_CUES, contacts)
                     if phrase.casefold().startswith(("stop sending", "quit sending"))
                     and (target is None or target.casefold() in _GENERIC)]
     if stop_sending:
@@ -525,5 +706,6 @@ def resume(text: str) -> bool:
 
 
 __all__ = ["Cue", "MAX_OBJECT_WORDS", "REPLY_WORDS", "Reading", "classify_reaction", "clean_object", "content_terms",
-           "declared_interest", "disinterest", "elsewhere", "mentions_contact", "pause_today", "read", "refers_back",
+           "declared_interest", "disinterest", "elsewhere", "mentions_contact", "own_words", "pause_today", "read", "refers_back",
+           "reported_speech",
            "relief", "resume", "stop", "strain", "strip_prefix"]

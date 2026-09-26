@@ -277,7 +277,7 @@ async def test_a_contacts_own_turn_lists_and_moves_the_owners_obligation_to_them
     promise = _item("Send Sam the build recap", due_at=_iso(hours=5), counterpart="Sam")
     assert await extractor.process_one(_Router(_reply(promise))) is True
     row, = _open(cstore, OWNER)
-    assert row["metadata"] == {"counterpart": "Sam"}
+    assert row["metadata"] == {"counterpart": "Sam", "source_turn": "t-1"}
     _turn(ledger, "t-2", "Could I have the recap by noon instead of five?", assistant="I'll let them know.",
           person=SAM, session="sms:c-sam", channel="sms:+15550100")
     earlier = _iso(hours=1)

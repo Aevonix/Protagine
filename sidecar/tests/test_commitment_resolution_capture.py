@@ -401,7 +401,7 @@ async def test_a_heads_up_asked_for_travels_as_metadata_on_the_one_item(tmp_path
     router = _Router(_reply({**_item("Send Kim the invoice", due_at=due), "metadata": {"heads_up_at": warn}}))
     assert await extractor.process_one(router) is True
     row, = _open(cstore)
-    assert row["due_at"] == due and row["metadata"] == {"heads_up_at": warn}
+    assert row["due_at"] == due and row["metadata"] == {"heads_up_at": warn, "source_turn": "t-h"}
     assert heads_up_at(row) == datetime.fromisoformat(warn)
     # The other spelling the drive reads: minutes before the deadline.
     other = record_items([{**_item("Call the bank", due_at=due), "metadata": {"lead_minutes": 15}}],

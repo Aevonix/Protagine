@@ -471,3 +471,86 @@ async def test_a_finding_whose_message_expired_unsent_is_listed_once(make):
     await fx.tick()
     digest, = [p["text"] for p in fx.sent if p["type"] == "digest"]
     assert digest.count("QX-41") == 1
+
+
+@pytest.mark.parametrize("summary", [
+    "No changes to report about tidal energy.",
+    "Research on tidal energy is complete.",
+    "finding: I looked into tidal energy again; there is nothing I could add.",
+    "Tidal energy: no updates this week. Research done.",
+])
+def test_a_report_that_says_nothing_beyond_its_topic_and_the_research_itself_is_empty(summary):
+    finding = outreach.Finding(id="f-1", type="research", topic="tidal energy", slug="tidal-energy",
+                               summary=summary, completed_at=T0)
+    assert outreach.settle(finding, outreach.OutreachInputs(now=T0, owner_id=OWNER)) == "empty"
+
+
+def test_a_report_with_a_fact_is_a_finding():
+    for summary in (report("QX-41", "tidal energy"), "Tidal energy prices fell 4% in the auction.",
+                    "No changes to the tidal energy tariff, but the Orkney site closes in May."):
+        finding = outreach.Finding(id="f-1", type="research", topic="tidal energy", slug="tidal-energy",
+                                   summary=summary, completed_at=T0)
+        assert outreach.settle(finding, outreach.OutreachInputs(now=T0, owner_id=OWNER)) is None, summary
+
+
+# -- round 2: whether a report is a finding is a typed decision; the uncertain ones go to the digest ----------
+
+def _settled(summary, topic="tidal energy"):
+    finding = outreach.Finding(id="f-1", type="research", topic=topic, slug=topic.replace(" ", "-"),
+                               summary=summary, completed_at=T0)
+    return outreach.settle(finding, outreach.OutreachInputs(now=T0, owner_id=OWNER))
+
+
+@pytest.mark.parametrize("summary", [
+    "Research into tidal energy has been completed successfully.", "Tidal energy: no significant developments.",
+    "Nil to add.", "Nothing significant to add on tidal energy.", "Tidal energy remains quiet.",
+    "The tidal energy search is done; no new developments.", "Tidal energy: all quiet this week.",
+    "My review of tidal energy sources finished without anything notable.", "Research complete. Nil further.",
+])
+def test_a_null_report_in_other_words_is_empty(summary):
+    """Re-check F9: null reports outside the round-1 word set."""
+    assert _settled(summary) == "empty", summary
+
+
+@pytest.mark.parametrize("summary, topic", [
+    ("The Orkney tidal energy project was completed this week.", "Orkney tidal energy project"),
+    ("The Orkney tidal energy project was approved on Monday.", "Orkney tidal energy project"),
+    ("The Orkney tidal energy project launched today.", "Orkney tidal energy project"),
+    ("The Orkney tidal energy project was cancelled.", "Orkney tidal energy project"),
+    ("Tidal energy prices fell 4% in the auction.", "tidal energy"),
+    ("Research on tidal energy found the Orkney array doubled its output.", "tidal energy"),
+])
+def test_a_milestone_of_the_topic_itself_is_a_finding(summary, topic):
+    """Re-check new P2: the topic's own milestone (completed, approved, launched) is news, never an empty report."""
+    assert _settled(summary, topic) is None, summary
+
+
+@pytest.mark.parametrize("summary", ["Tidal energy: steady.", "Tidal energy is trending.",
+                                     "Research into tidal energy: mixed."])
+def test_a_report_the_rule_cannot_decide_is_uncertain(summary):
+    assert _settled(summary) == "uncertain", summary
+
+
+async def test_an_uncertain_report_goes_to_the_digest_never_as_a_message(make):
+    fx = make()
+    fx.owner_spoke()
+    fx.mind.add_interest("tidal energy", by="turn:t-1")
+    done = await fx.research("tidal energy", "finding: Tidal energy: steady.")
+    await fx.tick()
+    assert fx.outreach_rows("outreach_finding") == []
+    assert fx.store.get(done.id).result_metadata["outreach"]["state"] == "digest"
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.tick()
+    digest, = [p["text"] for p in fx.sent if p["type"] == "digest"]
+    assert "steady" in digest
+
+
+@pytest.mark.parametrize("summary", ["finding: Nil to add.", "finding: Tidal energy: no significant developments."])
+async def test_an_empty_report_is_never_sent_nor_listed(make, summary):
+    fx = make()
+    fx.owner_spoke()
+    fx.mind.add_interest("tidal energy", by="turn:t-1")
+    done = await fx.research("tidal energy", summary)
+    await fx.tick()
+    assert fx.outreach_rows("outreach_finding") == []
+    assert fx.store.get(done.id).result_metadata["outreach"]["state"] == "empty"

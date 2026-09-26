@@ -4,8 +4,9 @@ Architecture 3.1 and 4.6. After every person-scoped turn the projection worker
 judges the turn on the sidecar router (no tools, no private endpoint) and
 records durable commitments and immediate owed deliverables in the commitment
 store, on by default whenever a router is configured. The dedupe against
-open and recently rejected items is enforced in code, not only in the prompt:
-a repeated mention of an open item is never a second item. An item withdrawn
+open and recently rejected items is enforced in code, not only in the prompt,
+and is exact: an open item repeated as the same item (kind, parties, deadline,
+wording) is never a second item, and nothing is merged into another. An item withdrawn
 or dismissed as obsolete is only shown to the model as closed, so a clear fresh
 commitment to it can be recorded again.
 
@@ -54,6 +55,7 @@ import logging
 import math
 import re
 import time
+import unicodedata
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -94,15 +96,15 @@ POLL_SECONDS = 0.1
 
 SYSTEM = (
     "You audit ONE finished assistant turn and extract any follow-up worth recording, as STRICT JSON. You get what "
-    "the person SAID and what the assistant REPLIED, the recent conversation before it, and the person's "
+    "the person SAID and what the assistant REPLIED, the conversation before it, and the person's "
     "already-recorded OPEN items, numbered. The Speaker line says who the person is: the assistant's owner, or a "
     "contact (with the contact's id). Decide only from the literal words.\n\n"
     "Record a NEW item (action \"create\", target null) only when the turn clearly contains one of:\n"
     "1. A DURABLE COMMITMENT: an explicit promise, obligation, or reminder to do something later (\"remind me to "
     "X\", \"I'll get back to you on X\", \"I'll send you X by 3pm\", \"follow up on X by Friday\"). When all that is "
     "owed then is a word to the person (a reminder, a nudge, a word if something has not happened), metadata is "
-    "{\"kind\":\"reminder\"}: a message when it falls due, never a task. Work the assistant promised (\"I'll "
-    "look up X and tell you by 5\") is no reminder.\n"
+    "{\"kind\":\"reminder\"}: a message when it falls due, never a task. Work the assistant promised is none; one to find "
+    "out and report (\"I'll look up X and tell you by 5\") is {\"kind\":\"answer\"}.\n"
     "2. An IMMEDIATE OWED DELIVERABLE: the person asked to be SENT something themselves through a channel the reply "
     "did NOT satisfy (email it, text it to their other number, send it later) AND the content to send is in the "
     "exchange. A chat reply already IS a message to the person, so a plain \"text me\" is satisfied: record one "
@@ -245,7 +247,18 @@ SYSTEM = (
     "They said: Still working on the recap. | Assistant replied: Take your time.\n"
     "[]   (a stall on a listed item changes nothing)")
 # The HOLD rule above is for a listed item. A first mention the person wants no reminder about is held from the
-# start: open, with no time, so nothing is ever said about it unasked (a later time reinstates it).
+# start: open, with no time, so nothing is ever said about it unasked (a later time reinstates it). ``record_items``
+# marks it held as a listed hold is marked (``metadata.reschedule`` with no date), so nothing that leaves a
+# held item alone (an offer of help about an open loop, ``outreach.open_loops``) takes it for an undated one.
+_NO_REMINDERS = re.compile(r"\b(?:no|without|skip(?:\s+the)?)\s+(?:more\s+)?(?:reminders?|pings?|nudges?)\b"
+                           r"|\b(?:don't|dont|do\s+not|no\s+need\s+to|never|stop)\s+"
+                           r"(?:remind(?:ing)?|ping(?:ing)?|nudg(?:e|ing)|chas(?:e|ing))\s+me\b", re.IGNORECASE)
+_APOSTROPHE_FORMS = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u2032": "'", "`": "'"})
+
+
+def asks_no_reminders(text: Any) -> bool:
+    """Whether the words ask for no reminders (a hold), whatever apostrophe they are typed with."""
+    return bool(_NO_REMINDERS.search(str(text or "").translate(_APOSTROPHE_FORMS)))
 
 ITEM_SCHEMA = {
     "type": "object",
@@ -416,7 +429,8 @@ def _local(turn_time: str, timezone_name: str) -> str:
 
 def build_prompt(*, user_message: str, assistant_message: str, conversation_text: str,
                  existing: List[Dict[str, Any]], rejections: List[Dict[str, Any]], turn_time: str = "",
-                 timezone_name: str = "", speaker: str = "", interests: List[str] = ()) -> str:
+                 timezone_name: str = "", speaker: str = "", interests: List[str] = (),
+                 replying_to: Optional[Dict[str, str]] = None) -> str:
     parts = []
     if turn_time:
         local = _local(turn_time, timezone_name)
@@ -428,6 +442,12 @@ def build_prompt(*, user_message: str, assistant_message: str, conversation_text
     parts.append("This turn, verbatim:\n"
                  f"  They said: {user_message}\n"
                  f"  Assistant replied: {assistant_message}\n")
+    if replying_to:
+        parts.append(f"\nThis turn replies to the assistant's own earlier message about \"{replying_to.get('topic')}\": "
+                     f"\"{replying_to.get('text')}\". Mark only the assistant's promise to follow THAT message up "
+                     "(find out more about what it said and report back) with metadata "
+                     "{\"kind\":\"answer\",\"follows_up\":true}. Any other request of the turn, about the same "
+                     "subject included, is its own item without follows_up.\n")
     if existing:
         parts.append("\nAlready-recorded OPEN items for this person, numbered (a change to one of these is an "
                      "action with its number as target, never a new item; mentioning one again is NOT an item):")
@@ -575,151 +595,57 @@ def _for_third_party(stated: Optional[Dict[str, Any]], counterpart: Any, person_
         "kind": "notice", "recipient": other, "grant": "owner"}
 
 
-# One matter, one item. On the owner's own turn, a word the owner asks for about an item (``kind: reminder``)
-# is that item's own word only when it is the same word to the same person: the item's own word at its
-# deadline is a reminder to the owner (not a message to someone else and not work the assistant owes), that
-# deadline is still ahead, the word adds no matter of its own, and it falls at the deadline (the same word),
-# before it where the item has no heads-up yet (its heads-up), or within ``FOLD_AFTER`` after it at no time
-# the owner named ("if it passes, nudge me"). Anything else stays its own item: a word the owner asked for is
-# never dropped, moved to a time they did not ask for, or turned into a word to someone else.
+# A new item is a duplicate only when an open item is the same item exactly (``_identity``): the same kind of
+# action (a reminder, a check-in, a notice, a deliverable or a plain item), the same obligor, counterpart and
+# recipient, the same deadline and the same description, compared after only Unicode NFC normalisation,
+# casefolding and whitespace collapsing. Nothing is ever merged into another item: a heads-up is what the
+# extractor states on the item itself (``metadata.heads_up_at``). A duplicate row is acceptable; a lost one is not.
 REMINDER_KIND = "reminder"
-SAME_WORD = timedelta(minutes=1)
-FOLD_AFTER = timedelta(minutes=30)
-# Words that carry no matter of their own: a reminder about X and X share X, not these (nor how X stands).
-_MATTER_STOP = frozenset("""
-a an and are as at be been before but by can did do does for from get gets had has have her here him his
-how i if in into is it its let me my no not now of off on or our out she so than that the their them then
-there these they this to up us was we were what when where which who why will with would you your yourself
-about owner assistant someone something again later soon today tomorrow tonight time minutes minute hours hour
-days day week due deadline pass passes passed lapse lapses lapsed goes gone quiet word yet still
-send sends sent give gives check checks remind reminds reminder tell tells ask asks chase chases nudge nudges
-flag flags confirm confirms confirmed deliver delivers know hear heard make sure
-arrive arrives arrived come comes came turn turns turned show shows showed reply replies replied
-""".split())
 
 
-def _parties_of(item: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> set:
-    """The named third parties of an item or a stored row (never the owner or the assistant)."""
-    from protagine.commitments.parties import ASSISTANT, OWNER, party
+def _plain(value: Any) -> str:
+    return " ".join(unicodedata.normalize("NFC", str(value or "").casefold()).split())
+
+
+IDENTITY_KEYS = ("kind", "obligor", "counterpart", "recipient")
+
+
+def _matter(description: Any, metadata: Any) -> tuple:
+    """What an item is, its deadline aside: its kind, obligor, counterpart and recipient, and its description
+    (``_plain``)."""
     metadata = metadata if isinstance(metadata, dict) else {}
-    values = (item.get("counterpart"), item.get("obligor"), metadata.get("recipient"), metadata.get("counterpart"),
-              metadata.get("obligor"))
-    return {name for name in (party(value) for value in values) if name not in (None, OWNER, ASSISTANT)}
+    return (*(_plain(metadata.get(key)) for key in IDENTITY_KEYS), _plain(description))
 
 
-def _matter_words(description: Any, parties: set) -> set:
-    names = {word for name in parties for word in re.findall(r"[^\W_]+", name)}
-    return {word for word in re.findall(r"[^\W_]+", str(description or "").casefold())
-            if len(word) >= 3 and not word.isdigit() and word not in _MATTER_STOP and word not in names}
-
-
-def _adds_no_matter(word: tuple, item: tuple) -> bool:
-    """A word's (description, parties) is about an item's matter and adds none of its own: a party of one is
-    a party of, or named by, the other, and every matter word of the word is one of the item's. "Remind me to
-    pay p-41 the floor plan deposit" adds the deposit to "Send p-41 the floor plan": two matters."""
-    (word_text, word_parties), (item_text, item_parties) = word, item
-    named = (bool(word_parties & item_parties) or any(_names(name, item_text) for name in word_parties)
-             or any(_names(name, word_text) for name in item_parties))
-    both = word_parties | item_parties
-    mine = _matter_words(word_text, both)
-    return named and bool(mine) and mine <= _matter_words(item_text, both)
-
-
-def _word_to_owner(kind: Any, obligor: Any, source_type: Any) -> bool:
-    """True when an item's own word at its deadline is a reminder to the owner (the duty drive's rule): a
-    reminder, or an item of no kind that is not the assistant's work. A message to someone else, a
-    deliverable, a cadence and the assistant's own work (a task at its deadline) are not."""
-    from protagine.commitments.parties import ASSISTANT, party
-    if kind == REMINDER_KIND:
-        return True
-    if kind:
-        return False
-    if not str(obligor or "").strip():
-        return source_type == "cognition"      # a row without an obligor: the speaker's own, or the agent's work
-    return party(obligor) != ASSISTANT
-
-
-def _folds(prepared: Dict[int, Any], listed: List[Dict[str, Any]], *, owner_turn: bool,
-           turn_time: Optional[datetime], owner_text: Optional[str], person_id: str) -> Dict[int, tuple]:
-    """For each of the turn's reminders that is another item's own word: ``(where, into, how)``, with
-    ``where`` ``"turn"`` (``into`` the index of an item of the same turn: a substantive one first, else an
-    earlier reminder) or ``"listed"`` (``into`` an open row the prompt listed), and ``how`` ``"same"`` (the
-    word at the deadline), ``"heads_up"`` (a word before it, becoming its heads-up) or ``"after"``."""
-    if not owner_turn or turn_time is None:
-        return {}
-    now = turn_time.astimezone(timezone.utc)
-    facts, targets = {}, []
-    for index, entry in prepared.items():
-        if entry is None:
-            continue
-        item, stated = entry[0], entry[1]
-        kind = stated.get("kind") or None
-        facts[index] = (str(item.get("description") or ""), _parties_of(item, stated), kind,
-                        _utc(item.get("due_at")), _due_text(item, owner_text))
-        if _word_to_owner(kind, item.get("obligor"), item.get("source_type")):
-            targets.append(("turn", index, facts[index][:2], kind, facts[index][3], _warns(stated), True))
-    for row in listed:
-        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        kind = metadata.get("kind") or None
-        if _word_to_owner(kind, metadata.get("obligor"), row.get("source_type")):
-            targets.append(("listed", row, (str(row.get("description") or ""), _parties_of({}, metadata)), kind,
-                            _utc(row.get("due_at")), _warns(metadata), row.get("person_id") == person_id))
-    targets.sort(key=lambda target: (target[0] == "listed", target[3] == REMINDER_KIND))
-    folds: Dict[int, tuple] = {}
-    warned: set = set()
-    for index, (text, parties, kind, due, own_time) in facts.items():
-        if kind != REMINDER_KIND or due is None:
-            continue
-        for where, into, matter, other_kind, other_due, warns, own_row in targets:
-            key = (where, into if where == "turn" else into.get("id"))
-            if where == "turn" and (into == index or into in folds
-                                    or (other_kind == REMINDER_KIND and into > index)):
-                continue
-            if other_due is None or other_due <= now or not _adds_no_matter((text, parties), matter):
-                continue
-            if abs(due - other_due) <= SAME_WORD:
-                how = "same"
-            elif due < other_due:
-                if warns or key in warned or not own_row:
-                    continue             # its heads-up is taken, or would go to someone else: a word of its own
-                how = "heads_up"
-                warned.add(key)
-            elif own_time is None and due - other_due <= FOLD_AFTER:
-                how = "after"
-            else:
-                continue
-            folds[index] = (where, into, how)
-            break
-    return folds
-
-
-_WORDING_FILLER = frozenset("a an the to for of on by with and my your their his her its our".split())
-
-
-def _wording(text: Any) -> frozenset:
-    from protagine.commitments.store import _normalize_desc
-    return frozenset(word for word in _normalize_desc(str(text or "")).split() if word not in _WORDING_FILLER)
-
-
-def _restated(listed: List[Dict[str, Any]], norm: str, due_at: Any) -> Optional[Dict[str, Any]]:
-    """The one listed open item a new item restates with a different deadline, or None. A restatement has
-    the item's own wording (its words, articles and prepositions aside); a similar item (another number,
-    another document, one more word: "the Q4 report", "the lease renewal form") is never one, and the
-    listed deadline stays (the duplicate check judges the new item as before)."""
+def _identity(description: Any, due_at: Any, metadata: Any) -> tuple:
+    """The item exactly (``_matter``) and its deadline. The whole description counts, never a prefix: the
+    row stores it whole, so two items differing only past any length are two items."""
     due = _utc(due_at)
-    wording = _wording(norm)
-    if due is None or not wording:
+    return (*_matter(description, metadata), due.isoformat() if due is not None else None)
+
+
+def _restated(listed: List[Dict[str, Any]], description: Any, due_at: Any,
+              metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The one listed open item a new item restates with a different deadline, or None. A restatement is the
+    same item exactly (``_matter``: the identity the duplicate check uses, its deadline aside); any other
+    wording, kind or party is another item, recorded as its own row, and the listed deadline stays."""
+    due = _utc(due_at)
+    matter = _matter(description, metadata)
+    if due is None or not matter[-1]:
         return None
-    alike = [row for row in listed if _wording(row.get("description")) == wording]
+    alike = [row for row in listed if _matter(row.get("description"), row.get("metadata")) == matter]
     if len(alike) != 1:
         return None
     listed_due = _utc(alike[0].get("due_at"))
     return alike[0] if listed_due is not None and listed_due != due else None
 
 
-def _warns(metadata: Optional[Dict[str, Any]]) -> bool:
-    metadata = metadata if isinstance(metadata, dict) else {}
-    return metadata.get("heads_up_at") is not None or metadata.get("lead_minutes") is not None
+def _expectation(row: Dict[str, Any]) -> Dict[str, Any]:
+    """The compare-and-set a write on a listed row carries: its description, deadline, kind, obligor,
+    counterpart and recipient as listed. Any of them changed since is a conflict (rerun), never a move."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    return {"description": row.get("description"), "due_at": row.get("due_at"),
+            "metadata": {key: metadata.get(key) for key in IDENTITY_KEYS}}
 
 
 DUE_TEXT_CHARS = 120
@@ -950,8 +876,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     without a time is a hold: the deadline is cleared, the row stays open; an
     absolute heads-up moves with the deadline (``_heads_up_patch``). Actions
     whose target or wording does not fit are ignored, not guessed. Every
-    action is written against the listed description and deadline
-    (``expect``); a row that changed since is a ``conflict``, counted for the
+    action is written against the listed description, deadline, kind, obligor, counterpart and
+    recipient (``_expectation``); a row that changed since is a ``conflict``, counted for the
     caller to rerun the extraction, and left as the newer writer left it.
     A message to a third party (case 3) is stored through ``message_metadata``:
     the owner's grant only when ``person_id`` is ``owner_id`` and the owner's words asking for it were
@@ -967,34 +893,31 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     ``assistant_names`` the assistant's, and ``speaker_names`` the turn's own person's (one person).
     ``conversation_text`` is the recent conversation the extractor saw: with the listed items, what the
     owner's words asking for a message may refer back to (``request_problem``).
-    One matter is one item (``_folds``): on the owner's turn, a reminder that is the same word to the owner
-    as an item of the same turn or a listed open item gives is that item's own, counted in ``folded``; one
-    due before the item's deadline is its heads-up (written compare-and-set on an open row of the owner's).
-    A new item with the wording of one listed item and a different deadline (``_restated``) moves it,
-    compare-and-set, as a ``reschedule`` would.
+    A new item is skipped as a duplicate only when an open item is the same item exactly (``_identity``),
+    decided by the store over the person's open rows inside the insert's own transaction (never from
+    ``existing``, which may be stale), or when its description is exactly (``_plain``) that of an extraction rejected as invalid or a
+    duplicate. Nothing is merged into another item. A new item that is one listed item exactly, its
+    deadline aside (``_restated``), with a different deadline moves it, compare-and-set, as a
+    ``reschedule`` would; anything else is a new row.
     """
     from protagine.commitments.parties import ASSISTANT_KINDS, between_others
-    from protagine.commitments.store import CommitmentConflict, _normalize_desc, _similar_desc
+    from protagine.commitments.store import CommitmentConflict
     items = [_with_defaults(item) for item in items if isinstance(item, dict)]
     listed = list(existing[:OPEN_ITEMS_LISTED])
-    known = [(_normalize_desc(c.get("description") or ""), _effect(c.get("metadata"))) for c in existing]
     # A rejected extraction (invalid, duplicate) is a hard block on the same wording; an item
     # withdrawn or dismissed as obsolete is shown to the model as a closed item but a fresh, clear
     # commitment to it may be recorded again.
-    known += [(_normalize_desc(r.get("description") or ""), _effect(r.get("metadata")))
-              for r in rejections if r.get("outcome") != "obsolete"]
-    known = [k for k in known if k[0]]
+    blocked = {_plain(r.get("description")) for r in rejections if r.get("outcome") != "obsolete"} - {""}
     note = f"turn:{turn_id}" if turn_id else source_context
     created: List[str] = []
     updated: List[str] = []
     resolved: List[str] = []
-    skipped = ignored = conflicts = others = reminders = folded = 0
+    skipped = ignored = conflicts = others = reminders = 0
     owners = [name for name in (owner_id, *owner_names) if name]
     owner_turn = bool(owner_id) and person_id == owner_id
     referents = _referents(conversation_text, listed)
     own_names = [*speaker_names, *(owners if owner_turn else ())]
-    # Every new item as it will be recorded (``None``: a relay the reply passes on), then which of them is
-    # another item's own word (``_folds``); the loop below applies both in the items' order.
+    # Every new item as it will be recorded (``None``: a relay the reply passes on).
     prepared: Dict[int, Any] = {}
     for index, item in enumerate(items):
         if str(item.get("action") or "create").strip().lower() != "create" or not str(item.get("description")
@@ -1014,11 +937,6 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
                 item = owner_reminder(item, stated, owners)
                 stated, converted = dict(item.get("metadata") or {}), True
         prepared[index] = (item, stated, confirmed, converted)
-    folds = _folds(prepared, listed, owner_turn=owner_turn, turn_time=turn_time, owner_text=owner_text,
-                   person_id=person_id)
-    for index, (where, into, how) in folds.items():
-        if where == "turn" and how == "heads_up":        # a word before the deadline is its heads-up
-            prepared[into][1]["heads_up_at"] = _utc(prepared[index][0].get("due_at")).isoformat()
     for index, item in enumerate(items):
         description = str(item.get("description") or "").strip()
         action = str(item.get("action") or "create").strip().lower()
@@ -1029,7 +947,7 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             if target is None:
                 ignored += 1
                 continue
-            expect = {"description": target.get("description"), "due_at": target.get("due_at")}
+            expect = _expectation(target)
             try:
                 if action == "reschedule":
                     due_at = item.get("due_at") or None
@@ -1046,9 +964,6 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
                                                    note=note, expect=expect)
                     if row is not None:
                         resolved.append(row["id"])
-                    # A closed row no longer blocks a fresh item worded like it.
-                    closed = _normalize_desc(target.get("description") or "")
-                    known = [k for k in known if k[0] != closed]
             except CommitmentConflict:
                 logger.info("commitment %s skipped: the row changed since it was listed", action)
                 conflicts += 1
@@ -1063,42 +978,38 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             continue
         item, stated, confirmed, converted = prepared[index]
         reminders += int(converted)
-        if index in folds:
-            folded += 1
-            where, row, how = folds[index]
-            due = _utc(item.get("due_at"))
-            if where == "listed" and how == "heads_up":
-                # A word before an open item's deadline is its heads-up, written against what was listed.
-                try:
-                    changed = commitment_store.update(row["id"], metadata={"heads_up_at": due.isoformat()},
-                                                      expect={"description": row.get("description"),
-                                                              "due_at": row.get("due_at")})
-                    if changed is not None:
-                        updated.append(changed["id"])
-                except CommitmentConflict:
-                    logger.info("commitment heads-up skipped: the row changed since it was listed")
-                    conflicts += 1
-            continue
         if (str((stated or {}).get("kind") or "") not in ASSISTANT_KINDS
                 and between_others(item.get("obligor"), item.get("counterpart"), owner_names=owners,
                                    assistant_names=assistant_names, same=speaker_names)):
             logger.info("commitment candidate dropped for %s: an obligation between two other people", person_id)
             others += 1
             continue
-        norm = _normalize_desc(description)
-        effect = ("message", _words(stated.get("recipient"))) if confirmed else ("word",)
-        again = None if confirmed else _restated(
-            [row for row in listed if row.get("id") not in {*updated, *resolved}], norm, item.get("due_at"))
+        metadata = message_metadata(stated, owner_turn=owner_turn, turn_text=owner_text,
+                                    description=description, confirmed=confirmed)
+        if metadata is not None:
+            for field in ("counterpart", "obligor"):
+                value = str(item.get(field) or "").strip()[:120]
+                if value:
+                    metadata[field] = value
+            if _due_text(item, owner_text):
+                metadata["due_text"] = _due_text(item, owner_text)
+            if turn_id:
+                metadata["source_turn"] = str(turn_id)    # the turn it came from (a follow-up keeps only its own)
+            if not item.get("due_at") and owner_text and asks_no_reminders(owner_text):
+                # Held from its first mention: undated because the person wants no word about it.
+                metadata["reschedule"] = {"from": None, "by": "conversation", "note": note, "hold": "first_mention"}
+        again = None if confirmed or metadata is None else _restated(
+            [row for row in listed if row.get("id") not in {*updated, *resolved}], description,
+            item.get("due_at"), metadata)
         if again is not None:
             # The person restating a listed item with a new time moves it, written against what was listed.
             due_at = _utc(item.get("due_at")).isoformat()
-            metadata = {"reschedule": {"from": again.get("due_at"), "by": "conversation", "note": note},
-                        "due_text": _due_text(item, owner_text)}
-            metadata.update(_heads_up_patch(again, due_at, None))
+            restate = {"reschedule": {"from": again.get("due_at"), "by": "conversation", "note": note},
+                       "due_text": _due_text(item, owner_text)}
+            restate.update(_heads_up_patch(again, due_at, None))
             try:
-                row = commitment_store.update(again["id"], due_at=due_at, metadata=metadata,
-                                              expect={"description": again.get("description"),
-                                                      "due_at": again.get("due_at")})
+                row = commitment_store.update(again["id"], due_at=due_at, metadata=restate,
+                                              expect=_expectation(again))
                 if row is not None:
                     updated.append(row["id"])
             except CommitmentConflict:
@@ -1108,26 +1019,21 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
                 logger.debug("commitment restatement skipped (%s)", type(error).__name__)
                 ignored += 1
             continue
-        # A message the owner asked for is its own action: only a message to the same recipient worded
-        # alike repeats it, never the promise it chases ("Chase p-05 for the site photos" beside "p-05
-        # sends the site photos"). Anything else is judged against every open item, as the store does.
-        if any(_similar_desc(norm, wording) for wording, other in known if not confirmed or other == effect):
+        if _plain(description) in blocked:
             skipped += 1
             continue
-        metadata = message_metadata(stated, owner_turn=owner_turn, turn_text=owner_text,
-                                    description=description, confirmed=confirmed)
         if metadata is None:
             ignored += 1       # a cadence only the owner sets, with whole minutes
             continue
-        for field in ("counterpart", "obligor"):
-            value = str(item.get(field) or "").strip()[:120]
-            if value:
-                metadata[field] = value
-        if _due_text(item, owner_text):
-            metadata["due_text"] = _due_text(item, owner_text)
+        this = _identity(description, item.get("due_at"), metadata)
         try:
+            # The only duplicate decision: the store's, over the person's open rows as they are now, in the
+            # insert's own transaction (the turn's listing may be stale).
             row = commitment_store.create(
-                person_id=person_id, description=description[:1000], dedupe=not confirmed, allow_overdue=True,
+                person_id=person_id, description=description,
+                dedupe=lambda other: _identity(other.get("description"), other.get("due_at"),
+                                               other.get("metadata")) == this,
+                allow_overdue=True,
                 due_at=(item.get("due_at") or None), priority=int(item["priority"]),
                 source_type=item["source_type"], source_context=source_context,
                 metadata=metadata or None)
@@ -1138,19 +1044,9 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             skipped += 1
         else:
             created.append(row.get("id"))
-        known.append((norm, effect))
     return {"created": created, "updated": updated, "resolved": resolved, "candidates": len(items),
             "skipped_duplicates": skipped, "ignored_actions": ignored, "conflicts": conflicts,
-            "between_others": others, "owner_reminders": reminders, "folded": folded}
-
-
-def _effect(metadata: Any) -> tuple:
-    """What an item does when it falls due, for the duplicate check: ``("message", recipient)`` for a
-    granted notice or check-in, ``("word",)`` for anything else."""
-    metadata = metadata if isinstance(metadata, dict) else {}
-    if metadata.get("kind") in MESSAGE_KINDS and metadata.get("grant") == "owner":
-        return ("message", _words(metadata.get("recipient")))
-    return ("word",)
+            "between_others": others, "owner_reminders": reminders}
 
 
 def _heads_up_patch(target: Dict[str, Any], new_due: Optional[str], stated: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1180,6 +1076,27 @@ def _heads_up_patch(target: Dict[str, Any], new_due: Optional[str], stated: Opti
 
 def _landed(result: Dict[str, Any]) -> int:
     return sum(len(result.get(key) or ()) for key in ("created", "updated", "resolved", "settled_interests"))
+
+
+# The kind of the assistant's promise to find something out and report it back (``mind.outreach.ANSWER_KIND``).
+ANSWER_KIND = "answer"
+
+
+def link_followups(items: List[Any], replying_to: Optional[Dict[str, str]]) -> List[Any]:
+    """The extractor's items with the one link capture records: ``metadata.outreach`` (the outreach's id) on an
+    answer the extractor marked as following up the outreach this turn replied to (``follows_up``), only when
+    the turn was linked to one. The model's own ``follows_up`` and ``outreach`` are never stored."""
+    for item in items:
+        metadata = item.get("metadata") if isinstance(item, dict) else None
+        if not isinstance(metadata, dict):
+            continue
+        metadata = dict(metadata)
+        marked = metadata.pop("follows_up", None) is True
+        metadata.pop("outreach", None)
+        if marked and replying_to and replying_to.get("id") and metadata.get("kind") == ANSWER_KIND:
+            metadata["outreach"] = str(replying_to["id"])
+        item["metadata"] = metadata
+    return items
 
 
 class CommitmentExtractor:
@@ -1464,6 +1381,17 @@ class CommitmentExtractor:
             return []
         return [str(topic) for topic in topics if str(topic or "").strip()][:OPEN_INTERESTS_LISTED]
 
+    def _outreach_replied(self, person_id: str, turn_id: str) -> Optional[Dict[str, str]]:
+        """The outreach the owner's turn replied to, as the running mind linked it (``Mind.outreach_replied``)."""
+        mind = self._mind(person_id)
+        lookup = getattr(mind, "outreach_replied", None) if mind is not None else None
+        try:
+            found = lookup(turn_id) if callable(lookup) else None
+        except Exception as error:
+            logger.debug("outreach link unavailable (%s)", type(error).__name__)
+            return None
+        return found if isinstance(found, dict) and found.get("id") else None
+
     def _settle_interests(self, items: List[Dict[str, Any]], *, existing: List[Dict[str, Any]],
                           interests: List[str], person_id: str, turn_id: str) -> tuple:
         """``(items left for record_items, interests settled)``: a ``complete`` (answered) or ``cancel`` (no
@@ -1607,9 +1535,10 @@ class CommitmentExtractor:
         return summary
 
     async def _run(self, job, router, commitments) -> Dict[str, Any]:
-        """Process one leased job; the ``record_items`` result, or {} when nothing landed. Cancelled at any wait (a
-        drain's budget, a shutdown), the job goes straight back, uncharged and claimable at once: ``_release``
-        changes only a job still leased to this attempt, so one already finished, retried or requeued stays so."""
+        """Process one leased job; the ``record_items`` result, or {} when nothing landed. A cancellation at any
+        await of the attempt (a drain's budget, a shutdown: during extraction, the request review or a name
+        lookup) hands the job straight back, uncharged and unleased (``_release``), so the person's later
+        captures are never held behind an abandoned lease."""
         try:
             return await self._attempt(job, router, commitments)
         except asyncio.CancelledError:
@@ -1631,6 +1560,7 @@ class CommitmentExtractor:
             existing = listed_first(await self._existing(commitments, person_id, speaker_names),
                                     f"{user_message}\n{assistant_message}")
             interests = self._open_interests(person_id)
+            replying_to = self._outreach_replied(person_id, job["turn_id"])
             rejections = commitments.recent_rejections(limit=6) or []
             from protagine.util.temporal import resolve_communication_timezone
             conversation = self._recent_turns(source)
@@ -1639,7 +1569,8 @@ class CommitmentExtractor:
                                   rejections=rejections,
                                   turn_time=str(source.get("occurred_at") or source.get("ingested_at") or ""),
                                   timezone_name=str(job.get("timezone") or resolve_communication_timezone()),
-                                  speaker=await self._speaker(person_id, speaker_names), interests=interests)
+                                  speaker=await self._speaker(person_id, speaker_names), interests=interests,
+                                  replying_to=replying_to)
             deadline = router.function_deadline_seconds(context={"task": TASK})
             if (isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)
                     or not 0 < deadline <= 600):
@@ -1654,8 +1585,9 @@ class CommitmentExtractor:
                 messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
                 context={"task": TASK, "allow_fallback": True, "max_output_tokens": OUTPUT_BUDGET_TOKENS,
                          "response_schema": RESPONSE_SCHEMA}), deadline + 5)
-            items, settled = self._settle_interests(parse_items(final_text(response)), existing=existing,
-                                                    interests=interests, person_id=person_id, turn_id=job["turn_id"])
+            items, settled = self._settle_interests(link_followups(parse_items(final_text(response)), replying_to),
+                                                    existing=existing, interests=interests, person_id=person_id,
+                                                    turn_id=job["turn_id"])
         except Exception as error:
             defect = _output_defect(error)
             logger.warning("commitment extraction deferred for %s (%s)", job["turn_id"], defect or type(error).__name__)

@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from protagine.initiatives.models import StoredInitiative
 
-from .audit import NOTICE_TYPES, _clip
+from .audit import NOTICE_TYPES, _clip, ask_line, outgoing_text
 from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def message_payload(row: StoredInitiative, *, owner_id: str | None) -> Dict[str,
         "recipient": recipient,
         "recipient_is_owner": bool(owner_id) and recipient == owner_id,
         "recipient_handles": list(context.get("recipient_handles") or []),
-        "text": context.get("text") or row.description,
+        "text": outgoing_text(row),
         "title": row.description,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
@@ -146,10 +146,17 @@ class Outbox:
             count += 1
         return count
 
-    def cancel_unsent(self, reason: str) -> int:
-        """The off switch: unsent entries are cancelled at once."""
-        count = 0
+    def cancel_unsent(self, reason: str, *, owed: Iterable[str] = ()) -> int:
+        """The off switch: unsent entries are cancelled at once, except a word owed to the owner (``owed``: a
+        task's report, a requested answer), which is its obligation's only word: it goes back to waiting
+        (deferred) and nothing sends it until the mind is back on and decides it again."""
+        count, owed = 0, set(owed)
         for row in self.store.intentions(status=["approved"], kind=["message"], limit=500):
+            if row.type in owed and (not row.entity_id or row.entity_id == self.owner_id):
+                self.store.transition(row.id, "proposed", action="deferred", decision="defer",
+                                      decision_reason=f"{reason}: owed to the owner, it waits for the mind",
+                                      at=self.clock())
+                continue
             self.store.transition(row.id, "cancelled", action="cancelled", outcome="cancelled",
                                   cancelled_at=self.clock(), cancelled_reason=reason, at=self.clock())
             count += 1
@@ -189,7 +196,7 @@ class Outbox:
             return None
         lines = ["I need your say on these before I act:"]
         for row in asks:
-            lines.append(f"- [{row.ask_code}] {_clip(row.description, 140)} ({row.decision_reason})")
+            lines.append(f"- {ask_line(row, reason=True)}")
         lines.append("Reply 'yes <code>' or 'no <code>'. Silence lets them expire.")
         stamp = self.clock().strftime("%Y%m%d%H%M")
         return self._owner_message(type="ask_notice", title=f"{len(asks)} open ask(s)", text="\n".join(lines),
@@ -230,7 +237,7 @@ class Outbox:
             heading = "Waiting for you" if level != "suggest" else "Suggested (reply 'yes <code>' to do one)"
             lines.append(f"{heading} ({len(asks)}):")
             for row in asks[:12]:
-                lines.append(f"- [{row.ask_code}] {_clip(row.description, 120)}")
+                lines.append(f"- {ask_line(row, limit=120)}")
         for row in suggestions or []:
             lines.append(f"- suggestion: {_clip(row.description, 120)}")
         if found:

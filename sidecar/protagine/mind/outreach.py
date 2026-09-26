@@ -33,7 +33,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .drives import slug as _slug, task_body
 from .rank import OUTREACH_ANSWER, OUTREACH_FOLLOWUP, Candidate
@@ -145,6 +145,7 @@ class Finding:
     completed_at: datetime
     requested_by: Optional[str] = None      # the outreach the owner answered with "dig deeper"
     bound_commitment: Optional[str] = None  # an assistant promise the answer keeps
+    decided: Optional[str] = None           # the model's typed decision on an undecided report (``substance``)
 
 
 @dataclass
@@ -214,6 +215,7 @@ class OutreachInputs:
     lessons: List[Any] = field(default_factory=list)           # owner-verified outreach lessons
     followups: List[Followup] = field(default_factory=list)
     seen: List[str] = field(default_factory=list)              # findings the digest listed or holds (30 days)
+    held: Dict[str, str] = field(default_factory=dict)         # commitment id -> a matter the owner holds
 
     def paused(self) -> bool:
         return self.paused_until is not None and self.now < self.paused_until
@@ -308,6 +310,7 @@ NULL_REPORT = re.compile(
     r"|findings?|information|papers?|items?|changes?|reports?|sources?|articles?)"
     r"|(?:found|turned\s+up|there\s+(?:is|was|were|are))\s+(?:nothing|no\s+(?:new|relevant|recent))"
     r"|(?:could|did|can|was|were)(?:n't|\s+not)\s+(?:find|able\s+to\s+find|turn\s+up|locate)\s+(?:anything|any)"
+    r"|without\s+(?:anything|any\s+(?:news|change|update|development)s?)"
     r"|no\s+results?|finding\s*[:=]\s*(?:none|nothing|n/?a|null|-)(?=\W|$))",
     re.IGNORECASE)
 REPEAT_OVERLAP = 0.8
@@ -324,11 +327,72 @@ def _sentences(text: str) -> List[str]:
     return [" ".join(part.split()) for part in _SENTENCE.split(str(text or "")) if part.strip()]
 
 
+# Whether a report's sentence is a finding is a typed decision (``substance``): FINDING, EMPTY or UNCERTAIN. The
+# reader decides the clear cases, clause by clause (a contrast, "but", "however", ";", splits a sentence): a clause
+# with no null marker and two content words or a number is a finding, as is a state the topic itself reached
+# (``EVENT_WORDS`` with the topic named: "the Orkney project was completed"); the research talking about itself
+# (``PROCESS_WORDS``) or a null marker alone says nothing. A null marker beside anything else ("nothing
+# groundbreaking, sadly"; "approved without any changes") is the ambiguous band, UNCERTAIN: the model's typed
+# decision (``decisions.report_substance``, ``Finding.decided``), and without it the digest's, never sent at once
+# nor discarded.
+FINDING, EMPTY, UNCERTAIN = "finding", "empty", "uncertain"
+PROCESS_WORDS = frozenset("""
+research researched researching report reports reported reporting finding findings search searched searching
+searches look looked looking checked check checking review reviewed reviewing scan scanned scanning monitoring
+monitored investigation investigated investigating dig digging sources source summary results result status
+found
+""".split())
+NULL_WORDS = frozenset("""
+nil nothing none quiet unchanged same remains remain remained significant notable noteworthy developments
+development news new updates update changes change changed further additional anything something everything
+relevant material major meaningful interesting successfully success without yet still more else add added
+""".split())
+NULL_MARKERS = frozenset("nil nothing none quiet unchanged remains remain remained without".split())
+EVENT_WORDS = frozenset("""
+complete completed completes done finished finish started starts launched launches approved approves opened opens
+closed closes cancelled canceled announced published released delayed postponed paused resumed awarded signed
+rejected
+""".split())
+CONNECTIVES = frozenset("""
+the and for with about into from was were are has have had been being any all its it's can could would will not
+this that these those there here today yesterday week month currently now time again got
+""".split())
+NO_SUBSTANCE = PROCESS_WORDS | NULL_WORDS | EVENT_WORDS | CONNECTIVES
+_LABEL = re.compile(r"^\s*(?:findings?|report|update|result|summary)\s*[:=-]\s*", re.IGNORECASE)
+
+
+_CONTRAST = re.compile(r"\s*(?:;|,?\s+(?:but|however|although|though|while|whereas|yet)\b,?|\s[-\u2013\u2014]{1,2}\s)\s*",
+                       re.IGNORECASE)
+_NULL_WORD = re.compile(r"\b(?:no|not|nothing|none|never|nil|without)\b|n't\b", re.IGNORECASE)
+
+
+def _clause(clause: str, topic: str) -> str:
+    """The reader's decision on one clause (see above)."""
+    null = bool(NULL_REPORT.search(clause) or _NULL_WORD.search(clause))
+    words, about = _tokens(NULL_REPORT.sub(" ", clause)), _tokens(topic)
+    content = words - about - NO_SUBSTANCE
+    process, event = bool(words & PROCESS_WORDS), bool(words & EVENT_WORDS and words & about)
+    null = null or bool(words & NULL_MARKERS)
+    if null:
+        return EMPTY if not content and (process or not event) else UNCERTAIN
+    if len(content) >= 2 or any(any(ch.isdigit() for ch in word) for word in content):
+        return FINDING
+    if event and not process:
+        return FINDING                  # the topic's own milestone, a stray word or none beside it
+    return UNCERTAIN if content else EMPTY
+
+
+def substance(sentence: str, topic: str) -> str:
+    """The reader's typed decision on one sentence of a report: ``FINDING`` when a clause is one, else
+    ``UNCERTAIN`` when a clause is undecided, else ``EMPTY`` (see above)."""
+    verdicts = {_clause(clause, topic) for clause in _CONTRAST.split(_LABEL.sub("", str(sentence or "")))
+                if clause.strip()}
+    return FINDING if FINDING in verdicts else UNCERTAIN if UNCERTAIN in verdicts else EMPTY
+
+
 def says_something(sentence: str, topic: str) -> bool:
-    """A sentence that reports something: not a null report, and naming more than the topic itself."""
-    if NULL_REPORT.search(sentence):
-        return False
-    return bool(_tokens(sentence) - _tokens(topic) - {"finding", "findings", "report", "update"})
+    """A sentence that is not certainly empty (``substance``): a finding, or one the rule cannot decide."""
+    return substance(sentence, topic) != EMPTY
 
 
 def repeated(text: str, inputs: OutreachInputs) -> bool:
@@ -344,14 +408,32 @@ def repeated(text: str, inputs: OutreachInputs) -> bool:
 
 
 def settle(finding: Finding, inputs: OutreachInputs) -> Optional[str]:
-    """``empty`` for a report that found nothing, ``repeat`` for one already shared, else None. An answer the
-    owner asked for is never settled here: "I looked and found nothing more" is its honest answer."""
+    """``empty`` for a report that found nothing, ``repeat`` for one already shared, ``uncertain`` for one whose
+    sentences the reader (``substance``) cannot call a finding and the model did not decide (``decided``), else
+    None. An answer the owner asked for
+    is never settled here: "I looked and found nothing more" is its honest answer."""
     if finding.requested_by is not None:
         return None
     text = excerpt(finding.summary, finding.topic, substantive=True)
     if not text:
-        return "empty"
-    return "repeat" if repeated(text, inputs) else None
+        return EMPTY
+    if repeated(text, inputs):
+        return "repeat"
+    if any(substance(sentence, finding.topic) == FINDING for sentence in _sentences(finding.summary)):
+        return None
+    if finding.decided in {FINDING, EMPTY}:
+        return None if finding.decided == FINDING else EMPTY     # the model's typed decision
+    return UNCERTAIN            # the digest's, never a message of its own nor discarded
+
+
+def needs_decision(finding: Finding) -> bool:
+    """A report the reader leaves undecided (says something, yet no sentence is certainly a finding) and the model
+    has not decided: the one band ``decisions.report_substance`` is asked about. Never an answer the owner asked
+    for (always sent)."""
+    if finding.requested_by is not None or finding.decided in {FINDING, EMPTY}:
+        return False
+    return bool(excerpt(finding.summary, finding.topic, substantive=True)) and not any(
+        substance(sentence, finding.topic) == FINDING for sentence in _sentences(finding.summary))
 
 
 def novelty(inputs: OutreachInputs, slug: str, type: str) -> float:
@@ -414,6 +496,22 @@ def interruption_cost(inputs: OutreachInputs) -> float:
         if last is not None else 0.0
     hour = min(1.0, max(0.0, float(inputs.timing.get(inputs.local_hour, 0.0))))
     return round(min(0.9, recent + 0.15 * ignored_streak(inputs) + 0.10 * inputs.queued_24h + 0.20 * hour), 4)
+
+
+def held(inputs: OutreachInputs, topic: str = "", *, commitment: Optional[str] = None, turn: Optional[str] = None
+         ) -> Optional[str]:
+    """The matter the owner holds that an outreach is about, or None: a held item (a hold, listed or from its
+    first mention) it names or is about, or a turn of the owner's that asked for no reminders (its care). Every
+    kind of outreach (a finding, its answer, a follow-up, an open loop, care) is held by it alike."""
+    from protagine.commitments.extract import asks_no_reminders
+    if commitment and str(commitment) in inputs.held:
+        return inputs.held[str(commitment)]
+    for matter in inputs.held.values():
+        if topic and (similar(topic, matter) or similar(matter, topic)):
+            return matter
+    if turn and asks_no_reminders(inputs.quotes.get(turn, "")):
+        return topic or "what the owner asked no reminders about"
+    return None
 
 
 def holds(inputs: OutreachInputs, *, slug: str = "", topic: str = "", requested: bool = False) -> Optional[str]:
@@ -602,6 +700,21 @@ def answer_candidate(finding: Finding, inputs: OutreachInputs) -> Optional[Candi
                            **({"bound_commitment": finding.bound_commitment} if finding.bound_commitment else {})})
 
 
+# The kind capture gives the assistant's promise to find something out and report it back (``commitments.extract``).
+ANSWER_KIND = "answer"
+
+
+def binds_followup(record: Mapping[str, Any], item: Followup) -> bool:
+    """Whether an assistant promise is the follow-up an owner's reply asked for: an answer (find out and report
+    back, ``ANSWER_KIND``) that capture linked to THAT outreach (``metadata.outreach``, recorded only when the
+    reply was linked to the outreach and the extractor marked the promise as following it up). Never by type
+    and topic: "find out whether my grant application was approved", said in the same reply and about the same
+    subject, is its own question, so delivering the research never closes it; duty keeps it."""
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), Mapping) else {}
+    return (metadata.get("kind") == ANSWER_KIND and bool(item.outreach_id)
+            and str(metadata.get("outreach") or "") == str(item.outreach_id))
+
+
 def followup_candidate(item: Followup, inputs: OutreachInputs) -> Candidate:
     """The deeper dig the owner asked for: duty's (owed, never satiable), a template body with the owner's
     words quoted as data. Bound to an assistant promise captured from the same reply, it takes that
@@ -679,38 +792,44 @@ def candidates(inputs: OutreachInputs) -> Tuple[float, List[Candidate]]:
     for finding in inputs.findings:
         if finding.requested_by is not None:
             continue
-        if holds(inputs, slug=finding.slug, topic=finding.topic):
+        if holds(inputs, slug=finding.slug, topic=finding.topic) or held(inputs, finding.topic,
+                                                                          commitment=finding.bound_commitment):
             continue
         made = finding_candidate(finding, inputs)
         if made is not None:
             unprompted.append(made)
     for loop in inputs.loops:
         loop_slug = _slug(loop.description)
-        if holds(inputs, slug=loop_slug, topic=loop.description):
+        if holds(inputs, slug=loop_slug, topic=loop.description) or held(inputs, loop.description, commitment=loop.id):
             continue
         made = loop_candidate(loop, inputs)
         if made is not None:
             unprompted.append(made)
     for care in inputs.cares:
-        if holds(inputs, slug=care.slug, topic=care.thing):
+        if holds(inputs, slug=care.slug, topic=care.thing) or held(inputs, care.thing, commitment=care.commitment,
+                                                                     turn=care.turn):
             continue
         made = care_candidate(care, inputs)
         if made is not None:
             unprompted.append(made)
     chosen = sorted(unprompted, key=lambda item: (-(item.salience * (1 - item.cost)), item.dedup_key))
     answers = [made for made in (answer_candidate(finding, inputs) for finding in inputs.findings
-                                 if finding.requested_by is not None) if made is not None]
+                                 if finding.requested_by is not None
+                                 and not held(inputs, finding.topic, commitment=finding.bound_commitment))
+               if made is not None]
     return round(level, 3), [*chosen, *answers]
 
 
 def followups(inputs: OutreachInputs) -> List[Candidate]:
-    return [followup_candidate(item, inputs) for item in inputs.followups]
+    """The digs the owner asked for, except about a matter they hold (``held``): formed once the hold lifts."""
+    return [followup_candidate(item, inputs) for item in inputs.followups
+            if not held(inputs, item.topic, commitment=item.commitment)]
 
 
 def digest_value(finding: Finding, inputs: OutreachInputs) -> float:
     """What a finding that did not go now is worth in the digest: relevance x novelty. Timeliness is left
     aside (at 48 h it is e^-2: the reason it did not go now), as are holds and interruption."""
-    if settle(finding, inputs):
+    if settle(finding, inputs) in {EMPTY, "repeat"}:
         return 0.0
     r, _, _ = relevance(finding, inputs)
     return round(r * novelty(inputs, finding.slug, "outreach_finding"), 4)
@@ -732,8 +851,8 @@ def pause_until(entry: Optional[Dict[str, Any]]) -> Optional[datetime]:
 
 __all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "CHECK_IN_OFFERS", "CONVERSATION_GAP", "bears_on", "Care", "DIGEST_FLOOR",
            "FINDING_WINDOW", "Finding", "Followup", "INDEFINITE", "Interest", "Loop", "MESSAGE_CHARS", "MIN_GAP",
-           "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NULL_REPORT", "repeated", "says_something", "settle",
+           "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NO_SUBSTANCE", "NULL_REPORT", "needs_decision", "repeated", "says_something", "settle", "substance",
            "NOT_NOW_HOLD", "OWNER_TURN_KEY", "OutreachInputs", "PAUSE_KEY", "REPLY_HOURS", "Sent", "TIMING_PREFIX", "answer_candidate",
            "backoff_until", "candidates", "care_candidate", "digest_value", "excerpt", "finding_candidate",
-           "followup_candidate", "followups", "holds", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
+           "followup_candidate", "followups", "held", "holds", "binds_followup", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
            "novelty", "open_loops", "overlap", "pause_until", "pressure", "quote", "relevance", "similar", "terms", "weight"]
