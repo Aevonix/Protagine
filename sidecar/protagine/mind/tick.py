@@ -52,7 +52,7 @@ from .skills import Skills
 from .opinions import Opinions
 from .outbox import Outbox
 from .outcomes import FINDING_TYPES, Autobiography, Outcomes, evaluate_check, invalidation_reason
-from .rank import (Candidate, DEFAULT_ACT_THRESHOLD, OUTREACH_ANSWER, OUTREACH_FOLLOWUP, OUTREACH_TYPES,
+from .rank import (Candidate, DEFAULT_ACT_THRESHOLD, OUTREACH_ANSWER, OUTREACH_FOLLOWUP, OUTREACH_TYPES, TASK_OUTCOME,
                    eligible)
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,6 @@ OWNER_MEMORY_TURNS = 300
 # item is owed to, once per outcome (``task_outcome``); the owner hears it as a notice, a contact only
 # on the owner's word on the exact text.
 REPORTED_TASK_TYPES = frozenset({"commitment_overdue"})
-TASK_OUTCOME = "task_outcome"
 TASK_OUTCOME_CHARS = 600
 # Questions only the owner answers: always an ask, whatever the level, settled by ``answer``.
 OWNER_QUESTIONS = frozenset({"link_proposal", "cadence_confirm"})
@@ -2318,7 +2317,8 @@ class Mind:
         A worker has no way to message anyone, so without this its result reached no one (a done
         task closed the commitment silently; a failed one left it open and unsaid). The owner gets
         it as a notice; a contact gets it only through authority with the owner's word on the exact
-        text (``ask_owner``), since the worker's report may carry what only the owner may see."""
+        text (``ask_owner``), since the worker's report may carry what only the owner may see. Either word
+        is decided by authority like every other (``_tell_owner`` for the owner, ``_form`` for a contact)."""
         if (row.kind != "task" or row.type not in REPORTED_TASK_TYPES or row.source_type != "commitment"
                 or not row.source_id or outcome not in {"done", "failed", "blocked"}):
             return
@@ -2339,17 +2339,44 @@ class Mind:
             detail = detail[: TASK_OUTCOME_CHARS - 1].rstrip() + "…"
         text = f"{head} {detail}".strip()
         title = f"{outcome}: {description}"[:160]
-        if not person or self._is_owner(person):
-            self.outbox.notice(type=TASK_OUTCOME, title=title, text=text, dedup_key=key)
-            return
+        owner = not person or self._is_owner(person)
         candidate = Candidate(
             type=TASK_OUTCOME, drive="duty", kind="message", title=title, dedup_key=key, salience=0.9, cost=0.05,
-            recipient=person, text=text, rationale="a task for an obligation to them finished",
+            recipient=self.owner_id if owner else person, text=text, rationale="a task for an obligation to them finished",
             evidence=[f"intention:{row.id}", f"commitment:{row.source_id}"], concern=f"report: {description}"[:160],
-            source_type="commitment", source_id=str(row.source_id), ask_owner=True, concern_kind="obligation")
+            source_type="commitment", source_id=str(row.source_id), ask_owner=not owner, concern_kind="obligation")
+        if owner:
+            self._tell_owner(candidate)
+            return
         self.concerns.bump(drive="duty", kind="obligation", summary=candidate.concern, dedup_key=key,
                            salience=candidate.salience, sources=candidate.evidence, detail=candidate.as_detail(),
                            now=self.clock())
+
+    def _tell_owner(self, candidate: Candidate) -> Optional[StoredInitiative]:
+        """A word to the owner formed now (from an outcome hook, which cannot wait for a tick), decided by
+        authority as ``_form`` decides every intention: the off switch, the level, the floor, the deny list, the
+        breaker and the budgets. An act is queued, a deferral waits for ``_reconsider``, an ask for the owner's
+        word, and a drop is recorded; none of it bypasses the outbox's own checks."""
+        if not self.owner_id or self.store.get_by_dedup_key(candidate.dedup_key) is not None:
+            return None
+        now = self.clock()
+        verdict = self.authority.decide(kind="message", recipient=self.owner_id,
+                                        text=f"{candidate.title}\n{candidate.text}", type=candidate.type,
+                                        may_contact="auto", toolsets=self.policy.worker_toolsets, now=now)
+        status = {"act": "approved", "ask": "asked", "drop": "dropped", "defer": "proposed"}[verdict.decision]
+        code = new_ask_code(self.store.open_ask_codes()) if verdict.decision == "ask" else None
+        row, created = self.store.create_intention(
+            kind="message", type=candidate.type, title=candidate.title, drive=candidate.drive, cls=verdict.cls,
+            decision=verdict.decision, decision_reason=verdict.reason, status=status, dedup_key=candidate.dedup_key,
+            rationale=candidate.rationale, recipient=self.owner_id, priority=candidate.priority,
+            context={"concern": candidate.concern, "evidence": list(candidate.evidence), "text": candidate.text,
+                     "may_contact": "auto", "notice": verdict.notice},
+            expires_at=ask_expiry(now, self.policy) if verdict.decision == "ask" else now + TASK_WINDOW,
+            ask_code=code, hermes_kind="none", source_type=candidate.source_type, source_id=candidate.source_id,
+            created_at=now)
+        if created != "created":
+            return None
+        return self._apply_decision(row, verdict, now, reconsidered=False, code=code)
 
     def _close_commitment(self, row: StoredInitiative) -> None:
         """The body's report of a done intention is what settles its commitment. The dispatched

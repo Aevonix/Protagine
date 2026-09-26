@@ -216,3 +216,39 @@ async def test_the_owner_sees_the_exact_words_a_contact_report_would_send_before
     assert words in audit.why(fx.store, report.id)["sentence"]
     assert words in fx.mind.outbox.build_digest(since=fx.now - timedelta(days=1), level="standard")
 
+
+async def test_owner_reports_go_through_authority_and_never_take_a_reminders_budget(fx):
+    """A report of work owed to the owner is decided by authority like every word to them (the off switch, the
+    level, the floor and the budgets), and, as the answer to what they asked for, it neither spends nor is held
+    by the daily owner budget: two reports and the reminder the owner asked for all go on a budget of one."""
+    fx.mind.policy.budgets.owner_messages_per_day = 1
+    for description in ("Draft the offsite agenda", "Book the offsite venue"):
+        fx.commitments.create(person_id=OWNER, description=description,
+                              due_at=(fx.now + timedelta(minutes=5)).isoformat())
+    fx.shift(minutes=10)
+    await fx.mind.tick(force=True)
+    tasks = fx.mind.dispatch()
+    assert len(tasks) == 2
+    for task in tasks:
+        fx.mind.bound(task["id"], f"kanban:{task['id'][:8]}")
+        fx.mind.outcomes.record(task["id"], status="done", summary="Done as asked.")
+    reports = _reports(fx)
+    assert len(reports) == 2 and all(row.decision == "act" and row.decision_reason != "owner notice"
+                                     for row in reports)
+    assert fx.mind.authority.budget_check(kind="message", recipient=OWNER, type="task_outcome") is None
+    ready = {p["id"] for p in await fx.mind.outbox_ready()}
+    assert {row.id for row in reports} <= ready
+    fx.commitments.create(person_id=OWNER, description="Call the landlord about the boiler",
+                          due_at=(fx.now + timedelta(minutes=5)).isoformat(), metadata={"kind": "reminder"})
+    fx.shift(minutes=10)
+    formed = (await fx.mind.tick(force=True))["formed"]
+    reminder, = [entry for entry in formed if entry["type"] == "commitment_reminder"]
+    assert reminder["status"] == "approved"
+
+
+async def test_with_the_mind_off_a_task_report_is_not_queued(fx):
+    row, task = await _one_task(fx)
+    fx.mind.authority.set_enabled(False)
+    fx.mind.outcomes.record(task["id"], status="done", summary="Agenda drafted.")
+    assert [report.status for report in _reports(fx)] in ([], ["dropped"])
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "task_outcome"] == []

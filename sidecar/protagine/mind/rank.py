@@ -51,6 +51,8 @@ OUTREACH_TYPES = frozenset({"outreach_finding", "outreach_loop", "outreach_care"
 # The report of a follow-up the owner asked for (requested), and the follow-up task itself (owed).
 OUTREACH_ANSWER = "outreach_answer"
 OUTREACH_FOLLOWUP = "outreach_followup"
+# The one word a task formed for an owed item gets: what became of it, to the person it is owed to.
+TASK_OUTCOME = "task_outcome"
 OWED_OUTREACH = frozenset({OUTREACH_ANSWER, OUTREACH_FOLLOWUP})
 # The feedback key of an outreach topic: what the owner thinks of messages about it.
 OUTREACH_TOPIC = "outreach_topic:"
@@ -216,6 +218,6 @@ def eligible(candidates: Iterable[Candidate], *, threshold: float = DEFAULT_ACT_
             >= threshold_for(candidate, threshold, _floor(candidate, drives, base), affect)]
 
 
-__all__ = ["CHECK_IN_TYPES", "Candidate", "DEFAULT_ACT_THRESHOLD", "OUTREACH_ANSWER", "OUTREACH_FOLLOWUP",
+__all__ = ["CHECK_IN_TYPES", "Candidate", "DEFAULT_ACT_THRESHOLD", "OUTREACH_ANSWER", "OUTREACH_FOLLOWUP", "TASK_OUTCOME",
            "OUTREACH_TOPIC", "OUTREACH_TYPES", "OWED_OUTREACH", "eligible", "feedback_multiplier", "pick", "rank", "satiable",
            "score", "threshold_for", "weight_of"]
