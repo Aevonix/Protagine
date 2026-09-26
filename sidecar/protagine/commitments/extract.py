@@ -592,26 +592,17 @@ def _for_third_party(stated: Optional[Dict[str, Any]], counterpart: Any, person_
 
 
 # One matter, one item. On the owner's own turn, a word the owner asks for about an item (``kind: reminder``)
-# is that item's own word only when it is the same word to the same person: the item's own word at its
-# deadline is a reminder to the owner (not a message to someone else and not work the assistant owes), that
-# deadline is still ahead, the word adds no matter of its own, and it falls at the deadline (the same word),
-# before it where the item has no heads-up yet (its heads-up), or within ``FOLD_AFTER`` after it at no time
-# the owner named ("if it passes, nudge me"). Anything else stays its own item: a word the owner asked for is
-# never dropped, moved to a time they did not ask for, or turned into a word to someone else.
+# is that item's own word only when it is the same word, about the same object, to the same person: its object
+# is the item's own word for word (``_same_object``: only the reminder verb and the time said with it set aside),
+# the item's own word at its deadline is a reminder to the owner (not a message to someone else and not work
+# the assistant owes), that deadline is still ahead, and it falls at the deadline (the same word), before it
+# where the item has no heads-up yet (its heads-up), or within ``FOLD_AFTER`` after it at no time the owner
+# named ("if it passes, nudge me"). Anything else stays its own item: a word the owner asked for is never
+# dropped, moved to a time they did not ask for, or turned into a word to someone else. A duplicate reminder
+# is acceptable; a lost one is not.
 REMINDER_KIND = "reminder"
 SAME_WORD = timedelta(minutes=1)
 FOLD_AFTER = timedelta(minutes=30)
-# Words that carry no matter of their own: a reminder about X and X share X, not these (nor how X stands).
-_MATTER_STOP = frozenset("""
-a an and are as at be been before but by can did do does for from get gets had has have her here him his
-how i if in into is it its let me my no not now of off on or our out she so than that the their them then
-there these they this to up us was we were what when where which who why will with would you your yourself
-about owner assistant someone something again later soon today tomorrow tonight time minutes minute hours hour
-days day week due deadline pass passes passed lapse lapses lapsed goes gone quiet word yet still
-send sends sent give gives check checks remind reminds reminder tell tells ask asks chase chases nudge nudges
-flag flags confirm confirms confirmed deliver delivers know hear heard make sure
-arrive arrives arrived come comes came turn turns turned show shows showed reply replies replied
-""".split())
 
 
 def _parties_of(item: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> set:
@@ -623,11 +614,11 @@ def _parties_of(item: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> set
     return {name for name in (party(value) for value in values) if name not in (None, OWNER, ASSISTANT)}
 
 
-# The word's own time is set aside before its wording is compared, and only that: a time or a date said as WHEN
-# (after a temporal preposition, "at 17:00", "on Oct 2 at 4pm", "in 2 hours", "this evening", "tomorrow at 9"),
-# which the due times decide (the same word, its heads-up, a word after). A month, a date, a weekday or an
-# ordinal anywhere else names the object ("the May report", "invoice 2026-10-02", "the Monday rota", "the 2nd
-# draft", "the report for June") and is kept: two documents stay two items. When in doubt it is kept.
+# A reminder's own time is set aside before its object is compared, and only that: a time or a date said with
+# the reminder verb itself, before its object ("remind me at 5pm to ...", "remind me tomorrow at 9 about ...")
+# or closing it ("remind me to ... at 17:00", "... on Oct 2 at 4pm", "... in 2 hours"). Every other date, month,
+# weekday, ordinal or number is part of the object ("the invoice due 2026-10-02", "the report on March
+# inflation", "the Monday rota", "the 2nd draft") and must match the item's word for word.
 _MONTHS = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|"
            r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?")
 _WEEKDAYS = r"(?:mon|tues|wednes|thurs|fri|satur|sun)day|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun"
@@ -648,91 +639,70 @@ _WHEN_EXPR = rf"""(?:
 )"""
 # A bare number or clock word is a time only after a clock preposition ("at 9", "by five"), never "room 9".
 _CLOCK = rf"(?:(?:at|by|before|after|until|till|around)\s+(?:\d{{1,4}}|{_CLOCK_NUMBERS})\b(?![-_./#:]\w)(?:\s*o'?clock)?)"
-_WHEN_PREP = r"(?:at|by|on|before|after|until|till|around|due|in|within|this|next)"
-_OWN_TIME = re.compile(rf"""(?ix)
-    (?<![\w-])(?: {_CLOCK} | {_WHEN_PREP}\s+{_WHEN_EXPR} | (?:today|tonight|tomorrow|tmrw|asap)\b )
-    (?: \s*,?\s* (?: {_CLOCK} | (?:{_WHEN_PREP}\s+)?{_WHEN_EXPR} ) )*
-""")
-# Nouns an identifier follows ("invoice A", "plan B", "room X"): the letter after one is that identifier.
-_IDENTIFIER_NOUNS = frozenset("""
-invoice invoices form forms plan version option section part room building unit apartment apt floor gate lot
-phase stage appendix exhibit annex chapter item ticket case order account box bay door desk table row seat
-level block sheet tab draft revision rev model type grade class team group wing tower line route bus track
-platform terminal zone sector area schedule figure fig page clause article lane suite flat house vol volume
-issue episode series batch contract policy project site test round quote bill receipt cheque file folder
-""".split())
+# "due" is not one of the reminder's own prepositions: "the invoice due 2026-10-02" names the invoice.
+_REMINDER_PREP = r"(?:at|by|on|before|after|until|till|around|in|within|this|next)"
+_DAY_WORD = r"(?:today|tonight|tomorrow|tmrw)\b"
+_REMINDER_TIME = rf"""(?: {_REMINDER_PREP}\s+{_WHEN_EXPR} | {_CLOCK} | {_DAY_WORD} )
+    (?: \s*,?\s* (?: (?:{_REMINDER_PREP}\s+)?{_WHEN_EXPR} | {_CLOCK} | {_DAY_WORD} ) )*"""
+_CONNECTOR = r"(?:to|about|of|that|re|regarding)\b"
+_REMINDER_VERB = re.compile(rf"""(?ix) ^\W*(?:please\s+)?(?:remind|nudge|ping|tell|warn|alert)\s+(?:me|(?:the\s+)?owner)\b
+    (?: (?P<when> \s*,?\s* {_REMINDER_TIME} ) \s*,?\s* {_CONNECTOR} | \s*,?\s* (?:{_CONNECTOR})? )""")
+_CLOSING_TIME = re.compile(rf"""(?ix) {_REMINDER_TIME} \W*""")
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "′": "'", "`": "'"})
-_TOKEN = re.compile(r"[^\W_]+(?:[-_./#][^\W_]+)*")
-_SHORT_STOP = frozenset("a i am an as at be by do go he hi if in is it me my no of oh ok on or so to up us we vs re pm".split())
+_OBJECT_TOKEN = re.compile(r"[^\W_]+(?:[-_./#:'][^\W_]+)*")
+_WORD_START = re.compile(r"(?<![\w'-])\w")
 
 
-def _content(description: Any, parties: set) -> tuple:
-    """``(matter words, identifiers)`` of an item's wording, its own time set aside (``_OWN_TIME``). An identifier is kept
-    whole: a token holding a digit, an underscore or a ``#`` ("AB_12", "p-41", "2.1", "report_v2"), a hyphen or
-    dot joining a part of at most two characters ("a-1"), a word of one or two letters that is no function word
-    ("AB"), and a single letter after an identifier noun ("invoice A"). Everything else of three letters or more
-    that carries meaning is a matter word. Parties' own names and ids are neither."""
-    text = _OWN_TIME.sub(" ", str(description or "").translate(_APOSTROPHES))
-    text = re.sub(r"'s\b", "", text).replace("'", "")
-    text = re.sub(r"\bmay\b", " ", text)       # the modal verb, lowercase; "May" the month is a matter word
-    names = {token.casefold() for name in parties for token in _TOKEN.findall(str(name).translate(_APOSTROPHES))}
-    names |= {part for name in names for part in re.split(r"[-_./#]", name)}
-    words, identifiers, previous = set(), set(), ""
-    for raw in _TOKEN.findall(text):
-        token = raw.casefold()
-        if token in names:
-            previous = token
-            continue
-        parts = re.split(r"[-_./#]", token)
-        if (any(char.isdigit() for char in token) or "_" in token or "#" in token
-                or (len(parts) > 1 and min(len(part) for part in parts) <= 2)
-                or (len(token) == 1 and previous in _IDENTIFIER_NOUNS)
-                or (len(token) == 2 and token not in _SHORT_STOP)
-                or (len(token) == 1 and token not in _SHORT_STOP)):
-            identifiers.add(token)
-        else:
-            words |= {part for part in parts
-                      if len(part) >= 3 and part not in _MATTER_STOP}
-        previous = token
-    return words, identifiers
+def _normal(text: str) -> str:
+    """Case, spacing and punctuation outside a token normalized; joiners inside one ("p-41", "AB_12", "2.1",
+    "17:00") kept."""
+    return " ".join(token.casefold() for token in _OBJECT_TOKEN.findall(text))
 
 
-def _matter_words(description: Any, parties: set) -> set:
-    return _content(description, parties)[0]
+def _object_text(description: Any) -> str:
+    """An item's object: its wording, with a leading reminder verb ("remind me", "nudge me", ...) and a time
+    said between that verb and its "to"/"about" ("remind me at 5pm to ...") set aside (``_normal``)."""
+    text = str(description or "").translate(_APOSTROPHES)
+    verb = _REMINDER_VERB.match(text)
+    return _normal(text[verb.end():] if verb is not None else text)
 
 
-def _identifiers(description: Any, parties: set) -> set:
-    """The numbers and ids an item names, kept whole, its parties' own ids ("p-41") aside (``_content``)."""
-    return _content(description, parties)[1]
+def _readings(description: Any) -> set:
+    """What a reminder's object may be: its ``_object_text``, and, when no time stands between its verb and
+    its "to"/"about", that with a time phrase closing it set aside ("remind me to ... at 17:00", "... on Oct 2
+    at 4pm": each closing time phrase, the whole of it or its last part). Nothing else is ever set aside."""
+    text = str(description or "").translate(_APOSTROPHES)
+    verb = _REMINDER_VERB.match(text)
+    if verb is None:
+        return {_normal(text)} - {""}
+    rest = text[verb.end():]
+    readings = {_normal(rest)}
+    if not verb.group("when"):
+        readings |= {_normal(rest[:word.start()]) for word in _WORD_START.finditer(rest)
+                     if _CLOSING_TIME.fullmatch(rest, word.start())}
+    return readings - {""}
+
+
+def _same_object(word: tuple, item: tuple) -> bool:
+    """A reminder's ``(description, parties)`` is about exactly an item's object: one of its ``_readings`` is
+    the item's ``_object_text``, word for word and not empty, and a party of either is the other's or named in
+    it. "Remind me to send p-41 the invoice due 2026-10-03" is not about "Send p-41 the invoice due 2026-10-02",
+    nor "Remind me about the p-41 floor plan" about "Send p-41 the floor plan": each is its own reminder."""
+    (word_text, word_parties), (item_text, item_parties) = word, item
+    wording = _object_text(item_text)
+    if not wording or wording not in _readings(word_text):
+        return False
+    return all(_names(name, wording) for name in set(word_parties) ^ set(item_parties))
 
 
 def _same_word(word: tuple, other: tuple) -> bool:
     """A reminder ``(description, parties, due)`` repeats a known item: the same time (``SAME_WORD``, or neither
-    has one), a similar wording, the same identifiers and no matter word the other lacks. Anything less certain
-    keeps the reminder as its own item: a word the owner asked for is never dropped as a duplicate."""
-    from protagine.commitments.store import _normalize_desc, _similar_desc
+    has one) and the same object (``_same_object``). Anything less certain keeps the reminder as its own item: a
+    word the owner asked for is never dropped as a duplicate."""
     (text, parties, due), (other_text, other_parties, other_due) = word, other
     if (due is None) != (other_due is None) or (due is not None and abs(due - other_due) > SAME_WORD):
         return False
-    if not _similar_desc(_normalize_desc(text), _normalize_desc(other_text)):
-        return False
-    both = set(parties) | set(other_parties)
-    (mine, ids), (theirs, other_ids) = _content(text, both), _content(other_text, both)
-    return ids == other_ids and mine <= theirs
-
-
-def _adds_no_matter(word: tuple, item: tuple) -> bool:
-    """A word's (description, parties) is about an item's matter and adds none of its own: a party of one is
-    a party of, or named by, the other, every matter word of the word is one of the item's, and so is every
-    number or id it names. "Remind me to pay p-41 the floor plan deposit" adds the deposit to "Send p-41 the
-    floor plan", and "Remind me to send p-41 invoice 456" invoice 456 to "Send p-41 invoice 123": two matters."""
-    (word_text, word_parties), (item_text, item_parties) = word, item
-    named = (bool(word_parties & item_parties) or any(_names(name, item_text) for name in word_parties)
-             or any(_names(name, word_text) for name in item_parties))
-    both = word_parties | item_parties
-    mine = _matter_words(word_text, both)
-    return (named and bool(mine) and mine <= _matter_words(item_text, both)
-            and _identifiers(word_text, both) <= _identifiers(item_text, both))
+    return _same_object((text, parties), (other_text, other_parties))
 
 
 def _word_to_owner(kind: Any, obligor: Any, source_type: Any) -> bool:
@@ -785,7 +755,7 @@ def _folds(prepared: Dict[int, Any], listed: List[Dict[str, Any]], *, owner_turn
             if where == "turn" and (into == index or into in folds
                                     or (other_kind == REMINDER_KIND and into > index)):
                 continue
-            if other_due is None or other_due <= now or not _adds_no_matter((text, parties), matter):
+            if other_due is None or other_due <= now or not _same_object((text, parties), matter):
                 continue
             if abs(due - other_due) <= SAME_WORD:
                 how = "same"

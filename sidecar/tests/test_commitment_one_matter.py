@@ -1,18 +1,22 @@
 """One matter is one item: a word the owner asks for about an item is that item's own word when it is the
-same word to the same person.
+same word, about the same object, to the same person.
 
-A reminder or a nudge the owner asks for about something the same turn records, or about an item
-already open, is folded into that item rather than recorded beside it when the item's own word at its
-deadline is a reminder to the owner, that deadline is still ahead, the reminder adds no matter of its
-own, and it falls at the deadline, before it (the item's heads-up, where it has none yet; on an open
-row of the owner's, written compare-and-set against what was listed) or shortly after it at no time
-the owner named. Everything else stays its own item: two obligations are never merged, a word the
-owner timed is never moved or dropped, and a word never becomes a heads-up to a contact. A new item
-moves a listed one only with that item's own wording.
+A reminder the owner asks for about something the same turn records, or about an item already open, is
+folded into that item rather than recorded beside it only when its object is the item's own, word for word:
+with the reminder verb and the time said with it ("remind me at 5pm to ...", "remind me to ... at 17:00")
+set aside, what remains is the item's wording (case, spacing and punctuation aside). The item's own word at
+its deadline is then a reminder to the owner, that deadline is still ahead, and the reminder falls at the
+deadline, before it (the item's heads-up, where it has none yet; on an open row of the owner's, written
+compare-and-set against what was listed) or shortly after it at no time the owner named. Everything else
+stays its own item: a paraphrase, another date, month, ordinal or id is another reminder (a duplicate word
+is acceptable, a lost one is not), two obligations are never merged, a word the owner timed is never moved
+or dropped, and a word never becomes a heads-up to a contact. A new item moves a listed one only with that
+item's own wording.
 """
 
 from __future__ import annotations
 
+import re
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -54,20 +58,29 @@ def _open(store, person=OWNER):
 
 # --- one turn -------------------------------------------------------------------------------------
 
-def test_a_promise_and_the_nudge_asked_for_it_are_one_item(tmp_path):
+def test_a_promise_and_the_same_word_asked_for_shortly_after_it_are_one_item(tmp_path):
     store = CommitmentStore(tmp_path / "c.db")
     result = _record(store, [
         _create("Send p-41 the floor plan", _at(11), counterpart="p-41"),
-        _reminder("Nudge the owner if the p-41 floor plan goes quiet", _at(15), counterpart="owner",
-                  obligor="assistant")])
+        _reminder("Remind me to send p-41 the floor plan", _at(15), counterpart="owner", obligor="assistant")])
     row, = _open(store)
     assert row["description"] == "Send p-41 the floor plan" and result["folded"] == 1
     assert "heads_up_at" not in (row["metadata"] or {})
 
 
+def test_a_paraphrased_nudge_about_a_promise_is_its_own_reminder(tmp_path):
+    """Strict folding: a nudge worded otherwise than the item is another reminder, never folded away."""
+    store = CommitmentStore(tmp_path / "c.db")
+    result = _record(store, [
+        _create("Send p-41 the floor plan", _at(11), counterpart="p-41"),
+        _reminder("Nudge the owner if the p-41 floor plan goes quiet", _at(15), counterpart="owner",
+                  obligor="assistant")])
+    assert result["folded"] == 0 and result["skipped_duplicates"] == 0 and len(_open(store)) == 2
+
+
 def test_a_reminder_before_the_deadline_becomes_the_items_heads_up(tmp_path):
     store = CommitmentStore(tmp_path / "c.db")
-    _record(store, [_reminder("Remind me about the floor plan for p-41", _at(50), counterpart="p-41"),
+    _record(store, [_reminder("Remind me to send p-41 the floor plan", _at(50), counterpart="p-41"),
                     _create("Send p-41 the floor plan", _at(60), counterpart="p-41")])
     row, = _open(store)
     assert row["description"] == "Send p-41 the floor plan"
@@ -112,10 +125,10 @@ def test_a_word_for_the_owner_never_folds_into_a_message_for_someone_else(tmp_pa
 
 # --- an item already open --------------------------------------------------------------------------
 
-def test_the_owner_restating_a_contacts_promise_is_not_a_second_item(tmp_path):
+def test_the_owner_restating_a_contacts_promise_in_other_words_is_a_reminder_of_their_own(tmp_path):
     """p-74 promised the reading list on their own turn; the owner restates it with "tell me if it
-    passes", which the extractor files as a check-in. It is the owner's reminder, and the open promise
-    already brings the owner that word when it falls due: no second row, and one reminder then."""
+    passes", which the extractor files as a check-in. It is the owner's reminder; worded otherwise than
+    the promise, it is kept as its own row (strict folding): both words go to the owner, none to p-74."""
     store = CommitmentStore(tmp_path / "c.db")
     promise = store.create(person_id="p-74", description="p-74 sends the reading list", due_at=_at(16),
                            source_type="cognition", allow_overdue=True,
@@ -125,24 +138,25 @@ def test_the_owner_restating_a_contacts_promise_is_not_a_second_item(tmp_path):
                        obligor="assistant", metadata={"kind": "check_in", "recipient": "p-74",
                                                       "topic": "the reading list", "grant": "owner"})
     result = _record(store, [check_in], existing=[promise], said=said)
-    assert result["created"] == [] and result["folded"] == 1
-    assert _open(store) == [] and len(_open(store, "p-74")) == 1
+    assert len(result["created"]) == 1 and result["folded"] == 0 and result["skipped_duplicates"] == 0
+    assert len(_open(store)) == 1 and len(_open(store, "p-74")) == 1
     later = T0 + timedelta(minutes=17)
-    candidates = duty(DriveInputs(now=later, owner_id=OWNER, commitments=_open(store, "p-74")))[1]
-    assert [(c.type, c.recipient) for c in candidates] == [("commitment_reminder", OWNER)]
+    rows = _open(store) + _open(store, "p-74")
+    candidates = duty(DriveInputs(now=later, owner_id=OWNER, commitments=rows))[1]
+    assert [(c.type, c.recipient) for c in candidates] == [("commitment_reminder", OWNER)] * 2
 
 
 def test_an_earlier_reminder_about_an_open_item_is_its_heads_up_written_against_the_listing(tmp_path):
     store = CommitmentStore(tmp_path / "c.db")
     item = store.create(person_id=OWNER, description="Send p-41 the floor plan", due_at=_at(90),
                         source_type="cognition", metadata={"counterpart": "p-41", "obligor": "owner"})
-    result = _record(store, [_reminder("Remind me about the p-41 floor plan", _at(60), counterpart="p-41")],
+    result = _record(store, [_reminder("Remind me to send p-41 the floor plan", _at(60), counterpart="p-41")],
                      existing=[item])
     assert result["created"] == [] and result["updated"] == [item["id"]]
     assert datetime.fromisoformat(store.get(item["id"])["metadata"]["heads_up_at"]) == T0 + timedelta(minutes=60)
     # A row the owner changed since it was listed is left as they left it: a conflict to rerun.
     store.update(item["id"], due_at=_at(30))
-    again = _record(store, [_reminder("Remind me about the p-41 floor plan", _at(20), counterpart="p-41")],
+    again = _record(store, [_reminder("Remind me to send p-41 the floor plan", _at(20), counterpart="p-41")],
                     existing=[item])
     assert again["conflicts"] == 1 and store.get(item["id"])["due_at"].startswith(_at(30)[:16])
 
@@ -158,10 +172,10 @@ def test_the_contract_says_a_word_about_an_item_is_that_items_own():
     assert "never a second item" in system
 
 
-def test_a_misread_check_in_beside_the_promise_it_is_about_folds_into_it(tmp_path):
+def test_a_misread_check_in_beside_the_promise_it_is_about_is_the_owners_own_reminder(tmp_path):
     """One owner turn: p-52's promise and "tell me if it has not come", misread as a chase of p-52. The
-    chase is the owner's reminder (the words never ask to contact p-52), and that reminder is the
-    promise's own word: one row, one reminder to the owner when it falls due."""
+    chase is the owner's reminder (the words never ask to contact p-52); worded otherwise than the promise,
+    it is kept as its own row (strict folding): both words go to the owner when it falls due, none to p-52."""
     store = CommitmentStore(tmp_path / "c.db")
     said = "p-52 will send the tile samples within 20 minutes; tell me if they have not come by then."
     items = [_create("p-52 sends the tile samples", _at(20), counterpart="owner", obligor="p-52"),
@@ -169,12 +183,13 @@ def test_a_misread_check_in_beside_the_promise_it_is_about_folds_into_it(tmp_pat
                      metadata={"kind": "check_in", "recipient": "p-52", "topic": "the tile samples", "grant": "owner",
                                "asked": said})]
     result = _record(store, items, said=said)
-    row, = _open(store)
-    assert row["description"] == "p-52 sends the tile samples" and result["folded"] == 1
-    assert result["owner_reminders"] == 1
+    assert sorted(row["description"] for row in _open(store)) == ["Chase p-52 for the tile samples",
+                                                                   "p-52 sends the tile samples"]
+    assert result["folded"] == 0 and result["owner_reminders"] == 1
+    assert all((row["metadata"] or {}).get("kind") in (None, "reminder") for row in _open(store))
     later = T0 + timedelta(minutes=21)
     candidates = duty(DriveInputs(now=later, owner_id=OWNER, commitments=_open(store)))[1]
-    assert [(c.type, c.recipient) for c in candidates] == [("commitment_reminder", OWNER)]
+    assert [(c.type, c.recipient) for c in candidates] == [("commitment_reminder", OWNER)] * 2
 
 
 def test_the_owner_restating_an_open_item_with_a_new_time_moves_it(tmp_path):
@@ -373,7 +388,8 @@ def test_a_reminder_naming_another_identifier_is_its_own_item(tmp_path, item, wo
 @pytest.mark.parametrize("item, word", [
     ("Send p-41 invoice AB_12", "Remind me to send p-41 invoice AB_12"),
     ("Send p-41 invoice A", "Remind me to send p-41 invoice A"),
-    ("Send p-41 version 2.1 of the spec", "Remind me about p-41 version 2.1 of the spec"),
+    ("Send p-41 version 2.1 of the spec", "Remind me to send p-41 version 2.1 of the spec"),
+    ("Send p-41 the floor plan.", "remind me to SEND p-41  the floor plan"),
 ])
 def test_a_reminder_naming_the_same_identifier_folds(tmp_path, item, word):
     store = CommitmentStore(tmp_path / "c.db")
@@ -387,13 +403,17 @@ TIMED = ["at 17:00", "at 5pm", "at 5 pm", "at 5:00 p.m.", "by 17:00", "at 17h00"
          "at noon", "this evening", "before 17:00 tomorrow"]
 
 
+@pytest.mark.parametrize("lead", [False, True])
 @pytest.mark.parametrize("when", TIMED)
-def test_a_reminder_differing_only_by_a_time_is_the_items_heads_up(tmp_path, when):
+def test_a_reminder_differing_only_by_a_time_is_the_items_heads_up(tmp_path, when, lead):
     """Re-check new P1: "Send p-41 the floor plan" due 18:00 and "Remind me to send p-41 the floor plan at
-    17:00" due 17:00: the time is read as a time, not an identifier, and the reminder is the item's heads-up."""
+    17:00" (or "Remind me at 17:00 to send p-41 the floor plan") due 17:00: the time said with the reminder
+    verb is set aside, the object is the item's word for word, and the reminder is the item's heads-up."""
+    word = (f"Remind me {when} to send p-41 the floor plan" if lead
+            else f"Remind me to send p-41 the floor plan {when}")
     store = CommitmentStore(tmp_path / "c.db")
     result = _record(store, [_create("Send p-41 the floor plan", _at(120), counterpart="p-41"),
-                             _reminder(f"Remind me to send p-41 the floor plan {when}", _at(60), counterpart="p-41")])
+                             _reminder(word, _at(60), counterpart="p-41")])
     row, = _open(store)
     assert result["folded"] == 1 and result["skipped_duplicates"] == 0
     assert datetime.fromisoformat(row["metadata"]["heads_up_at"]) == T0 + timedelta(minutes=60)
@@ -401,8 +421,7 @@ def test_a_reminder_differing_only_by_a_time_is_the_items_heads_up(tmp_path, whe
     listed_store = CommitmentStore(tmp_path / "listed.db")
     item = listed_store.create(person_id=OWNER, description="Send p-41 the floor plan", due_at=_at(120),
                                source_type="cognition", metadata={"counterpart": "p-41", "obligor": "owner"})
-    result = _record(listed_store, [_reminder(f"Remind me to send p-41 the floor plan {when}", _at(60),
-                                              counterpart="p-41")], existing=[item])
+    result = _record(listed_store, [_reminder(word, _at(60), counterpart="p-41")], existing=[item])
     assert result["folded"] == 1 and len(_open(listed_store)) == 1
     assert [c.type for c in _candidates(listed_store, 61)] == ["commitment_due_soon"]
 
@@ -495,3 +514,86 @@ def test_the_same_dated_object_with_the_words_own_time_is_the_items_heads_up(obj
         result = _record(store, [_create(f"Send p-41 {obj}", _at(120), counterpart="p-41"),
                                  _reminder(f"Remind me to send p-41 {obj} {when}", _at(60), counterpart="p-41")])
         assert result["folded"] == 1 and len(_open(store)) == 1, (obj, when)
+
+
+# -- round 4: folding is strict; only the reminder's own verb and time are set aside, the object must be identical --
+
+def test_the_reviewers_invoice_due_dates_and_inflation_months_are_two_items(tmp_path):
+    """Re-check round 3, item 3: "Send p-41 the invoice due 2026-10-02" and "Remind me to send p-41 the invoice
+    due 2026-10-03", and the reports on March and April inflation, are two documents: two rows at the same
+    deadline and before it, in the turn and against a listed row, never folded and never skipped as a duplicate."""
+    pairs = [("Send p-41 the invoice due 2026-10-02", "Remind me to send p-41 the invoice due 2026-10-03"),
+             ("Send p-41 the report on March inflation", "Remind me to send p-41 the report on April inflation")]
+    for index, (item, word) in enumerate(pairs):
+        for minutes in (120, 60):
+            directory = tmp_path / f"{index}-{minutes}"
+            directory.mkdir()
+            _distinct(directory, item, word, _at(minutes))
+
+
+_FILLERS = {
+    "date": st.tuples(st.sampled_from(["%Y-%m-%d", "%b %d", "%d %B", "%d/%m", "%B %d, %Y"]),
+                      st.dates(min_value=datetime(2025, 1, 1).date(), max_value=datetime(2028, 12, 31).date()))
+              .map(lambda pair: pair[1].strftime(pair[0])),
+    "month": st.sampled_from(["January", "February", "March", "April", "May", "June", "July", "August",
+                              "September", "October", "November", "December", "Q1", "Q2", "Q3", "Q4"]),
+    "ordinal": st.sampled_from(["1st", "2nd", "3rd", "4th", "11th", "22nd", "first", "second", "third",
+                                "fourth", "last", "next", "final"]),
+    "id": st.one_of(st.integers(min_value=0, max_value=99999).map(str),
+                    st.tuples(st.sampled_from(["AB", "INV", "x", "Q", "rev"]), st.sampled_from(["-", "_", ".", "#", ""]),
+                              st.integers(min_value=0, max_value=999)).map(lambda t: f"{t[0]}{t[1]}{t[2]}")),
+}
+_SLOTS = ["the invoice due {}", "the report on {} inflation", "the {} report", "invoice {}", "the report for {}",
+          "the report on {}", "the minutes of the {} meeting", "the {} draft of the lease"]
+
+
+@st.composite
+def _two_objects(draw):
+    kind = draw(st.sampled_from(sorted(_FILLERS)))
+    first, second = draw(st.lists(_FILLERS[kind], min_size=2, max_size=2,
+                                  unique_by=lambda text: " ".join(re.findall(r"[^\W_]+", text.casefold()))))
+    slot = draw(st.sampled_from(_SLOTS))
+    return slot.format(first), slot.format(second)
+
+
+@settings(max_examples=80, deadline=None)
+@given(objects=_two_objects(), when=st.sampled_from(OWN_TIMES), lead=st.booleans(),
+       minutes=st.sampled_from([60, 120]))
+def test_a_reminder_whose_object_differs_by_a_date_month_ordinal_or_id_never_folds(objects, when, lead, minutes):
+    """Property: an object that differs from the item's by a date, a month, an ordinal or an id, wherever it
+    stands in the wording and whatever time the reminder carries (before its object or after it), is another
+    item: never folded, never skipped as a duplicate, in the turn and against a listed row."""
+    item_object, word_object = objects
+    if lead and when:
+        word = f"Remind me {when} to send p-41 {word_object}"
+    else:
+        word = f"Remind me to send p-41 {word_object} {when}".strip()
+    with tempfile.TemporaryDirectory() as directory:
+        _distinct(Path(directory), f"Send p-41 {item_object}", word, _at(minutes))
+
+
+@settings(max_examples=40, deadline=None)
+@given(objects=_two_objects(), when=st.sampled_from([time for time in OWN_TIMES if time]), lead=st.booleans())
+def test_the_identical_object_with_the_reminders_own_time_is_the_items_heads_up(objects, when, lead):
+    """Property: the item's object word for word, with the reminder verb and the time said with it set aside
+    (before the object or after it), is the item's heads-up: one row."""
+    obj = objects[0]
+    word = f"Remind me {when} to send p-41 {obj}" if lead else f"Remind me to send p-41 {obj} {when}"
+    with tempfile.TemporaryDirectory() as directory:
+        store = CommitmentStore(Path(directory) / "c.db")
+        result = _record(store, [_create(f"Send p-41 {obj}", _at(120), counterpart="p-41"),
+                                 _reminder(word, _at(60), counterpart="p-41")])
+        assert result["folded"] == 1 and len(_open(store)) == 1, (obj, word)
+        row, = _open(store)
+        assert datetime.fromisoformat(row["metadata"]["heads_up_at"]) == T0 + timedelta(minutes=60)
+
+
+@pytest.mark.parametrize("item, word", [
+    ("Send p-41 the floor plan", "Remind me to send p-41 the floor plan draft"),
+    ("Send p-41 the floor plan draft", "Remind me to send p-41 the floor plan"),
+    ("Send p-41 the floor plan", "Remind me to email p-41 the floor plan"),
+    ("Send p-41 the floor plan", "Remind me about the p-41 floor plan"),
+])
+def test_a_reminder_with_any_other_object_wording_is_its_own_item(tmp_path, item, word):
+    """Strict folding: one word more or less, another verb or another order is another reminder."""
+    _distinct(tmp_path, item, word, _at(60))
