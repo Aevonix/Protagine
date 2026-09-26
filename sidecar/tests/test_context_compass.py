@@ -653,3 +653,36 @@ async def test_a_chain_back_to_an_earlier_value_keeps_a_record_for_every_version
         conn.commit()
     records = {r.record: r for r in compass.claim_supersessions(ledger, contact_id="contact-a", session_id="later")}
     assert set(records) == set(ids[:2]) and {r.current for r in records.values()} == {"room 100"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query, fact", [
+    ("Who is on-call?", "Mira is on-call this weekend"),                     # the reviewer's case
+    ("Who is on call?", "Mira is on-call this weekend"),                      # the words of a hyphenated term
+    ("Where is the café?", "Meet at the café on Main Street"),         # composed and decomposed accents
+    ("Who’s covering Mira’s shift?", "Cover Mira's shift on Saturday"),  # curly and straight apostrophes
+])
+async def test_the_candidate_cap_keeps_an_exact_term_match(query, fact):
+    """Round 3, finding 3: queries and documents share one tokenizer, so an exact match ranks above ties."""
+    memory = "Unverified recalled evidence:\n" + "\n".join(
+        f"- Note {n}: the garden shed paint is drying in batch {n}." for n in range(48))
+    sections = [ContextSection(id="protagine-memory", title="Relevant Memories", body=memory, priority=90),
+                ContextSection(id="protagine-commitments", title="Pending Commitments", priority=72, body="\n".join([
+                    "Open commitments:", commitment_line("c-9", fact, "2026-11-02T09:00:00+00:00")]))]
+    judge = keyword_judge("Mira", "caf")
+    selected, report = await compass.select_context(sections, query, judge, settings=settings(budget=400), now=NOW)
+    ((_, documents),) = judge.calls
+    assert report["judged"] == 48 and any(fact[:12] in doc for doc in documents)
+    assert fact[:12] in body_of(selected)
+
+
+def test_values_are_matched_with_the_same_tokenizer():
+    """Round 3, finding 3: a value and a line differing only in apostrophes, accents' encoding or case match."""
+    desk = claim_record("Mira’s desk", "the east wing", cid("desk"))
+    cafe = claim_record("Café Central", "Main Library", cid("cafe"))
+    call = claim_record("on-call", "off duty", cid("rota"))
+    assert compass.asserts_superseded(claim_quote(desk.record, "Leave it at MIRA'S DESK."), desk)
+    assert compass.asserts_superseded(claim_quote(cafe.record, "We meet at Café Central."), cafe)
+    assert compass.asserts_superseded(claim_quote(call.record, "Mira is on-call."), call)
+    assert not compass.asserts_superseded(claim_quote(call.record, "Mira is on call-backs."), call)
+    assert not compass.asserts_superseded(claim_quote(cafe.record, "Café Centrale is closed."), cafe)

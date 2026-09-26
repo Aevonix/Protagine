@@ -34,6 +34,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from collections import OrderedDict
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -249,19 +250,51 @@ def _warn(reason: str) -> None:
         logger.debug("context selection unavailable (%s); the assembled context is used", reason)
 
 
-def _stem(word: str) -> str:
-    return word[:5]
+# One tokenizer for the message, the candidates and the values matched in lines: Unicode compatibility forms and
+# composed accents folded, curly apostrophes and hyphens read as their plain forms, case folded; a token is a run
+# of letters and digits joined by apostrophes, hyphens or dots ("on-call", "mira's", "3.5").
+_FOLD = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\uff07": "'", "\u2010": "-", "\u2011": "-"})
+_TOKEN = re.compile(r"[^\W_]+(?:['.-][^\W_]+)*")
+_JOINERS = re.compile(r"['.-]")
 
 
-def _lexical_ranks(query: str, documents: list[str]) -> list[float]:
-    """A cheap first ranking of every candidate against the message (the message's terms each document shares,
-    rarer terms weighing more; a five-letter stem absorbs inflections), so a cap on the judge's candidates keeps
-    the ones the message asks about instead of the first ones by lane priority."""
-    from protagine.memory.recall import lexical_terms
-    terms = {_stem(term) for term in lexical_terms(query)}
-    stems = [{_stem(word) for word in re.findall(r"\w+", document.casefold())} & terms for document in documents]
-    frequency = {term: sum(term in shared for shared in stems) for term in terms}
-    return [sum(math.log1p(len(documents) / frequency[term]) for term in shared) for shared in stems]
+def _fold(text: str) -> str:
+    return unicodedata.normalize("NFKC", str(text or "")).translate(_FOLD).casefold()
+
+
+def tokens(text: str) -> list[str]:
+    return _TOKEN.findall(_fold(text))
+
+
+def _terms(text: str) -> set[str]:
+    """A text's terms: its tokens and the words of its joined tokens ("on-call" is also "on" and "call")."""
+    terms = set()
+    for token in tokens(text):
+        terms.add(token)
+        if not token.isalnum():
+            terms.update(part for part in _JOINERS.split(token) if len(part) > 1)
+    return terms
+
+
+def _lexical_ranks(query: str, documents: list[str]) -> list[tuple[float, float]]:
+    """A cheap first ranking of every candidate against the message, ``(exact, stem)`` per document: the message's
+    terms each document shares exactly, then those it shares by a five-letter stem (inflections), rarer terms
+    weighing more. A cap on the judge's candidates keeps exact matches first and ties go to lexical matches,
+    never to lane priority alone."""
+    from protagine.memory.recall import _STOP
+    terms = {term for term in _terms(query) if term not in _STOP}
+    stems = {term[:5] for term in terms}
+    written = [_terms(document) for document in documents]
+    exact = [terms & words for words in written]
+    stemmed = [stems & {word[:5] for word in words} for words in written]
+
+    def weights(shared):
+        frequency = {}
+        for found in shared:
+            for term in found:
+                frequency[term] = frequency.get(term, 0) + 1
+        return [sum(math.log1p(len(documents) / frequency[term]) for term in found) for found in shared]
+    return list(zip(weights(exact), weights(stemmed)))
 
 
 def _scores(results, count: int) -> list[float]:
@@ -353,8 +386,8 @@ async def select_context(sections: list, query: str, rerank_fn, *, settings: Sel
     # Every candidate is ranked against the message before the cap; lane priority only breaks ties.
     lexical = (dict(zip(written, _lexical_ranks(str(query), list(written.values()))))
                if len(candidates) > settings.candidates else {})
-    judged = sorted(candidates, key=lambda item: (-lexical.get(id(item), 0.0), priority[item.section],
-                                                  item.section, item.index))
+    judged = sorted(candidates, key=lambda item: (*(-rank for rank in lexical.get(id(item), (0.0, 0.0))),
+                                                  priority[item.section], item.section, item.index))
     judged, unjudged = judged[:settings.candidates], judged[settings.candidates:]
     documents = [written[id(item)] for item in judged]
     started = time.monotonic()
@@ -510,15 +543,23 @@ def _elements(text: str) -> list[_Element]:
 
 
 def _normal(value: str) -> str:
-    text = " ".join(str(value or "").split()).strip(" \t.,;:!?\"'").casefold()
+    text = " ".join(_fold(value).split()).strip(" \t.,;:!?\"'")
     return re.sub(r"^(?:the|a|an)\s+", "", text)
 
 
-def _pattern(value: str):
-    text = _normal(value)
-    if not re.search(r"\w", text):
-        return None
-    return re.compile(r"(?<!\w)" + r"\s+".join(re.escape(word) for word in text.split()) + r"(?!\w)", re.I)
+def _value_tokens(value: str) -> tuple:
+    words = tokens(value)
+    return tuple(words[1:] if len(words) > 1 and words[0] in ("the", "a", "an") else words)
+
+
+def _shows(words: list[str], value: str) -> bool:
+    """``words`` (a line's tokens) hold ``value``'s tokens as one run, by the same tokenizer as selection."""
+    wanted = _value_tokens(value)
+    if not wanted:
+        return False
+    width = len(wanted)
+    return any(tuple(words[i:i + width]) == wanted for i in range(len(words) - width + 1)
+               if words[i] == wanted[0])
 
 
 def _same(value: str, other: str) -> bool:
@@ -549,11 +590,10 @@ def stated(line: str, record: Superseded) -> tuple[str | None, str]:
         return ("stale", wrong[-1]) if wrong else ("current", values[-1])
     # Only words: matched in the record's own words, never in identifiers and timestamps (identity already makes
     # them the record's, so a value of any length ("42") counts, and a "42" inside 09:42:00 does not).
-    content = " ".join(word for part in own for word in part.words)
-    current, old = _pattern(record.current), _pattern(record.old)
-    if current is not None and current.search(content):
+    strings = [tokens(word) for part in own for word in part.words]  # a value never spans two strings
+    if any(_shows(words, record.current) for words in strings):
         return "current", record.current
-    if old is not None and old.search(content):
+    if any(_shows(words, record.old) for words in strings):
         return "stale", record.old
     return None, ""
 
