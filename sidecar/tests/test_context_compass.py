@@ -429,3 +429,32 @@ async def test_the_candidate_cap_keeps_the_items_the_message_asks_about():
     assert "insurance" in body_of(selected) and report["judged"] == 48
     ((_, documents),) = judge.calls
     assert any("insurance" in doc for doc in documents)
+
+
+@pytest.mark.asyncio
+async def test_a_long_chain_resolves_every_version_to_the_value_held_now(tmp_path):
+    """Finding 4: no hop bound stops the walk on a value that is itself superseded."""
+    from protagine.beliefs.source_projection import SourceClaimProjection
+    from protagine.turns import TurnIdempotencyLedger
+    from test_source_claim_projection import Model, claim
+    ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
+    for n in range(21):
+        text = f"The review room is room {100 + n}."
+        ledger.record_source(f"v{n}", contact_id="contact-a", session_id=f"session-{n}",
+                             messages=[{"role": "user", "content": text}],
+                             occurred_at=f"2026-09-{n + 1:02d}T09:00:00+00:00", derive_claims=True)
+        model = Model({text: claim(text, f"room {100 + n}", subject="review room", predicate="room")})
+        assert await SourceClaimProjection(ledger).process_one(model)
+    with closing(ledger._connect()) as conn:  # each version corrected by the next: v0 -> v1 -> ... -> v20
+        turns = dict(conn.execute("SELECT turn_id, id FROM source_claims").fetchall())
+        ids = [turns[f"v{n}"] for n in range(21) if f"v{n}" in turns]
+        assert len(ids) == 21
+        conn.executemany("UPDATE source_claims SET retracted_by=? WHERE id=?", list(zip(ids[1:], ids)))
+        conn.commit()
+    records = compass.claim_supersessions(ledger, contact_id="contact-a", session_id="later")
+    assert len(records) == 20 and {record.current for record in records} == {"room 120"}
+    # A cycle has no value held now: nothing is asserted for it.
+    with closing(ledger._connect()) as conn:
+        conn.execute("UPDATE source_claims SET retracted_by=? WHERE id=?", (ids[0], ids[20]))
+        conn.commit()
+    assert compass.claim_supersessions(ledger, contact_id="contact-a", session_id="later") == []

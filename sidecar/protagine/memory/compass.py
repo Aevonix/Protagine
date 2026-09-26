@@ -501,6 +501,9 @@ def dead_value_lines(text: str, records: list[Superseded]) -> int:
     return sum(1 for line in str(text or "").split("\n") if any(asserts_superseded(line, r) for r in records))
 
 
+CHAIN_LIMIT = 4096  # claims read to resolve the chains of one assemble; beyond it a chain asserts no current value
+
+
 def claim_supersessions(ledger, *, contact_id: str, session_id: str, limit: int = 64) -> list[Superseded]:
     """Changed and corrected claims visible in this scope, each with the value its latest successor holds."""
     if ledger is None or not contact_id:
@@ -519,19 +522,23 @@ def claim_supersessions(ledger, *, contact_id: str, session_id: str, limit: int 
             return []
         successor = {row["id"]: row["successor"] for row in rows}
         kinds = {row["id"]: row["kind"] for row in rows}
+        held = set()  # claims read and found superseded by nothing: the values held now
         frontier = {value for value in successor.values() if value not in successor}
-        for _ in range(8):  # a successor superseded in turn: follow the chain to the value held now
-            if not frontier:
-                break
+        while frontier and len(successor) + len(held) <= CHAIN_LIMIT:
+            # A successor superseded in turn: follow every chain to its end, however long.
             found = conn.execute("SELECT id, coalesce(retracted_by, superseded_by) FROM source_claims WHERE id IN ("
                                  + ",".join("?" for _ in frontier) + ")", sorted(frontier)).fetchall()
             frontier = set()
             for claim_id, following in found:
-                if following:
+                if not following:
+                    held.add(claim_id)
+                elif claim_id not in successor:
                     successor[claim_id] = following
-                    if following not in successor:
+                    if following not in successor and following not in held:
                         frontier.add(following)
-        wanted = sorted(set(successor) | set(successor.values()))
+        if frontier:
+            logger.warning("superseded claim chains longer than %d claims are not resolved", CHAIN_LIMIT)
+        wanted = sorted(set(successor) | held)
         visible = {row["id"]: row for row in projection._rows(conn, contact_id, session_id, ids=wanted,
                                                               limit=len(wanted) + 1)}
     records = []
@@ -540,12 +547,14 @@ def claim_supersessions(ledger, *, contact_id: str, session_id: str, limit: int 
         if old is None:
             continue
         current, seen = successor.get(claim_id), {claim_id}
-        while current in successor and current not in seen and len(seen) < 16:
+        while current in successor and current not in seen:
             seen.add(current)
             current = successor[current]
-        latest = visible.get(current)
+        # Only a claim read and found superseded by nothing holds the value now: a cycle or an unread chain end
+        # asserts no current value. An erased or unattributed successor revives nothing and asserts nothing.
+        latest = visible.get(current) if current in held else None
         if latest is None:
-            continue  # an erased or unattributed successor revives nothing and asserts nothing
+            continue
         old_value, new_value = str(old.get("value") or ""), str(latest.get("value") or "")
         if not old_value or _normal(old_value) == _normal(new_value):
             continue

@@ -183,8 +183,9 @@ A line of any section that states a value the record has since superseded
 keeps its words and gains the current value: `[superseded: now "<value>" since
 <date>]`, `corrected to` for a correction, `rescheduled to` for a commitment
 deadline. The records are the scope's changed and corrected source claims
-(followed to the latest claim; an erased or unattributed successor asserts
-nothing) and the listed commitments' previous deadlines. A line is a record's
+(followed to the end of the chain, however long, and only to a claim read and
+found superseded by nothing; a cycle, a chain past 4,096 claims, or an erased or
+unattributed successor asserts nothing) and the listed commitments' previous deadlines. A line is a record's
 only by identity: it carries the commitment's `id=`, or the claim's id or the
 `turn:` of the source that stated it. Shared subject words, or the same value on
 another record's line, never count. A record's line counts when it carries the
