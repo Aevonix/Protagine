@@ -1260,31 +1260,35 @@ class Mind:
 
     def _followups(self, now: datetime, inputs: DriveInputs) -> List[outreach_functions.Followup]:
         """The owner's "dig deeper" (or "yes, help me with it") replies of the last week not yet made a task.
-        A promise the assistant made in the same reply (captured within ten minutes of it, naming the topic)
-        is what the follow-up keeps; ``words`` carries the reply's turn id until the ledger is read."""
+        A promise the assistant made in that very reply (capture's ``metadata.source_turn`` is the reply's
+        turn) to do what the reply asked (``outreach.keeps_followup``) is what the follow-up keeps; any other
+        promise is its own obligation. ``words`` carries the reply's turn id until the ledger is read."""
         o = outreach_functions
-        items = []
+        replies = []
         for row in self.store.intentions(kind=["message"], since=now - timedelta(days=7), limit=500,
                                          recipient=self.owner_id):
             reaction = self._reaction(row)
-            if row.type not in OUTREACH_MESSAGES or reaction.get("class") != "positive" or reaction.get("followup"):
-                continue
+            if row.type in OUTREACH_MESSAGES and reaction.get("class") == "positive" and not reaction.get("followup"):
+                replies.append((row, str(reaction.get("turn") or "")))
+        said = self._owner_words([turn for _, turn in replies])
+        items = []
+        for row, turn in replies:
             context = row.context if isinstance(row.context, dict) else {}
             topic = str(context.get("topic") or row.description)
-            said = _utc(reaction.get("at")) or now
-            promise = next((record for record in inputs.commitments
-                            if drive_functions._obligor(record, record.get("metadata") if isinstance(
+            item = o.Followup(outreach_id=row.id, topic=topic, slug=slug(topic),
+                              shared=o.excerpt(str(context.get("text") or ""), topic, limit=300), words=turn,
+                              offer=row.type in {"outreach_loop", "outreach_care"})
+            reply = reactions.strip_prefix(said.get(turn, ""))
+            promise = next((record for record in inputs.commitments if turn
+                            and str((record.get("metadata") if isinstance(record.get("metadata"), dict) else {})
+                                    .get("source_turn") or "") == turn
+                            and drive_functions._obligor(record, record.get("metadata") if isinstance(
                                 record.get("metadata"), dict) else {}, str(record.get("person_id") or "") or None,
                                 self.owner_id) == "assistant"
-                            and said - timedelta(minutes=1) <= (_utc(record.get("made_at")) or said)
-                            <= said + timedelta(minutes=10)
-                            and o.similar(topic, str(record.get("description") or ""))), None)
-            items.append(o.Followup(outreach_id=row.id, topic=topic, slug=slug(topic),
-                                    shared=o.excerpt(str(context.get("text") or ""), topic, limit=300),
-                                    words=str(reaction.get("turn") or ""),
-                                    commitment=str(promise["id"]) if promise else None,
-                                    commitment_due=_utc(promise.get("due_at")) if promise else None,
-                                    offer=row.type in {"outreach_loop", "outreach_care"}))
+                            and o.keeps_followup(record.get("description"), item, reply)), None)
+            if promise is not None:
+                item.commitment, item.commitment_due = str(promise["id"]), _utc(promise.get("due_at"))
+            items.append(item)
         return items
 
     def _digested(self, now: datetime) -> List[str]:

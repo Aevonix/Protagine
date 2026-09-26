@@ -154,7 +154,7 @@ async def test_a_followup_keeps_the_promise_captured_from_the_reply_and_duty_for
     await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
     promise = fx.commitments.create(person_id=OWNER, description="Send the owner the tidal energy details",
                                     due_at=(fx.now + 2 * H).isoformat(), source_type="cognition",
-                                    metadata={"obligor": "assistant"})
+                                    metadata={"obligor": "assistant", "source_turn": "t-dig"})
     with fx.commitments._connect() as conn:          # captured from the reply, on the mind's clock
         conn.execute("UPDATE commitments SET made_at=? WHERE id=?", (fx.now.isoformat(), promise["id"]))
     await fx.tick()
@@ -592,3 +592,63 @@ async def test_an_unrelated_dismissal_seen_by_the_appraisal_touches_no_outreach(
     fx2.shift(timedelta(minutes=10))
     await fx2.tick()
     assert fx2.store.get(row.id).verdict == "not_useful"
+
+
+# -- a follow-up keeps only the promise its own reply made -----------------------------------------------
+
+def _promise(fx, description, *, turn=None):
+    metadata = {"obligor": "assistant", **({"source_turn": turn} if turn else {})}
+    row = fx.commitments.create(person_id=OWNER, description=description, due_at=(fx.now + 2 * H).isoformat(),
+                                source_type="cognition", metadata=metadata)
+    with fx.commitments._connect() as conn:
+        conn.execute("UPDATE commitments SET made_at=? WHERE id=?", (fx.now.isoformat(), row["id"]))
+    return row
+
+
+@pytest.mark.parametrize("turn", [None, "t-earlier", "t-dig"])
+async def test_a_followup_never_keeps_a_promise_of_another_turn_or_another_action(make, turn):
+    """"Cancel the tidal energy newsletter" captured half a minute before the "dig deeper" (from another turn,
+    or from no known turn), or from that very turn: none of them is the research the owner asked for, so
+    delivering the research never marks it done."""
+    fx = make()
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    other = _promise(fx, "Cancel the tidal energy newsletter subscription", turn=turn)
+    fx.shift(timedelta(seconds=30))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    assert "bound_commitment" not in task.context and not task.dedup_key.startswith(f"commitment:{other['id']}")
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The tidal energy study ran at KD-83.")
+    await fx.tick()
+    assert fx.outreach_rows("outreach_answer")[0].status == "sent"
+    assert fx.commitments.get(other["id"])["status"] in {"pending", "overdue"}
+
+
+def test_capture_records_the_turn_a_row_came_from(tmp_path):
+    from protagine.commitments.extract import record_items
+    from protagine.commitments.store import CommitmentStore
+    store = CommitmentStore(tmp_path / "c.db")
+    item = {"action": "create", "target": None, "description": "Look further into tidal energy for the owner",
+            "due_at": None, "priority": 70, "source_type": "cognition", "metadata": None, "listed_due": None,
+            "counterpart": None, "obligor": "assistant"}
+    record_items([item], person_id=OWNER, commitment_store=store, existing=[], rejections=[], turn_id="t-dig",
+                 owner_id=OWNER, owner_text="Dig deeper into it.")
+    row, = store.list(status=["pending"], person_id=OWNER)["commitments"]
+    assert row["metadata"]["source_turn"] == "t-dig"
+
+
+def test_a_promise_keeps_a_followup_only_when_it_does_what_the_reply_asked():
+    item = outreach.Followup(outreach_id="o-1", topic="tidal energy", slug="tidal-energy",
+                             shared="QX-41: A practical study of tidal energy was published.")
+    assert outreach.keeps_followup("Find out the tidal energy study's field site", item,
+                                   "Dig deeper: find out its field site")
+    assert outreach.keeps_followup("Send the owner the tidal energy details", item, "Yes, dig deeper into it.")
+    assert not outreach.keeps_followup("Cancel the tidal energy newsletter subscription", item,
+                                       "Dig deeper into tidal energy and cancel the newsletter subscription")
+    assert not outreach.keeps_followup("Research kelp farming", item, "Dig deeper into it.")
+    offer = outreach.Followup(outreach_id="o-2", topic="parcel receipt", slug="parcel-receipt", shared="", offer=True)
+    assert outreach.keeps_followup("Draft the parcel receipt email to the courier", offer,
+                                   "Yes please, draft the parcel receipt email to the courier")
+    assert not outreach.keeps_followup("Cancel the parcel receipt order", offer, "Yes please, draft the email")

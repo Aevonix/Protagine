@@ -602,6 +602,36 @@ def answer_candidate(finding: Finding, inputs: OutreachInputs) -> Optional[Candi
                            **({"bound_commitment": finding.bound_commitment} if finding.bound_commitment else {})})
 
 
+# The words of a promise to do what a "dig deeper" asks, beyond its topic: find out more and report it.
+FOLLOWUP_WORDS = frozenset("""
+dig deeper further more research researched researching look looking looked into find finding findings found out
+report reports reporting reported detail details specifics specific sources source information info learn
+investigate investigating explore exploring check checking read reading update updates news latest follow following
+followup follow-up send share get give tell back summary summarise summarize owner owner's item items piece thing
+things sent shared the for about and with what how who when where which why that this those these its their them
+you your
+""".split())
+
+
+def keeps_followup(promise: Any, item: Followup, reply: str = "") -> bool:
+    """Whether an assistant promise captured from the owner's reply is the follow-up that reply asked for: about
+    its topic, and asking nothing beyond it. For a finding that is finding out more (``FOLLOWUP_WORDS``) about the
+    topic, what was shared, or what the dig was aimed at (the rest of the cue's own clause, up to a conjunction);
+    for an offer of help, what the reply itself says. "Cancel the tidal energy newsletter" is never the research
+    on tidal energy, even said in the same turn: delivering the research would mark it done."""
+    from .reactions import _CONJUNCTIONS, read
+    text = str(promise or "")
+    if not similar(item.topic, text):
+        return False
+    if item.offer:
+        aimed = reply
+    else:
+        aimed = " ".join(" ".join(re.findall(r"[\w'-]+", tail)[:next(
+            (index for index, word in enumerate(re.findall(r"[\w'-]+", tail)) if word.casefold() in _CONJUNCTIONS),
+            None)]) for tail in read(reply).positive_tails)
+    return not (_tokens(text) - _tokens(item.topic) - _tokens(item.shared) - _tokens(aimed) - FOLLOWUP_WORDS)
+
+
 def followup_candidate(item: Followup, inputs: OutreachInputs) -> Candidate:
     """The deeper dig the owner asked for: duty's (owed, never satiable), a template body with the owner's
     words quoted as data. Bound to an assistant promise captured from the same reply, it takes that
@@ -735,5 +765,5 @@ __all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "CHECK_IN_OFFERS", "CONVERSATION_GAP
            "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NULL_REPORT", "repeated", "says_something", "settle",
            "NOT_NOW_HOLD", "OWNER_TURN_KEY", "OutreachInputs", "PAUSE_KEY", "REPLY_HOURS", "Sent", "TIMING_PREFIX", "answer_candidate",
            "backoff_until", "candidates", "care_candidate", "digest_value", "excerpt", "finding_candidate",
-           "followup_candidate", "followups", "holds", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
+           "followup_candidate", "followups", "holds", "keeps_followup", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
            "novelty", "open_loops", "overlap", "pause_until", "pressure", "quote", "relevance", "similar", "terms", "weight"]

@@ -1137,6 +1137,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
                 metadata[field] = value
         if _due_text(item, owner_text):
             metadata["due_text"] = _due_text(item, owner_text)
+        if turn_id:
+            metadata["source_turn"] = str(turn_id)    # the turn it came from (a follow-up keeps only its own)
         try:
             row = commitment_store.create(
                 person_id=person_id, description=description[:1000], dedupe=not confirmed, allow_overdue=True,
