@@ -507,10 +507,10 @@ def _walk(value, owner, elements, loose, key=""):
         for item in value:
             _walk(item, owner, elements, loose, key)
     elif isinstance(value, str):
-        if key and _SKIP_KEY.search(key):
-            return
+        # Only metadata fields are skipped, by their key: a quotation or value is a value whatever it looks like
+        # (an ISO timestamp quoted as the answer is the answer).
         text = value.strip()
-        if text and (key in _VALUE_KEYS or not _IDENTIFIER.match(text)):
+        if text and not (key and _SKIP_KEY.search(key)):
             (owner.words if owner is not None else loose).append(text)
 
 

@@ -686,3 +686,19 @@ def test_values_are_matched_with_the_same_tokenizer():
     assert compass.asserts_superseded(claim_quote(call.record, "Mira is on-call."), call)
     assert not compass.asserts_superseded(claim_quote(call.record, "Mira is on call-backs."), call)
     assert not compass.asserts_superseded(claim_quote(cafe.record, "Café Centrale is closed."), cafe)
+
+
+def test_a_quotation_of_only_a_timestamp_is_still_the_records_value():
+    """Round 3, new P2: a scalar quotation is matched whatever it looks like; only metadata fields are skipped."""
+    old = "2026-09-21T09:00:00+00:00"
+    record = claim_record(old, "September 29", cid("deadline"), subject="deadline")
+    line = claim_quote(record.record, old)
+    annotated = body_of(compass.annotate_superseded(
+        [ContextSection(id="protagine-memory", title="Relevant Memories", body=line)], [record]))
+    assert annotated.endswith(noted(record))
+    assert compass.dead_value_lines(line, [record]) == 1 and compass.dead_value_lines(annotated, [record]) == 0
+    compass.SERVED.remember(("viewer", "s-1"), line)
+    assert f'- id={record.record}; "{old}" (deadline)' in compass.SERVED.corrections(("viewer", "s-1"), [record])
+    # The same instant in the line's own metadata is not its value.
+    timed = claim_quote(record.record, "The deadline is set.", reported_at=old, observed_at=old)
+    assert compass.dead_value_lines(timed, [record]) == 0
