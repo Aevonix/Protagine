@@ -160,6 +160,29 @@ async def test_an_answer_to_other_questions_than_the_one_asked_is_no_answer():
     assert ask.stats["owner_verdict"]["failed"] == 1
 
 
+@pytest.mark.parametrize("probabilities", [
+    {"engaged": 0.0, "dig_deeper": 0.0, "not_interested": 0.0, "not_now": 0.0, "stop": 0.05},   # renormalises to 1.0
+    {"engaged": 0.0, "dig_deeper": 0.0, "not_interested": 0.0, "not_now": 0.0, "stop": 0.0},
+    {"engaged": 0.4, "dig_deeper": 0.4, "not_interested": 0.4, "not_now": 0.4, "stop": 0.9},
+    {"engaged": 0.1, "dig_deeper": 0.1, "not_interested": 0.1, "not_now": 0.1, "stop": 0.5},    # sums to 0.9
+])
+async def test_a_choice_that_is_not_a_distribution_is_no_answer(probabilities):
+    """A choice's probabilities sum to one (within 0.01, the contract's rounding); anything else is malformed, and
+    renormalising it would turn a faint label into a certain one."""
+    server = Server(lambda body: choice_answer(probabilities))
+    ask = decider(server, outreach_reply={"temperature": 0.33, "abstain": [0.0, 0.55]})
+    assert await ask.decide("outreach_reply", text="Who ran it?", topic="tidal energy") is None
+    assert ask.stats["outreach_reply"]["failed"] == 1
+
+
+async def test_a_choice_rounded_within_the_contracts_tolerance_is_read():
+    rounded = {"engaged": 0.02, "dig_deeper": 0.9, "not_interested": 0.02, "not_now": 0.02, "stop": 0.035}
+    ask = decider(Server(lambda body: choice_answer(rounded)), outreach_reply={"temperature": 1.0,
+                                                                              "abstain": [0.0, 0.5]})
+    decision = await ask.decide("outreach_reply", text="Who ran it?", topic="tidal energy")
+    assert decision is not None and decision.label == "dig_deeper"
+
+
 async def test_a_slow_endpoint_is_no_answer_within_the_timeout():
     async def slow(request):
         await asyncio.sleep(2)

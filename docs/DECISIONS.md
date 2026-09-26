@@ -22,7 +22,8 @@ and its calibrated probability) or `None`, and `None` always means: keep the exi
   environment, a non-finite one included, is the default), the endpoint is busy (429), failing or
   unreachable;
 - the answer is not the typed answer asked for (another protocol, an input the model did not read whole
-  (`input_truncated` not `false`), answers to other questions, other labels, a probability out of range);
+  (`input_truncated` not `false`), answers to other questions, other labels, a probability out of range, or a
+  choice whose probabilities do not sum to one within 0.01);
 - the calibrated probability falls inside the point's abstain band.
 
 Calibration is temperature scaling: a probability p becomes p^(1/T), renormalised (for yes/no the log-odds are

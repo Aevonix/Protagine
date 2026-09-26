@@ -97,6 +97,19 @@ async def test_a_stop_the_decision_model_reads_in_a_linked_reply_pauses_outreach
     assert outreach.pause_until(fx.mind.mind_state.get(outreach.PAUSE_KEY)) is not None
 
 
+async def test_a_stop_read_from_a_malformed_choice_leaves_the_reply_as_engagement(make):
+    fx = make()
+    row = await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    faint_stop = {"engaged": 0, "dig_deeper": 0, "not_interested": 0, "not_now": 0, "stop": 0.05}
+    fx.mind.decisions = served({"type": "choice", "choice": "stop", "probabilities": faint_stop, "confidence": 0.05},
+                               point="outreach_reply")
+    summary = await say(fx, NO_CUE, "t-1", "owner-2")
+    assert reaction(fx, row)["class"] == "engaged" and "paused" not in summary["applied"]
+    assert outreach.pause_until(fx.mind.mind_state.get(outreach.PAUSE_KEY)) is None
+    assert fx.mind.decisions.stats["outreach_reply"]["failed"] == 1
+
+
 # -- a contact's opt-out ------------------------------------------------------------------------------------
 
 @pytest.fixture

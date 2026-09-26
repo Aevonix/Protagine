@@ -50,6 +50,8 @@ TIMEOUT_MS_BOUNDS = (1, 5000)
 #: its options. A longer input keeps the existing path; it is never cut to fit.
 MAX_STATE_CHARS = 1200
 _QUESTION = "decision"
+#: How far a choice's probabilities may sum from one (the contract's rounding) and still be a distribution.
+SUM_TOLERANCE = 0.01
 _EPSILON = 1e-6
 
 
@@ -230,7 +232,8 @@ def answer_probabilities(spec: Point, body: Any) -> Dict[str, float]:
     """The model's uncalibrated answer to ``spec``'s question in a ``local-decision.v1`` body: the probability of
     each label (a choice), or of "yes" and "no" (a yes/no). ValueError for anything the contract does not promise:
     another protocol, an input the model did not read whole (``input_truncated`` must be ``false``), answers to
-    other questions than the one asked, or an answer that is not the typed answer asked for. The sidecar and the
+    other questions than the one asked, or an answer that is not the typed answer asked for (a choice's
+    probabilities must sum to one within ``SUM_TOLERANCE``). The sidecar and the
     measurement read answers only through this, so a measured answer is one the sidecar would have acted on."""
     if not isinstance(body, dict) or body.get("protocol") != PROTOCOL:
         raise ValueError("not a decision answer")
@@ -247,6 +250,8 @@ def answer_probabilities(spec: Point, body: Any) -> Dict[str, float]:
         values = {label: _probability(value) for label, value in raw.items()}
         if any(value is None for value in values.values()):
             raise ValueError("a probability is out of range")
+        if not math.isclose(sum(values.values()), 1.0, abs_tol=SUM_TOLERANCE):
+            raise ValueError("the probabilities are not a distribution")   # renormalised, a faint label is certain
         return values
     p_yes = _probability(answer.get("noul"))
     if answer.get("type") != "noul" or p_yes is None:
