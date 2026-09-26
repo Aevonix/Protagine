@@ -599,3 +599,57 @@ def test_an_annotation_needs_the_line_to_be_the_superseded_record():
     assert compass.SERVED.corrections(("viewer", "s-1"), [record]) == ""
     compass.SERVED.remember(("viewer", "s-1"), lines[5])
     assert f"id={design};" in compass.SERVED.corrections(("viewer", "s-1"), [record])
+
+
+def test_a_value_restored_after_a_change_is_corrected_by_the_records_history():
+    """Round 3, finding 2: A -> B -> A. What a line last told the model about its record (its note) decides."""
+    a, b = "2026-09-21T09:00:00+00:00", "2026-09-25T09:00:00+00:00"
+    key = ("viewer", "s-1")
+    moved = compass.commitment_reschedules([commitment("c-1", "Send the form", b, a)])
+    served = body_of(compass.annotate_superseded([ContextSection(id="protagine-commitments", title="Pending",
+                                                                 body=commitment_line("c-1", "Send the form", a))],
+                                                 moved))
+    compass.SERVED.remember(key, served)
+    back = compass.commitment_reschedules([commitment("c-1", "Send the form", a, b)])
+    note = compass.SERVED.corrections(key, back)
+    assert f'- id=c-1; "{b}" (Send the form): [superseded id=c-1: rescheduled to "{a}"' in note
+    assert compass.dead_value_lines(served, back) == 1 and compass.dead_value_lines(note, back) == 0
+    compass.SERVED.remember(key, note)
+    assert compass.SERVED.corrections(key, back) == ""
+    # The same when B was first served as a correction line.
+    compass.SERVED.clear()
+    compass.SERVED.remember(key, commitment_line("c-1", "Send the form", a))
+    compass.SERVED.remember(key, compass.SERVED.corrections(key, moved))
+    assert f'rescheduled to "{a}"' in compass.SERVED.corrections(key, back)
+    # A claim: the record of the first version holds its own value again, and its served note said otherwise.
+    first = cid("v1")
+    stale = card_line("s-1", (first, "room 100")) + " " + claim_record("room 100", "room 101", first).note()
+    restored = claim_record("room 100", "room 100", first)
+    assert compass.asserts_superseded(stale, restored)
+    assert not compass.asserts_superseded(card_line("s-1", (first, "room 100")), restored)
+    compass.SERVED.clear()
+    compass.SERVED.remember(key, stale)
+    assert f'- id={first}; "room 101"' in compass.SERVED.corrections(key, [restored])
+
+
+@pytest.mark.asyncio
+async def test_a_chain_back_to_an_earlier_value_keeps_a_record_for_every_version(tmp_path):
+    """Round 3, finding 2, the ledger: A -> B -> A gives both earlier versions the value held now."""
+    from protagine.beliefs.source_projection import SourceClaimProjection
+    from protagine.turns import TurnIdempotencyLedger
+    from test_source_claim_projection import Model, claim
+    ledger = TurnIdempotencyLedger(tmp_path / "turn-idempotency.db")
+    for n, room in enumerate(["room 100", "room 101", "room 100"]):
+        text = f"Version {n}: the review room is {room}."
+        ledger.record_source(f"v{n}", contact_id="contact-a", session_id=f"session-{n}",
+                             messages=[{"role": "user", "content": text}],
+                             occurred_at=f"2026-09-0{n + 1}T09:00:00+00:00", derive_claims=True)
+        assert await SourceClaimProjection(ledger).process_one(
+            Model({text: claim(text, room, subject="review room", predicate="room")}))
+    with closing(ledger._connect()) as conn:
+        turns = dict(conn.execute("SELECT turn_id, id FROM source_claims").fetchall())
+        ids = [turns[f"v{n}"] for n in range(3)]
+        conn.executemany("UPDATE source_claims SET retracted_by=? WHERE id=?", list(zip(ids[1:], ids)))
+        conn.commit()
+    records = {r.record: r for r in compass.claim_supersessions(ledger, contact_id="contact-a", session_id="later")}
+    assert set(records) == set(ids[:2]) and {r.current for r in records.values()} == {"room 100"}

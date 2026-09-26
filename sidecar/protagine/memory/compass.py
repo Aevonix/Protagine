@@ -525,30 +525,42 @@ def _same(value: str, other: str) -> bool:
     return _normal(value) == _normal(other)
 
 
-def line_state(line: str, record: Superseded) -> str | None:
-    """``"current"`` when ``line`` states ``record`` (a part of it carries the record's own id) with the current
-    value, in its words or in a note naming the record; ``"stale"`` when it states the record with a value the record
-    replaced; otherwise ``None``."""
+def stated(line: str, record: Superseded) -> tuple[str | None, str]:
+    """What ``line`` last told the model about ``record``, by the record's history rather than by the first value
+    found: ``("current", value)``, ``("stale", value)`` (a value the record no longer holds) or ``(None, "")`` when
+    the line does not state the record. The line's latest word about its record decides: a note naming the record
+    (notes are added after the text they correct), then the record's own value field or due time, then its words."""
     if not record.record or record.record not in line:
-        return None
+        return None, ""
     text, notes = _notes(line)
-    own = [part for part in _elements(text) if part.record == record.record]
     notes = [value for rid, value in notes if rid == record.record]
-    if not own and not notes:
-        return None
-    # Values are matched in the record's own words, never in identifiers and timestamps: identity already makes
-    # them the record's, so a value of any length ("42") counts, and a "42" inside 09:42:00 does not.
-    content = " ".join([*(part.value for part in own if part.value is not None),
-                        *(word for part in own for word in part.words)])
-    current = _pattern(record.current)
-    if any(_same(value, record.current) for value in notes) or (current is not None and current.search(content)):
-        return "current"
-    old = _pattern(record.old)
-    shown = (old is not None and bool(old.search(content))) or any(_same(value, record.old) for value in notes)
-    if not shown and record.kind == "rescheduled":
-        due = _DUE.search(text)  # a commitment line's own due field: any due but the current one is replaced
-        shown = bool(own) and due is not None and not _same(due.group(1), record.current)
-    return "stale" if shown else None
+    if notes:
+        return ("current" if _same(notes[-1], record.current) else "stale"), notes[-1]
+    own = [part for part in _elements(text) if part.record == record.record]
+    if not own:
+        return None, ""
+    values = [part.value for part in own if part.value is not None]
+    if record.kind == "rescheduled":
+        due = _DUE.search(text)  # a commitment line's own due field
+        if due is not None:
+            values.append(due.group(1).strip())
+    if values:
+        wrong = [value for value in values if not _same(value, record.current)]
+        return ("stale", wrong[-1]) if wrong else ("current", values[-1])
+    # Only words: matched in the record's own words, never in identifiers and timestamps (identity already makes
+    # them the record's, so a value of any length ("42") counts, and a "42" inside 09:42:00 does not).
+    content = " ".join(word for part in own for word in part.words)
+    current, old = _pattern(record.current), _pattern(record.old)
+    if current is not None and current.search(content):
+        return "current", record.current
+    if old is not None and old.search(content):
+        return "stale", record.old
+    return None, ""
+
+
+def line_state(line: str, record: Superseded) -> str | None:
+    """``"current"``, ``"stale"`` or ``None``: see ``stated``."""
+    return stated(line, record)[0]
 
 
 def asserts_superseded(line: str, record: Superseded) -> bool:
@@ -636,7 +648,8 @@ def claim_supersessions(ledger, *, contact_id: str, session_id: str, limit: int 
         if latest is None:
             continue
         old_value, new_value = str(old.get("value") or ""), str(latest.get("value") or "")
-        if not old_value or _normal(old_value) == _normal(new_value):
+        # A chain back to the old value (A -> B -> A) is still a record: a line that was told B is corrected.
+        if not old_value:
             continue
         records.append(Superseded(old=old_value, current=new_value,
                                   since=str(latest.get("valid_from") or latest.get("observed_at") or "")[:10],
@@ -667,11 +680,12 @@ def _positions(text: str, needle: str):
         position = text.find(needle, position + 1)
 
 
-def correction_line(record: Superseded) -> str:
-    """One correction, carrying the record's own identity (never a source other records share) so a later turn can
-    tell it was delivered or is stale."""
+def correction_line(record: Superseded, shown: str | None = None) -> str:
+    """One correction of the value ``shown`` earlier (the record's old value by default), carrying the record's own
+    identity (never a source other records share) so a later turn can tell it was delivered or is stale."""
     subject = f" ({record.subject})" if record.subject else ""
-    return f"- id={record.record}; {json.dumps(record.old, ensure_ascii=False)}{subject}: {record.note()}"
+    value = record.old if shown is None else shown
+    return f"- id={record.record}; {json.dumps(value, ensure_ascii=False)}{subject}: {record.note()}"
 
 
 class ServedWindow:
@@ -694,21 +708,23 @@ class ServedWindow:
             if not record.record:
                 continue
             stale = shown = -1
+            value = record.old
             # Delivery is accounted per record: only the lines carrying the record's own id (never a source other
             # records share) can be its lines, and a substring scan finds them.
             carrying = sorted({bisect.bisect_right(starts, position) - 1 for position in _positions(served, record.record)})
             for index in carrying:
-                state = line_state(lines[index], record)
+                state, said = stated(lines[index], record)
                 if state == "stale":
-                    stale = index
+                    stale, value = index, said
                 elif state == "current":
                     shown = index
             # Owed while the last time this record's line was served it showed a replaced value: a correction or
             # a line with the current value served after it has been delivered, and is not repeated.
             if stale > shown:
-                owed.append((-stale, order, record))
+                owed.append((-stale, order, record, value))
         # The most recently served stale values first; the ones past the bound are owed to the next turn.
-        notes = [correction_line(record) for _, _, record in sorted(owed, key=lambda row: row[:2])[:self._lines]]
+        notes = [correction_line(record, value) for _, _, record, value
+                 in sorted(owed, key=lambda row: row[:2])[:self._lines]]
         return ("Earlier context in this conversation showed values the record has since superseded:\n"
                 + "\n".join(notes)) if notes else ""
 
