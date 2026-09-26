@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from protagine.initiatives.models import StoredInitiative
 
-from .audit import NOTICE_TYPES, _clip
+from .audit import NOTICE_TYPES, _clip, ask_line, outgoing_text
 from protagine.util.temporal import now_utc
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def message_payload(row: StoredInitiative, *, owner_id: str | None) -> Dict[str,
         "recipient": recipient,
         "recipient_is_owner": bool(owner_id) and recipient == owner_id,
         "recipient_handles": list(context.get("recipient_handles") or []),
-        "text": context.get("text") or row.description,
+        "text": outgoing_text(row),
         "title": row.description,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
@@ -189,7 +189,7 @@ class Outbox:
             return None
         lines = ["I need your say on these before I act:"]
         for row in asks:
-            lines.append(f"- [{row.ask_code}] {_clip(row.description, 140)} ({row.decision_reason})")
+            lines.append(f"- {ask_line(row, reason=True)}")
         lines.append("Reply 'yes <code>' or 'no <code>'. Silence lets them expire.")
         stamp = self.clock().strftime("%Y%m%d%H%M")
         return self._owner_message(type="ask_notice", title=f"{len(asks)} open ask(s)", text="\n".join(lines),
@@ -230,7 +230,7 @@ class Outbox:
             heading = "Waiting for you" if level != "suggest" else "Suggested (reply 'yes <code>' to do one)"
             lines.append(f"{heading} ({len(asks)}):")
             for row in asks[:12]:
-                lines.append(f"- [{row.ask_code}] {_clip(row.description, 120)}")
+                lines.append(f"- {ask_line(row, limit=120)}")
         for row in suggestions or []:
             lines.append(f"- suggestion: {_clip(row.description, 120)}")
         if found:

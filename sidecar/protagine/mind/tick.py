@@ -3121,7 +3121,7 @@ class Mind:
     def state(self) -> Dict[str, Any]:
         now = self.clock()
         asks = [{"id": row.id, "code": row.ask_code, "ask_code": row.ask_code, "title": row.description,
-                 "kind": row.kind, "decision_reason": row.decision_reason,
+                 "kind": row.kind, "decision_reason": row.decision_reason, "message": audit.asked_words(row),
                  "expires_at": row.expires_at.isoformat() if row.expires_at else None}
                 for row in self.store.intentions(status=["asked"], limit=500)]
         weights = self.effective_weights()

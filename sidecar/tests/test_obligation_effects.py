@@ -194,3 +194,25 @@ def test_a_reminder_on_a_contacts_lane_is_a_word_never_a_task(tmp_path, fx):
                due=fx.now - timedelta(minutes=2), description="Remind them to send the signed form")
     candidates = duty(DriveInputs(now=fx.now, owner_id=OWNER, commitments=[store.get(row["id"])]))[1]
     assert [(c.type, c.kind, c.recipient) for c in candidates] == [("commitment_reminder", "message", OWNER)]
+
+
+async def test_the_owner_sees_the_exact_words_a_contact_report_would_send_before_saying_yes(fx):
+    """A worker's report for a contact may carry what only the owner may see: every place the owner is asked
+    about it (the ask notice, the digest, ``asks`` and ``why``) shows the exact text that would be sent."""
+    from protagine.mind.outbox import message_payload
+    row, task = await _one_task(fx, person=CONTACT, description="Send the contact the delivery date")
+    fx.mind.outcomes.record(task["id"], status="done",
+                            summary="Delivery is Friday. Owner confidential: acquisition offer is $2 million.")
+    await fx.mind.tick(force=True)
+    report, = _reports(fx, CONTACT)
+    assert report.status == "asked" and report.ask_code
+    words = message_payload(report, owner_id=OWNER)["text"]
+    assert "acquisition offer is $2 million" in words
+    fx.shift(minutes=1)
+    notice = fx.mind.outbox.notify_asks([report], force=True)
+    assert notice is not None and words in notice.context["text"]
+    listed, = [item for item in fx.mind.asks() if item["ask_code"] == report.ask_code]
+    assert listed["message"] == words
+    assert words in audit.why(fx.store, report.id)["sentence"]
+    assert words in fx.mind.outbox.build_digest(since=fx.now - timedelta(days=1), level="standard")
+
