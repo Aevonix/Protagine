@@ -1035,6 +1035,18 @@ class InitiativeStore:
         params.append(max(1, int(limit)))
         return [StoredInitiative.from_row(dict(row)) for row in self._db.execute(query, params).fetchall()]
 
+    def findings(self, states: List[str], types: List[str], limit: int = 500) -> List[StoredInitiative]:
+        """Done task rows of ``types`` whose finding outreach (``result_metadata.outreach.state``) is one of
+        ``states``, newest first, whatever their age: a finding is found by its state, never by when it formed."""
+        if not states or not types:
+            return []
+        query = (f"SELECT * FROM initiatives WHERE kind = 'task' AND status = 'done' "
+                 f"AND type IN ({','.join('?' * len(types))}) "
+                 f"AND json_extract(result_metadata, '$.outreach.state') IN ({','.join('?' * len(states))}) "
+                 "ORDER BY created_at DESC LIMIT ?")
+        params: List[Any] = [*types, *states, max(1, int(limit))]
+        return [StoredInitiative.from_row(dict(row)) for row in self._db.execute(query, params).fetchall()]
+
     def lesson_rows(self, since: Optional[datetime] = None, limit: int = 20000) -> List[StoredInitiative]:
         """Mind rows that carried a lesson (``lesson_ids``), newest first: the joins lessons are scored by."""
         query = ("SELECT * FROM initiatives WHERE kind IS NOT NULL AND lesson_ids IS NOT NULL "

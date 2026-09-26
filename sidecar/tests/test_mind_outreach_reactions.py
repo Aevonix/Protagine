@@ -724,7 +724,6 @@ async def test_a_requested_answer_the_body_never_takes_goes_to_the_digest_after_
     assert "KD-83" in digest
 
 
-
 @pytest.mark.parametrize("action", ["Cancel the tidal energy pilot trial", "Cancel the pilot trial next week",
                                     "Tell the tidal energy board to cancel the pilot trial",
                                     "Send the owner the tidal energy details"])
@@ -776,3 +775,107 @@ def test_capture_keeps_the_answer_kind_it_is_given(tmp_path):
                  owner_id=OWNER, owner_text="Dig deeper into it.")
     row, = store.list(status=["pending"], person_id=OWNER)["commitments"]
     assert row["metadata"]["kind"] == "answer" and row["metadata"]["source_turn"] == "t-dig"
+
+
+
+# -- round 2: a finding is found by its state, and listed only once the digest carrying it is delivered -------
+
+async def _requested_answer(fx):
+    await shared(fx)
+    fx.shift(timedelta(minutes=5))
+    await say(fx, "Yes, dig deeper into the tidal energy item you sent.", "t-dig", "owner-2")
+    await fx.tick()
+    task, = [item for item in fx.store.intentions(kind=["task"], limit=50) if item.type == "outreach_followup"]
+    fx.mind.bound(task.id, "task-dig")
+    fx.mind.outcomes.record(task.id, status="done", summary="finding: The QX-41 tidal energy study ran at KD-83.")
+    return task
+
+
+def _state(fx, task):
+    return fx.store.get(task.id).result_metadata["outreach"]
+
+
+@pytest.mark.parametrize("days", [8, 15, 40])
+async def test_a_requested_answer_waiting_longer_than_a_week_is_still_found_and_sent(make, days):
+    """Re-check F5: an interruption of more than seven days before the queued answer expires; the finding set back
+    to pending is found again by its state (no creation-time window) and answered once the body is back."""
+    fx = make()
+    task = await _requested_answer(fx)
+    await fx.mind.tick(force=True)                   # the answer forms; the body is away
+    first, = fx.outreach_rows("outreach_answer")
+    fx.shift(timedelta(days=days))
+    await fx.mind.tick(force=True)
+    assert fx.store.get(first.id).status == "expired" and _state(fx, task)["state"] != "listed"
+    for _ in range(3):
+        await fx.tick()
+        fx.shift(timedelta(minutes=5))
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.tick()
+    assert [p for p in fx.sent if p["type"] in {"outreach_answer", "digest"} and "KD-83" in p["text"]]
+
+
+@pytest.mark.parametrize("uncollected_hours", [21, 30, 200])
+async def test_a_digest_that_expires_unsent_gives_its_findings_back(make, uncollected_hours):
+    """Re-check new P1: after three unsent answers the finding goes to the digest; the digest is queued but never
+    collected and expires. The finding is not ``listed`` (nothing delivered it): it is pending again, and the
+    answer reaches the owner once the body is back."""
+    fx = make()
+    task = await _requested_answer(fx)
+    for _ in range(4):
+        await fx.mind.tick(force=True)
+        fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    assert _state(fx, task)["state"] == "digest"
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.mind.tick(force=True)                   # queued; the body is away
+    digest, = [row for row in fx.store.intentions(kind=["message"], limit=100) if row.type == "digest"]
+    assert _state(fx, task)["state"] != "listed"
+    fx.shift(timedelta(hours=uncollected_hours))
+    await fx.mind.tick(force=True)
+    assert fx.store.get(digest.id).status == "expired"
+    assert _state(fx, task)["state"] not in {"listed", "queued"}      # given back: formed again or waiting
+    for _ in range(3):
+        await fx.tick()
+        fx.shift(timedelta(minutes=5))
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    fx.mind._daily.pop("digest", None)
+    await fx.tick()
+    assert [p for p in fx.sent if p["type"] in {"outreach_answer", "digest"} and "KD-83" in p["text"]]
+
+
+async def test_a_finding_is_listed_only_when_its_digest_is_delivered(make):
+    fx = make()
+    task = await _requested_answer(fx)
+    for _ in range(4):
+        await fx.mind.tick(force=True)
+        fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.mind.tick(force=True)
+    digest, = [row for row in fx.store.intentions(kind=["message"], limit=100) if row.type == "digest"]
+    assert _state(fx, task)["state"] == "queued" and _state(fx, task)["digest"] == digest.id
+    await fx.tick()                                  # the body collects and delivers it
+    assert fx.store.get(digest.id).status == "sent" and _state(fx, task)["state"] == "listed"
+    fx.shift(timedelta(days=1))
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.tick()
+    assert sum("KD-83" in p["text"] for p in fx.sent if p["type"] == "digest") == 1
+
+
+@pytest.mark.parametrize("result", ["failed", "uncertain"])
+async def test_a_digest_the_body_could_not_deliver_gives_its_findings_back(make, result):
+    fx = make()
+    task = await _requested_answer(fx)
+    for _ in range(4):
+        await fx.mind.tick(force=True)
+        fx.shift(13 * H)
+    await fx.mind.tick(force=True)
+    fx.mind.digest_hour = fx.now.astimezone(fx.mind.tz).hour
+    await fx.mind.tick(force=True)
+    payload, = [p for p in await fx.mind.outbox_ready() if p["type"] == "digest"]
+    fx.mind.outbox.sending(payload["id"], target="capture:owner")
+    fx.mind.outbox.sent(payload["id"], result=result)
+    await fx.mind.tick(force=True)
+    assert _state(fx, task)["state"] not in {"listed", "queued"}
+    await fx.tick()
+    assert [p for p in fx.sent if p["type"] == "outreach_answer" and "KD-83" in p["text"]]

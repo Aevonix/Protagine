@@ -1141,10 +1141,22 @@ class Mind:
         return value if isinstance(value, dict) else {}
 
     def _findings(self, now: datetime) -> List[StoredInitiative]:
-        """Done research-shaped rows whose finding outreach has not settled (``result_metadata.outreach``)."""
-        rows = self.store.intentions(status=["done"], kind=["task"], since=now - timedelta(days=7), limit=500)
-        return [row for row in rows if row.type in SHARED_FINDINGS
-                and ((row.result_metadata or {}).get("outreach") or {}).get("state") == "pending"]
+        """Done research-shaped rows whose finding outreach has not settled (``result_metadata.outreach``), found
+        by that state whatever their age (a finding set back to pending after days is found again)."""
+        self._reconcile_digested(now)
+        return self.store.findings(["pending"], sorted(SHARED_FINDINGS))
+
+    def _reconcile_digested(self, now: datetime) -> None:
+        """A finding a queued digest carries (``queued``) is ``listed`` once that digest was delivered, and
+        pending again once it can no longer be (expired, cancelled, failed, uncertain or gone): only a delivered
+        digest lists anything. One still on its way stays queued."""
+        for row in self.store.findings(["queued"], sorted(SHARED_FINDINGS)):
+            digest = self.store.get(str(((row.result_metadata or {}).get("outreach") or {}).get("digest") or ""))
+            status = digest.status if digest is not None else None
+            if status == "sent":
+                self._mark_finding(row.id, "listed", now)
+            elif status not in {"proposed", "asked", "approved", "sending"}:
+                self._mark_finding(row.id, "pending", now, digest=None, digest_unsent=status)
 
     def _mark_finding(self, ident: Any, state: str, now: datetime, **extra: Any) -> None:
         row = self.store.get(str(ident)) if ident else None
@@ -1327,7 +1339,7 @@ class Mind:
         texts = []
         for row in self.store.intentions(status=["done"], kind=["task"], since=now - OUTREACH_HISTORY, limit=500):
             if row.type not in SHARED_FINDINGS or ((row.result_metadata or {}).get("outreach") or {}).get(
-                    "state") not in {"digest", "listed"}:
+                    "state") not in {"digest", "queued", "listed"}:
                 continue
             context = row.context if isinstance(row.context, dict) else {}
             texts.append(outreach_functions.excerpt(str(row.result or ""), str(context.get("topic") or row.description),
@@ -2323,7 +2335,8 @@ class Mind:
         finding's outreach that expired unsent, or that the owner's pause cancelled before it went, hands
         the finding to the digest; one cancelled by a mute of its topic is ``muted``. An answer the owner
         asked for that ended unsent is owed still: its finding waits for the owner branch again (the answer's
-        key given back, so it forms anew) up to ``ANSWER_TRIES`` answers in all, then goes to the digest."""
+        key given back, so it forms anew) up to ``ANSWER_TRIES`` answers in a row, then goes to the digest; a
+        digest that is never delivered hands it back to pending (``_reconcile_digested``), so it is never lost."""
         o = outreach_functions
         context = row.context if isinstance(row.context, dict) else {}
         if (outcome == "done" and row.type in SHARED_FINDINGS and str(row.result or "").strip()
@@ -2345,8 +2358,8 @@ class Mind:
             found = self.store.get(finding)
             tries = int((((found.result_metadata or {}) if found is not None else {}).get("outreach") or {})
                         .get("answer_tries") or 0) + 1
-            if tries < ANSWER_TRIES:
-                self.store.update(row.id, dedup_key=None)
+            # The key is given back whichever way the finding goes: one the digest hands back (unsent) forms anew.
+            self.store.update(row.id, dedup_key=None)
             self._mark_finding(finding, "pending" if tries < ANSWER_TRIES else "digest", now, answer_tries=tries)
 
     def _on_blocked(self, row: StoredInitiative) -> None:
@@ -2446,10 +2459,13 @@ class Mind:
 
     def _on_sent(self, row: StoredInitiative) -> None:
         """The body reported a message sent: an owner-granted message to a third party was the
-        obligation itself, so its commitment is done; and a message to a contact is an exchange
-        with them, logged in the comms ledger, where the social drive reads its sends."""
+        obligation itself, so its commitment is done; a delivered digest lists what it carried; and a
+        message to a contact is an exchange with them, logged in the comms ledger, where the social drive
+        reads its sends."""
         if row.type in FULFILLED_BY_SENDING:
             self._close_commitment(row)
+        if row.type == "digest":
+            self._reconcile_digested(self.clock())
         self._log_sent(row)
 
     def _log_sent(self, row: StoredInitiative) -> None:
@@ -2856,7 +2872,8 @@ class Mind:
         row = self.outbox.queue_digest(local_date=local_date, text=text)
         if row is not None:
             for ident in listed:
-                self._mark_finding(ident, "listed", now, digest=row.id)
+                # Carried, not yet listed: ``listed`` once this digest is delivered (``_reconcile_digested``).
+                self._mark_finding(ident, "queued", now, digest=row.id)
         return row.id if row is not None else None
 
     def _outreach_digest(self, since: datetime, now: datetime) -> tuple[List[str], List[str], Optional[str], List[str]]:
@@ -2864,13 +2881,12 @@ class Mind:
         ones the owner put off, offers that expired unsent or were put off, and a paused line."""
         o = outreach_functions
         found, listed, offers = [], [], []
-        rows = self.store.intentions(status=["done"], kind=["task"], since=now - timedelta(days=14), limit=500)
-        for row in rows:
-            if row.type in SHARED_FINDINGS and ((row.result_metadata or {}).get("outreach") or {}).get("state") == "digest":
-                context = row.context if isinstance(row.context, dict) else {}
-                topic = str(context.get("topic") or row.description)
-                found.append(f"{topic}: {o.excerpt(str(row.result or ''), topic, substantive=True)}")
-                listed.append(row.id)
+        self._reconcile_digested(now)
+        for row in self.store.findings(["digest"], sorted(SHARED_FINDINGS)):
+            context = row.context if isinstance(row.context, dict) else {}
+            topic = str(context.get("topic") or row.description)
+            found.append(f"{topic}: {o.excerpt(str(row.result or ''), topic, substantive=True)}")
+            listed.append(row.id)
         for row in self.store.intentions(kind=["message"], since=since - timedelta(days=2), limit=1000,
                                          recipient=self.owner_id):
             if row.type not in OUTREACH_TYPES:
