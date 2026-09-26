@@ -68,6 +68,9 @@ class Point:
         return {"type": "noul", "instructions": self.instructions, "criteria": dict(self.labels)}
 
 
+# The defaults are the typed-decisions checkpoint's, measured in docs/DECISIONS.md: the temperature that fitted
+# best, and the abstain threshold that did (a point whose best threshold was never to act keeps (0.1, 0.9)).
+# Only owner_verdict, a veto, was at least as accurate as its existing path with the fallback.
 POINTS: Dict[str, Point] = {point.name: point for point in (
     Point(
         "outreach_reply", "choice",
@@ -78,28 +81,32 @@ POINTS: Dict[str, Point] = {point.name: point for point in (
          "not_now": "busy right now; it can wait until later",
          "stop": "wants no more unprompted messages at all"},
         'The assistant messaged the owner unprompted about {topic}. The owner answered: "{text}"',
-        abstain=(0.0, 0.9)),
+        temperature=0.33, abstain=(0.0, 0.55)),
     Point(
         "opt_out", "yes_no",
         "Does the sender ask to receive no more messages from the assistant at all?",
         {"false": "anything else, including when, where or how to send something",
          "true": "they want no more messages at all"},
-        'Message to the assistant: "{text}"'),
+        'Message to the assistant: "{text}"',
+        temperature=0.33, abstain=(0.15, 0.85)),
     Point(
         "no_reminders", "yes_no",
         "Does the person ask not to be reminded about this item?",
         {"false": "reminders are wanted, or not mentioned", "true": "they want no reminders about it"},
-        'Item: {item}\nThe person said: "{text}"'),
+        'Item: {item}\nThe person said: "{text}"',
+        temperature=0.25),
     Point(
         "interest_settled", "yes_no",
         "Does the owner say their question about this topic is answered or no longer wanted?",
         {"false": "still open, or not about this topic", "true": "answered, satisfied or dropped"},
-        'Topic: {topic}\nThe owner said: "{text}"'),
+        'Topic: {topic}\nThe owner said: "{text}"',
+        temperature=0.25),
     Point(
         "owner_verdict", "yes_no",
         "Does the owner judge or correct the assistant's earlier reply, rather than ask for something new?",
         {"false": "a new request or other talk", "true": "a verdict or a correction on that reply"},
-        'The assistant replied: "{reply}"\nThe owner then said: "{text}"'),
+        'The assistant replied: "{reply}"\nThe owner then said: "{text}"',
+        enabled=True, temperature=0.25, abstain=(0.03, 0.97)),
 )}
 
 

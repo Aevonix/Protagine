@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased - a fast decision layer
+
+Short typed decisions may ask a non-generative decision model (`protagine.decisions`,
+[docs/DECISIONS.md](docs/DECISIONS.md)): one forward pass, a probability per answer, tens of milliseconds.
+Five points can ask it (the owner's reply to an outreach, a contact's opt-out, a first mention the person wants
+no reminders about, a settled interest, whether an owner message is a verdict on the agent's work), each
+keeping its existing path and letting the model act only where that path had nothing, in one direction. No
+endpoint, a disabled point, an input over the model's 512-token context, a timeout (250 ms), any failure or an
+answer inside the point's calibrated abstain band keeps the existing path. `protagine.yaml` gains a `decisions`
+section (url, timeout, per point enabled, temperature and abstain band). Measured against the existing paths on
+345 labelled items from the repository's own generators and tests (`benchmarks/decisions`), only
+`owner_verdict` is on by default: the night's lesson call took eight owner requests after an agent reply for
+verdicts, and the model withdrew all eight and no real verdict, held out. The phrase tables stay ahead of the
+model where they speak; the other four points ship off with their numbers.
+
 ## Unreleased - self log, owner decisions, settled interests, held first mentions, unchanged sections
 
 From the re-pilot's self, opinions and drives diagnosis and the prompt-cache check. `protagine_self log`

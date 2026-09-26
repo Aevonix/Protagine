@@ -37,7 +37,10 @@ The design is in
    numbered on from them, and a `complete` (answered) or `cancel` (no longer
    wanted) on one settles it in the same pass (`Mind.settle_interest`: its
    level goes to 0, research on it not dispatched yet is cancelled, and its
-   research concern is resolved as a stored finding resolves it). A stall or a partial update changes
+   research concern is resolved as a stored finding resolves it). Where the call gave a new item a
+   reminder or left a named interest open, the decision model may hold the item or settle the interest
+   when those points are enabled ([DECISIONS.md](DECISIONS.md): `no_reminders`, `interest_settled`),
+   never the other way. A stall or a partial update changes
    nothing; an obligation between other people is not an item; an item
    conditioned on another event, or with no clear time, gets no deadline.
    An action must identify its row: the listed wording, and the listed
@@ -594,7 +597,10 @@ erases it together with its evidence.
   reply in its session, and only a verdict is the `owner` verifier: an
   operation may cite an owner message only when the answer reports it as a
   verdict, and quotes the owner's exact words (at least 12 characters), so a
-  request never verifies a lesson. Every citation must be in the packet; a
+  request never verifies a lesson. With point `owner_verdict` enabled
+  ([DECISIONS.md](DECISIONS.md)), a reported verdict the decision model reads
+  as no verdict on the reply before it is withdrawn
+  (`lesson_verdicts_vetoed`). Every citation must be in the packet; a
   strategy needs an owner verdict or an external check, while a Hermes failure
   with its reason teaches only a pitfall; a retirement needs an owner verdict
   that the work was wrong or a verified result that failed; a result nobody
@@ -691,7 +697,9 @@ hours; "leave me alone today" until tomorrow; "stop checking in" until
 name the topic counts only when it plainly answers the outreach: the owner's
 first turn after it, not mid-conversation, and not a request of its own ("can
 you find out when the last train leaves?" is a request, not "dig deeper"). A
-bare "stop" or "not today" means something about outreach only as such a reply. Reminders the owner
+bare "stop" or "not today" means something about outreach only as such a reply. A reply linked by
+its topic that the phrases read nothing in is engagement, unless the decision model reads a class in it
+(point `outreach_reply`, when enabled: [DECISIONS.md](DECISIONS.md)). Reminders the owner
 asked for never stop. Silence for a day counts as a weak "ignored". What is
 learned is the verdict and its feedback, the topic's interest level, a mute,
 the pause and the hour's mark, and at night the lessons over the rated

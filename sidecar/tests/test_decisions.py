@@ -59,7 +59,7 @@ REPLY = {"engaged": 0.05, "dig_deeper": 0.8, "not_interested": 0.05, "not_now": 
 
 async def test_an_enabled_point_asks_one_typed_question_and_returns_the_answer():
     server = Server(lambda body: choice_answer(REPLY))
-    decision = await decider(server, outreach_reply={"abstain": [0.0, 0.5]}).decide(
+    decision = await decider(server, outreach_reply={"temperature": 1.0, "abstain": [0.0, 0.5]}).decide(
         "outreach_reply", text="Who ran it?", topic="tidal energy")
     assert decision is not None and decision.label == "dig_deeper" and decision.probability == pytest.approx(0.8)
     [(path, body)] = server.requests
@@ -82,16 +82,16 @@ async def test_a_disabled_point_or_no_endpoint_makes_no_call():
 
 async def test_an_answer_inside_the_abstain_band_is_no_answer():
     server = Server(lambda body: choice_answer(REPLY))
-    assert await decider(server, outreach_reply={"abstain": [0.0, 0.9]}).decide(
+    assert await decider(server, outreach_reply={"temperature": 1.0, "abstain": [0.0, 0.9]}).decide(
         "outreach_reply", text="Who ran it?", topic="tidal energy") is None
     yes = Server(lambda body: yes_no_answer(0.7))
-    band = decider(yes, opt_out={"abstain": [0.2, 0.8]})
+    band = decider(yes, opt_out={"temperature": 1.0, "abstain": [0.2, 0.8]})
     assert await band.decide("opt_out", text="whatever") is None                  # 0.7 is inside (0.2, 0.8)
     assert band.stats["opt_out"]["abstained"] == 1
-    sure = await decider(Server(lambda body: yes_no_answer(0.95)), opt_out={"abstain": [0.2, 0.8]}).decide(
+    sure = await decider(Server(lambda body: yes_no_answer(0.95)), opt_out={"temperature": 1.0, "abstain": [0.2, 0.8]}).decide(
         "opt_out", text="whatever")
     assert sure.label == "yes" and sure.probability == pytest.approx(0.95)
-    no = await decider(Server(lambda body: yes_no_answer(0.1)), opt_out={"abstain": [0.2, 0.8]}).decide(
+    no = await decider(Server(lambda body: yes_no_answer(0.1)), opt_out={"temperature": 1.0, "abstain": [0.2, 0.8]}).decide(
         "opt_out", text="whatever")
     assert no.label == "no" and no.probability == pytest.approx(0.9)
 

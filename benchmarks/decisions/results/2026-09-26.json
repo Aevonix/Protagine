@@ -1,0 +1,1432 @@
+{
+ "at": "2026-09-26T01:47:41.133527+00:00",
+ "checkpoints": {
+  "english": {
+   "backend": {
+    "checkpoint": "english",
+    "code_revision": "42626c348753fbb17572a813127df2278a1ec527",
+    "device": "cuda",
+    "model_revision": "1c5edc17a7acd8701df6fc341c0d179f1c62c982",
+    "name": "laya",
+    "sdk_version": "0.3.4"
+   },
+   "points": {
+    "interest_settled": {
+     "answered": 38,
+     "changed_cv": {
+      "helped": 0,
+      "hurt": 0
+     },
+     "current": {
+      "all": {
+       "correct": 37,
+       "n": 38
+      },
+      "novel": {
+       "correct": 6,
+       "n": 6
+      },
+      "repo": {
+       "correct": 31,
+       "n": 32
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 0,
+     "current_ms": {
+      "p50": 11343.1,
+      "p95": 32234.41
+     },
+     "ece_calibrated_cv": 0.11222923005480509,
+     "ece_zero_shot": 0.20387894736842102,
+     "enable": false,
+     "errors": [
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "p-31 is looking into the cheese caves figures; that one is theirs and I do not want you on it."
+      }
+     ],
+     "fitted": {
+      "composition": "fill",
+      "never": true,
+      "temperature": 0.33,
+      "threshold": 1.01
+     },
+     "latency_ms": {
+      "input_tokens_max": 133,
+      "round_trip_p50": 41.4,
+      "round_trip_p95": 112.97,
+      "server_p50": 17.17,
+      "server_p95": 45.45
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 35,
+       "n": 38
+      },
+      "novel": {
+       "correct": 6,
+       "n": 6
+      },
+      "repo": {
+       "correct": 29,
+       "n": 32
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 35,
+       "n": 38
+      },
+      "novel": {
+       "correct": 6,
+       "n": 6
+      },
+      "repo": {
+       "correct": 29,
+       "n": 32
+      }
+     },
+     "n": 38,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 37,
+       "n": 38
+      },
+      "novel": {
+       "correct": 6,
+       "n": 6
+      },
+      "repo": {
+       "correct": 31,
+       "n": 32
+      }
+     }
+    },
+    "no_reminders": {
+     "answered": 30,
+     "changed_cv": {
+      "helped": 0,
+      "hurt": 0
+     },
+     "current": {
+      "all": {
+       "correct": 27,
+       "n": 30
+      },
+      "novel": {
+       "correct": 7,
+       "n": 8
+      },
+      "repo": {
+       "correct": 20,
+       "n": 22
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 0,
+     "current_ms": {
+      "p50": 23327.69,
+      "p95": 41845.74
+     },
+     "ece_calibrated_cv": 0.1228727196045676,
+     "ece_zero_shot": 0.26645,
+     "enable": false,
+     "errors": [
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "The grant summary for p-17 is on my list, due in roughly 20 minutes; I have it handled. No action needed at the moment. Leave p-17 alone about it and do not chase me either."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "I'll book the dentist myself this week, you don't need to nudge me."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "The parcel receipt for p-05 is due in 20 minutes and I am handling it myself. No reminders about it."
+      }
+     ],
+     "fitted": {
+      "composition": "fill",
+      "never": true,
+      "temperature": 0.25,
+      "threshold": 1.01
+     },
+     "latency_ms": {
+      "input_tokens_max": 100,
+      "round_trip_p50": 40.33,
+      "round_trip_p95": 84.26,
+      "server_p50": 17.2,
+      "server_p95": 19.73
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 26,
+       "n": 30
+      },
+      "novel": {
+       "correct": 8,
+       "n": 8
+      },
+      "repo": {
+       "correct": 18,
+       "n": 22
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 26,
+       "n": 30
+      },
+      "novel": {
+       "correct": 8,
+       "n": 8
+      },
+      "repo": {
+       "correct": 18,
+       "n": 22
+      }
+     },
+     "n": 30,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 27,
+       "n": 30
+      },
+      "novel": {
+       "correct": 7,
+       "n": 8
+      },
+      "repo": {
+       "correct": 20,
+       "n": 22
+      }
+     }
+    },
+    "opt_out": {
+     "answered": 102,
+     "changed_cv": {
+      "helped": 2,
+      "hurt": 7
+     },
+     "current": {
+      "all": {
+       "correct": 89,
+       "n": 102
+      },
+      "novel": {
+       "correct": 10,
+       "n": 16
+      },
+      "repo": {
+       "correct": 79,
+       "n": 86
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 0,
+     "current_ms": {
+      "p50": 0.0,
+      "p95": 0.01
+     },
+     "ece_calibrated_cv": 0.05829098054204604,
+     "ece_zero_shot": 0.17991568627451,
+     "enable": false,
+     "errors": [
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "I unsubscribed from that newsletter years ago"
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "No messages today, please."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Take me off whatever this is."
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "Drop it."
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "Could you unsubscribe me from the supplier newsletter?"
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "do not message me before 9"
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "no more coffee for me today"
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Lose my number."
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "I would rather you message me than call"
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "No more check-ins, please."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "You don't need to check in with me anymore."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Stop sending me updates."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Stop messaging this number."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "No further messages please."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Please quit messaging me unprompted."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "I'm done with these messages, cut me off."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Only message me when I ask."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Stop checking in on me."
+      }
+     ],
+     "fitted": {
+      "composition": "fill",
+      "never": false,
+      "temperature": 2.0,
+      "threshold": 0.75
+     },
+     "latency_ms": {
+      "input_tokens_max": 72,
+      "round_trip_p50": 37.85,
+      "round_trip_p95": 101.33,
+      "server_p50": 15.89,
+      "server_p95": 17.7
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 62,
+       "n": 102
+      },
+      "novel": {
+       "correct": 10,
+       "n": 16
+      },
+      "repo": {
+       "correct": 52,
+       "n": 86
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 62,
+       "n": 102
+      },
+      "novel": {
+       "correct": 10,
+       "n": 16
+      },
+      "repo": {
+       "correct": 52,
+       "n": 86
+      }
+     },
+     "n": 102,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 84,
+       "n": 102
+      },
+      "novel": {
+       "correct": 11,
+       "n": 16
+      },
+      "repo": {
+       "correct": 73,
+       "n": 86
+      }
+     }
+    },
+    "outreach_reply": {
+     "answered": 98,
+     "changed_cv": {
+      "helped": 3,
+      "hurt": 7
+     },
+     "current": {
+      "all": {
+       "correct": 74,
+       "n": 98
+      },
+      "novel": {
+       "correct": 8,
+       "n": 30
+      },
+      "repo": {
+       "correct": 66,
+       "n": 68
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 0,
+     "current_ms": {
+      "p50": 0.05,
+      "p95": 0.2
+     },
+     "ece_calibrated_cv": 0.1517173469387755,
+     "ece_zero_shot": 0.15171734693877553,
+     "enable": false,
+     "errors": [
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "Can you find out who ran it"
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "I need to focus on the grant report this week."
+      },
+      {
+       "composed": "stop",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "The shop is closed until tomorrow."
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "Noted, thanks for that. I still need to find out more about the visa application myself. Nothing to do right now."
+      },
+      {
+       "composed": "stop",
+       "current": "engaged",
+       "gold": "not_interested",
+       "text": "I stopped following that."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "Can you send me the full paper?"
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "That violin making item you sent is good. Look into it further and find out its test method; I am off out, so a message a little later is best."
+      },
+      {
+       "composed": "stop",
+       "current": "engaged",
+       "gold": "not_interested",
+       "text": "Skip these ones from now on."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "not_interested",
+       "text": "Pass."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "not_now",
+       "text": "Can't look now, driving."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "Who ran the study?"
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "Keep digging on this one."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "What did they actually find?"
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "not_interested",
+       "text": "Nah, this one is boring."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "not_interested",
+       "text": "Meh, not my thing."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "not_now",
+       "text": "Not a great moment, try tomorrow."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "stop",
+       "text": "Quit sending me stuff out of the blue."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "stop",
+       "text": "I'd rather you never reached out on your own."
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "Thanks, see you tomorrow."
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "Thanks for that. I will keep going with the workshop outline myself. Nothing to do right now."
+      }
+     ],
+     "fitted": {
+      "composition": "fill",
+      "never": false,
+      "temperature": 1.0,
+      "threshold": 0.6
+     },
+     "latency_ms": {
+      "input_tokens_max": 150,
+      "round_trip_p50": 40.33,
+      "round_trip_p95": 96.94,
+      "server_p50": 18.08,
+      "server_p95": 19.09
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 56,
+       "n": 98
+      },
+      "novel": {
+       "correct": 20,
+       "n": 30
+      },
+      "repo": {
+       "correct": 36,
+       "n": 68
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 56,
+       "n": 98
+      },
+      "novel": {
+       "correct": 20,
+       "n": 30
+      },
+      "repo": {
+       "correct": 36,
+       "n": 68
+      }
+     },
+     "n": 98,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 70,
+       "n": 98
+      },
+      "novel": {
+       "correct": 11,
+       "n": 30
+      },
+      "repo": {
+       "correct": 59,
+       "n": 68
+      }
+     }
+    },
+    "owner_verdict": {
+     "answered": 72,
+     "changed_cv": {
+      "helped": 5,
+      "hurt": 3
+     },
+     "current": {
+      "all": {
+       "correct": 63,
+       "n": 72
+      },
+      "novel": {
+       "correct": 7,
+       "n": 8
+      },
+      "repo": {
+       "correct": 56,
+       "n": 64
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 5,
+     "current_ms": {
+      "p50": 34768.62,
+      "p95": 80417.27
+     },
+     "ece_calibrated_cv": 0.03283524645396296,
+     "ece_zero_shot": 0.23246111111111112,
+     "enable": true,
+     "errors": [
+      {
+       "composed": "no",
+       "current": "yes",
+       "gold": "yes",
+       "text": "No, it's room C, you mixed them up."
+      },
+      {
+       "composed": "no",
+       "current": "yes",
+       "gold": "yes",
+       "text": "That's not what I asked, I wanted them by client."
+      },
+      {
+       "composed": "yes",
+       "current": "yes",
+       "gold": "no",
+       "text": "p-15 asked by email for a delivery of 44 kg. I need its slot. Write the result to probe-06.json as {\"slot\": ...}."
+      },
+      {
+       "composed": "no",
+       "current": "yes",
+       "gold": "yes",
+       "text": "Perfect, that's exactly right."
+      },
+      {
+       "composed": "yes",
+       "current": "yes",
+       "gold": "no",
+       "text": "Order 4411 came in from p-07 by chat. I need its order code."
+      },
+      {
+       "composed": "yes",
+       "current": "yes",
+       "gold": "no",
+       "text": "Order 5522 came in from p-08 by email. What is its code?"
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Verdict on train-01.json: by our procedure the fee is 5. The procedure for handling fees: the contact's tier is in contacts.json; gold pays nothing, standard pays 4 plus the weight in kilograms, basic pays 8 plus the weight. Only outbound shipments carry a handling fee; for a return the fee is the word none. If yours differs, rewrite train-01.json with it."
+      }
+     ],
+     "fitted": {
+      "composition": "veto",
+      "never": false,
+      "temperature": 0.25,
+      "threshold": 0.2
+     },
+     "latency_ms": {
+      "input_tokens_max": 196,
+      "round_trip_p50": 37.8,
+      "round_trip_p95": 95.17,
+      "server_p50": 17.41,
+      "server_p95": 19.09
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 69,
+       "n": 72
+      },
+      "novel": {
+       "correct": 5,
+       "n": 8
+      },
+      "repo": {
+       "correct": 64,
+       "n": 64
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 69,
+       "n": 72
+      },
+      "novel": {
+       "correct": 5,
+       "n": 8
+      },
+      "repo": {
+       "correct": 64,
+       "n": 64
+      }
+     },
+     "n": 72,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 65,
+       "n": 72
+      },
+      "novel": {
+       "correct": 5,
+       "n": 8
+      },
+      "repo": {
+       "correct": 60,
+       "n": 64
+      }
+     }
+    }
+   }
+  },
+  "typed-decisions": {
+   "backend": {
+    "checkpoint": "typed-decisions",
+    "code_revision": "42626c348753fbb17572a813127df2278a1ec527",
+    "device": "cuda",
+    "model_revision": "1c5edc17a7acd8701df6fc341c0d179f1c62c982",
+    "name": "laya",
+    "sdk_version": "0.3.4"
+   },
+   "points": {
+    "interest_settled": {
+     "answered": 38,
+     "changed_cv": {
+      "helped": 0,
+      "hurt": 0
+     },
+     "current": {
+      "all": {
+       "correct": 37,
+       "n": 38
+      },
+      "novel": {
+       "correct": 6,
+       "n": 6
+      },
+      "repo": {
+       "correct": 31,
+       "n": 32
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 0,
+     "current_ms": {
+      "p50": 11343.1,
+      "p95": 32234.41
+     },
+     "ece_calibrated_cv": 0.15795664805627452,
+     "ece_zero_shot": 0.22921842105263154,
+     "enable": false,
+     "errors": [
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "p-31 is looking into the cheese caves figures; that one is theirs and I do not want you on it."
+      }
+     ],
+     "fitted": {
+      "composition": "fill",
+      "never": true,
+      "temperature": 0.25,
+      "threshold": 1.01
+     },
+     "latency_ms": {
+      "input_tokens_max": 133,
+      "round_trip_p50": 38.86,
+      "round_trip_p95": 86.73,
+      "server_p50": 17.13,
+      "server_p95": 18.59
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 32,
+       "n": 38
+      },
+      "novel": {
+       "correct": 5,
+       "n": 6
+      },
+      "repo": {
+       "correct": 27,
+       "n": 32
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 32,
+       "n": 38
+      },
+      "novel": {
+       "correct": 5,
+       "n": 6
+      },
+      "repo": {
+       "correct": 27,
+       "n": 32
+      }
+     },
+     "n": 38,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 37,
+       "n": 38
+      },
+      "novel": {
+       "correct": 6,
+       "n": 6
+      },
+      "repo": {
+       "correct": 31,
+       "n": 32
+      }
+     }
+    },
+    "no_reminders": {
+     "answered": 30,
+     "changed_cv": {
+      "helped": 0,
+      "hurt": 0
+     },
+     "current": {
+      "all": {
+       "correct": 27,
+       "n": 30
+      },
+      "novel": {
+       "correct": 7,
+       "n": 8
+      },
+      "repo": {
+       "correct": 20,
+       "n": 22
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 0,
+     "current_ms": {
+      "p50": 23327.69,
+      "p95": 41845.74
+     },
+     "ece_calibrated_cv": 0.14026752351772823,
+     "ece_zero_shot": 0.28144999999999987,
+     "enable": false,
+     "errors": [
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "The grant summary for p-17 is on my list, due in roughly 20 minutes; I have it handled. No action needed at the moment. Leave p-17 alone about it and do not chase me either."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "I'll book the dentist myself this week, you don't need to nudge me."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "The parcel receipt for p-05 is due in 20 minutes and I am handling it myself. No reminders about it."
+      }
+     ],
+     "fitted": {
+      "composition": "fill",
+      "never": true,
+      "temperature": 0.25,
+      "threshold": 1.01
+     },
+     "latency_ms": {
+      "input_tokens_max": 100,
+      "round_trip_p50": 41.74,
+      "round_trip_p95": 97.01,
+      "server_p50": 17.11,
+      "server_p95": 17.74
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 24,
+       "n": 30
+      },
+      "novel": {
+       "correct": 6,
+       "n": 8
+      },
+      "repo": {
+       "correct": 18,
+       "n": 22
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 24,
+       "n": 30
+      },
+      "novel": {
+       "correct": 6,
+       "n": 8
+      },
+      "repo": {
+       "correct": 18,
+       "n": 22
+      }
+     },
+     "n": 30,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 27,
+       "n": 30
+      },
+      "novel": {
+       "correct": 7,
+       "n": 8
+      },
+      "repo": {
+       "correct": 20,
+       "n": 22
+      }
+     }
+    },
+    "opt_out": {
+     "answered": 102,
+     "changed_cv": {
+      "helped": 5,
+      "hurt": 5
+     },
+     "current": {
+      "all": {
+       "correct": 89,
+       "n": 102
+      },
+      "novel": {
+       "correct": 10,
+       "n": 16
+      },
+      "repo": {
+       "correct": 79,
+       "n": 86
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 0,
+     "current_ms": {
+      "p50": 0.0,
+      "p95": 0.01
+     },
+     "ece_calibrated_cv": 0.04411079546751567,
+     "ece_zero_shot": 0.17000980392156867,
+     "enable": false,
+     "errors": [
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "No messages today, please."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Take me off whatever this is."
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "Drop it."
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "do not message me before 9"
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "Not relevant to me."
+      },
+      {
+       "composed": "yes",
+       "current": "no",
+       "gold": "no",
+       "text": "Not interested."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "No more check-ins, please."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "You don't need to check in with me anymore."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Stop sending me updates."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "No further messages please."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Please quit messaging me unprompted."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Only message me when I ask."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Stop checking in on me."
+      }
+     ],
+     "fitted": {
+      "composition": "fill",
+      "never": false,
+      "temperature": 0.33,
+      "threshold": 0.85
+     },
+     "latency_ms": {
+      "input_tokens_max": 72,
+      "round_trip_p50": 36.83,
+      "round_trip_p95": 92.27,
+      "server_p50": 15.89,
+      "server_p95": 16.89
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 83,
+       "n": 102
+      },
+      "novel": {
+       "correct": 16,
+       "n": 16
+      },
+      "repo": {
+       "correct": 67,
+       "n": 86
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 83,
+       "n": 102
+      },
+      "novel": {
+       "correct": 16,
+       "n": 16
+      },
+      "repo": {
+       "correct": 67,
+       "n": 86
+      }
+     },
+     "n": 102,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 89,
+       "n": 102
+      },
+      "novel": {
+       "correct": 14,
+       "n": 16
+      },
+      "repo": {
+       "correct": 75,
+       "n": 86
+      }
+     }
+    },
+    "outreach_reply": {
+     "answered": 98,
+     "changed_cv": {
+      "helped": 3,
+      "hurt": 6
+     },
+     "current": {
+      "all": {
+       "correct": 74,
+       "n": 98
+      },
+      "novel": {
+       "correct": 8,
+       "n": 30
+      },
+      "repo": {
+       "correct": 66,
+       "n": 68
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 0,
+     "current_ms": {
+      "p50": 0.05,
+      "p95": 0.2
+     },
+     "ece_calibrated_cv": 0.11094556706225903,
+     "ece_zero_shot": 0.24740714285714285,
+     "enable": false,
+     "errors": [
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "Can you find out who ran it"
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "I need to focus on the grant report this week."
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "Noted, thanks for that. I still need to find out more about the visa application myself. Nothing to do right now."
+      },
+      {
+       "composed": "stop",
+       "current": "engaged",
+       "gold": "not_interested",
+       "text": "I stopped following that."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "not_now",
+       "text": "Busy, ping me tonight."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "Can you send me the full paper?"
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "That violin making item you sent is good. Look into it further and find out its test method; I am off out, so a message a little later is best."
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "Noted, thanks for that. I still need to find out more about the grant report myself. Nothing for you to do yet."
+      },
+      {
+       "composed": "stop",
+       "current": "engaged",
+       "gold": "not_interested",
+       "text": "Skip these ones from now on."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "not_interested",
+       "text": "Pass."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "Who ran the study?"
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "Keep digging on this one."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "What did they actually find?"
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "What time is it in Lisbon?"
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "not_interested",
+       "text": "Meh, not my thing."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "not_now",
+       "text": "Not a great moment, try tomorrow."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "stop",
+       "text": "Quit sending me stuff out of the blue."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "stop",
+       "text": "I'd rather you never reached out on your own."
+      },
+      {
+       "composed": "not_now",
+       "current": "engaged",
+       "gold": "engaged",
+       "text": "I have to get the lease renewal finished within the next two weeks; no rush."
+      },
+      {
+       "composed": "engaged",
+       "current": "engaged",
+       "gold": "dig_deeper",
+       "text": "Any numbers behind that?"
+      }
+     ],
+     "fitted": {
+      "composition": "fill",
+      "never": false,
+      "temperature": 0.33,
+      "threshold": 0.55
+     },
+     "latency_ms": {
+      "input_tokens_max": 150,
+      "round_trip_p50": 39.02,
+      "round_trip_p95": 92.15,
+      "server_p50": 17.98,
+      "server_p95": 18.98
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 62,
+       "n": 98
+      },
+      "novel": {
+       "correct": 21,
+       "n": 30
+      },
+      "repo": {
+       "correct": 41,
+       "n": 68
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 62,
+       "n": 98
+      },
+      "novel": {
+       "correct": 21,
+       "n": 30
+      },
+      "repo": {
+       "correct": 41,
+       "n": 68
+      }
+     },
+     "n": 98,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 71,
+       "n": 98
+      },
+      "novel": {
+       "correct": 11,
+       "n": 30
+      },
+      "repo": {
+       "correct": 60,
+       "n": 68
+      }
+     }
+    },
+    "owner_verdict": {
+     "answered": 72,
+     "changed_cv": {
+      "helped": 8,
+      "hurt": 0
+     },
+     "current": {
+      "all": {
+       "correct": 63,
+       "n": 72
+      },
+      "novel": {
+       "correct": 7,
+       "n": 8
+      },
+      "repo": {
+       "correct": 56,
+       "n": 64
+      }
+     },
+     "current_failed": 0,
+     "current_missing": 5,
+     "current_ms": {
+      "p50": 34768.62,
+      "p95": 80417.27
+     },
+     "ece_calibrated_cv": 0.10113973661413457,
+     "ece_zero_shot": 0.2896027777777778,
+     "enable": true,
+     "errors": [
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Verdict on train-01.json: by our procedure the fee is 5. The procedure for handling fees: the contact's tier is in contacts.json; gold pays nothing, standard pays 4 plus the weight in kilograms, basic pays 8 plus the weight. Only outbound shipments carry a handling fee; for a return the fee is the word none. If yours differs, rewrite train-01.json with it."
+      }
+     ],
+     "fitted": {
+      "composition": "veto",
+      "never": false,
+      "temperature": 0.25,
+      "threshold": 0.03
+     },
+     "latency_ms": {
+      "input_tokens_max": 196,
+      "round_trip_p50": 39.58,
+      "round_trip_p95": 103.26,
+      "server_p50": 17.51,
+      "server_p95": 18.91
+     },
+     "model_alone_calibrated_cv": {
+      "all": {
+       "correct": 67,
+       "n": 72
+      },
+      "novel": {
+       "correct": 6,
+       "n": 8
+      },
+      "repo": {
+       "correct": 61,
+       "n": 64
+      }
+     },
+     "model_alone_zero_shot": {
+      "all": {
+       "correct": 67,
+       "n": 72
+      },
+      "novel": {
+       "correct": 6,
+       "n": 8
+      },
+      "repo": {
+       "correct": 61,
+       "n": 64
+      }
+     },
+     "n": 72,
+     "with_fallback_cv": {
+      "all": {
+       "correct": 71,
+       "n": 72
+      },
+      "novel": {
+       "correct": 8,
+       "n": 8
+      },
+      "repo": {
+       "correct": 63,
+       "n": 64
+      }
+     }
+    }
+   }
+  }
+ },
+ "folds": 5
+}
