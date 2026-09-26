@@ -371,10 +371,12 @@ def test_reserved_names_cover_every_export_the_keys_derive(home):
 
 # -- the fast decision layer (protagine.decisions) ------------------------------------------------------------
 
-def test_the_decision_section_is_exported_only_with_an_endpoint(home):
+def test_the_decision_section_is_exported_and_every_point_is_off_without_an_endpoint(home):
     environ: dict[str, str] = {}
     apply_environment(load_config(home, environ={}), environ=environ)
-    assert not any(name.startswith("PROTAGINE_DECISIONS") for name in environ)
+    assert "PROTAGINE_DECISIONS_URL" not in environ and environ["PROTAGINE_DECISIONS_TIMEOUT_MS"] == "250"
+    from protagine.decisions import POINTS, from_environment
+    assert not any(from_environment(environ).enabled(name) for name in POINTS)
     save_config({**config.DEFAULTS, "decisions": {
         "url": "http://127.0.0.1:9/", "timeout_ms": 300,
         "points": {"opt_out": {"enabled": "on", "temperature": 2, "abstain": [0.1, 0.95]}}}}, home)
@@ -386,9 +388,36 @@ def test_the_decision_section_is_exported_only_with_an_endpoint(home):
     assert environ["PROTAGINE_DECISIONS_TIMEOUT_MS"] == "300"
     assert json.loads(environ["PROTAGINE_DECISIONS_POINTS"]) == {
         "opt_out": {"enabled": True, "temperature": 2.0, "abstain": [0.1, 0.95]}}
-    from protagine.decisions import from_environment
     decider = from_environment(environ)
     assert decider.enabled("opt_out") and decider.timeout_s == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize("pinned", [
+    {"PROTAGINE_DECISIONS_URL": "http://10.0.0.9:8080"},                       # the endpoint from a service unit
+    {"PROTAGINE_DECISIONS_URL": "http://10.0.0.9:8080", "PROTAGINE_DECISIONS_TIMEOUT_MS": ""},
+])
+def test_an_endpoint_from_the_environment_keeps_the_files_points_and_time_limit(home, pinned):
+    """The environment may pin one setting (the endpoint); the file's other decision settings still apply: a
+    point the file turns off stays off, and the file's time limit holds."""
+    (home / config.CONFIG_FILE).write_text(yaml.safe_dump({"decisions": {
+        "timeout_ms": 50, "points": {"owner_verdict": {"enabled": False}}}}))
+    environ = dict(pinned)
+    apply_environment(load_config(home, environ={}), environ=environ)
+    from protagine.decisions import from_environment
+    decider = from_environment(environ)
+    assert decider.url == "http://10.0.0.9:8080"
+    assert not decider.enabled("owner_verdict") and decider.timeout_s == pytest.approx(0.05)
+
+
+def test_a_setting_the_environment_pins_wins_over_the_file(home):
+    (home / config.CONFIG_FILE).write_text(yaml.safe_dump({"decisions": {
+        "url": "http://127.0.0.1:9", "timeout_ms": 50, "points": {"owner_verdict": {"enabled": False}}}}))
+    environ = {"PROTAGINE_DECISIONS_TIMEOUT_MS": "120"}
+    apply_environment(load_config(home, environ={}), environ=environ)
+    from protagine.decisions import from_environment
+    decider = from_environment(environ)
+    assert decider.url == "http://127.0.0.1:9" and decider.timeout_s == pytest.approx(0.12)
+    assert not decider.enabled("owner_verdict")
 
 
 @pytest.mark.parametrize("section,message", [

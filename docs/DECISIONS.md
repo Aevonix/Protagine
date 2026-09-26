@@ -48,8 +48,9 @@ Defaults (the typed-decisions checkpoint's, below): `owner_verdict` on, temperat
 measurement.
 
 `protagine.yaml` validates the section by name (a known point, a temperature above 0, `0 <= lo <= hi <= 1`)
-and exports it to the sidecar as `PROTAGINE_DECISIONS_URL`, `PROTAGINE_DECISIONS_TIMEOUT_MS` and
-`PROTAGINE_DECISIONS_POINTS` (JSON) only when a url is set. The endpoint should be on a private network: the
+and exports it to the sidecar as `PROTAGINE_DECISIONS_URL` (when a url is set), `PROTAGINE_DECISIONS_TIMEOUT_MS`
+and `PROTAGINE_DECISIONS_POINTS` (JSON). A name already in the process environment wins, one name at a time:
+an endpoint a service unit pins still runs under the file's time limit and points. The endpoint should be on a private network: the
 states are the owner's and contacts' words.
 
 ## The points

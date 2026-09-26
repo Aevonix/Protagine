@@ -699,13 +699,15 @@ def apply_environment(config: Config, *, environ: dict[str, str] | None = None) 
         values["PROTAGINE_RERANKER_BASE_URL"] = str(config.get("router.rerank_url"))
         values["PROTAGINE_RERANKER_MODEL"] = str(config.get("router.rerank_model"))
         values["PROTAGINE_RECALL_RERANK"] = "on"
+    # The fast decision layer, read by ``protagine.decisions.from_environment``: its time limit and the per-point
+    # overrides are exported whether or not the file names the endpoint, so an endpoint the environment pins
+    # (a service unit) still runs under the file's settings: a point the file turns off stays off. No url in
+    # either place: every point is off.
     if config.get("decisions.url"):
-        # The fast decision layer: its endpoint, its time limit and the per-point overrides, read by
-        # ``protagine.decisions.from_environment``; without a url nothing is exported and every point is off.
         values["PROTAGINE_DECISIONS_URL"] = str(config.get("decisions.url"))
-        values["PROTAGINE_DECISIONS_TIMEOUT_MS"] = str(config.get("decisions.timeout_ms"))
-        if config.get("decisions.points"):
-            values["PROTAGINE_DECISIONS_POINTS"] = json.dumps(config.get("decisions.points"), sort_keys=True)
+    values["PROTAGINE_DECISIONS_TIMEOUT_MS"] = str(config.get("decisions.timeout_ms"))
+    if config.get("decisions.points"):
+        values["PROTAGINE_DECISIONS_POINTS"] = json.dumps(config.get("decisions.points"), sort_keys=True)
     # The mapping says explicitly what the keys above only imply (validated: PROTAGINE_
     # names, none that a key already owns), so it lands over the derived values and under
     # the process environment.
