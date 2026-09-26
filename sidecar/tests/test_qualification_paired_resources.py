@@ -164,3 +164,47 @@ def test_incomplete_agent_turns_are_counted_per_arm_without_touching_the_score(t
     assert row == original
     assert paired_report._native_turns([{'effects': {}}]) == {
         'agent_turns': 0, 'incomplete_agent_turns': 0, 'episodes_with_incomplete_turn': 0}
+
+
+def test_dead_values_in_the_injected_context_are_a_secondary_count_per_arm(tmp_path, monkeypatch):
+    """A forbidden (superseded) value on a line of the model's injected context, with no expected value and no
+    superseded note, counts; the text itself never reaches the report."""
+    case = {'id': 'knowledge-update.01', 'oracle': {'artifacts': [{'path': 'answer.json', 'forbidden': ['corner office'],
+            'assertions': [{'path': ['place'], 'op': 'label_one_of', 'value': ['front lobby']}]}]}}
+    member = {'path': 'runs/one', 'case': case}
+    path = tmp_path / 'runs/one/attempts/knowledge-update.01/private-trace.jsonl'
+    path.parent.mkdir(parents=True)
+
+    def event(thread, *blocks):
+        content = 'Where is it now?' + ''.join(f'\n\n<memory-context>\n{block}\n</memory-context>' for block in blocks)
+        return json.dumps({'protocol': 'paired-private-trace-1', 'kind': 'model_request', 'thread': thread,
+                           'data': {'request_id': 1, 'payload': {'messages': [
+                               {'role': 'system', 'content': 'The review is in the corner office.'},
+                               {'role': 'user', 'content': content}]}}})
+    earlier = 'The review is in the corner office.'
+    probe = '\n'.join(['## Relevant Memories', 'The review is in the corner office.',
+                       'The review is in the corner office. [superseded: now "front lobby" since 2026-09-18]',
+                       'It moved from the corner office to the front lobby.', 'Unrelated line.'])
+    path.write_text('\n'.join([event('paired-source-worker', earlier, earlier), event('Thread-5 (<lambda>)', earlier),
+                               event('Thread-6 (<lambda>)', earlier, probe), event('Thread-1 (run)')]))
+    missing = {'path': 'runs/two', 'case': dict(case)}
+    row = {'outcome': 'pass', 'primary_outcome': 'pass', 'elapsed_ms': 4000, 'effects': {'model_requests': []}}
+    manifest = {'recipe': {}, 'pairs': [{'episode_id': episode, 'order': list(paired_report.ARMS),
+        'task_sha256': 'b' * 64, 'oracle_sha256': 'c' * 64, 'arms': dict.fromkeys(paired_report.ARMS, arm_member)}
+        for episode, arm_member in (('knowledge-update.01', member), ('knowledge-update.02', missing))],
+        'sha256': 'd' * 64, 'comparison_key': 'e' * 64, 'label': 'test', 'evidence_mode': 'controlled',
+        'dataset': {'version': 'test', 'split': 'development'},
+        'comparison': {'policy': {'environment': {'endpoint_usage': 'unknown'}}}}
+    monkeypatch.setattr(paired_report, 'load_manifest', lambda _: manifest)
+    monkeypatch.setattr(paired_report, '_row', lambda *args: row)
+    report = paired_report.summarize(tmp_path)
+    for arm in paired_report.ARMS:
+        dead = report['arms'][arm]['dead_values_in_context']
+        # The last request carrying context replays the earlier block and adds the probe's: two dead lines.
+        assert (dead['episodes_observed'], dead['episodes_with_dead_values'], dead['dead_value_lines']) == (1, 1, 2)
+        assert dead['unreadable_traces'] == 0
+    rendered = paired_report.markdown(report)
+    assert 'Dead values in the injected context' in rendered and '1/1 episodes, 2 lines' in rendered
+    assert 'corner office' not in json.dumps(report['arms']) and 'corner office' not in rendered
+    assert paired_report._dead_values(tmp_path, [{'path': 'runs/one', 'case': {'id': 'x', 'oracle': {}}}])[
+        'episodes_observed'] == 0

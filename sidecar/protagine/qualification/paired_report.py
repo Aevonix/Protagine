@@ -747,6 +747,72 @@ def _tick_output(rows, cases):
             'control_episodes_with_tick_sends': sent_controls, 'basis': TICK_OUTPUT_BASIS}
 
 
+DEAD_VALUE_BASIS = (
+    'Secondary, report-only: in the last agent model request of each episode whose artifacts forbid a value, the '
+    'lines of the injected memory context that show a forbidden value with no expected value and no "[superseded:" '
+    'note. Read from the private trace; no trace text is copied.')
+_MEMORY_CONTEXT = re.compile(r'<memory-context>(.*?)</memory-context>', re.S)
+
+
+def _message_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return ''.join(part.get('text', '') for part in content if isinstance(part, dict)
+                       and isinstance(part.get('text'), str))
+    return ''
+
+
+def _dead_values(directory, members):
+    """Forbidden (superseded) values the model was shown as current, per arm; counts only."""
+    root = Path(directory).resolve()
+    observed = with_dead = lines = unreadable = 0
+    for member in members:
+        case = (member or {}).get('case') or {}
+        specs = [spec for spec in (case.get('oracle') or {}).get('artifacts', [])
+                 if isinstance(spec, dict) and spec.get('forbidden')]
+        forbidden = {value.casefold() for spec in specs for value in spec['forbidden']
+                     if isinstance(value, str) and value.strip()}
+        if not forbidden or not case.get('id'):
+            continue
+        expected = {value.casefold() for spec in specs for item in spec.get('assertions', [])
+                    if isinstance(item, dict) and item.get('op') == 'label_one_of'
+                    for value in item.get('value', []) if isinstance(value, str) and len(value.strip()) >= 3}
+        path = root / member['path'] / 'attempts' / case['id'] / 'private-trace.jsonl'
+        blocks = None
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(root):
+                raise ValueError('Unsafe diagnostic path')
+            if not path.exists():
+                continue
+            if path.stat().st_size > 8 * 1024 * 1024:
+                raise ValueError('Oversized diagnostic trace')
+            for line in path.read_text().splitlines():
+                event = json.loads(line)
+                if (not isinstance(event, dict) or event.get('protocol') != TRACE_PROTOCOL
+                        or event.get('kind') != 'model_request' or event.get('thread') == 'paired-source-worker'):
+                    continue
+                messages = ((event.get('data') or {}).get('payload') or {}).get('messages')
+                found = [block for message in messages or [] if isinstance(message, dict)
+                         and message.get('role') == 'user'
+                         for block in _MEMORY_CONTEXT.findall(_message_text(message.get('content')))]
+                if found:
+                    blocks = found  # the model's window at its last request that carried injected context
+        except (OSError, ValueError, RuntimeError, AttributeError):
+            unreadable += 1
+            continue
+        if blocks is None:
+            continue
+        observed += 1
+        count = sum(1 for text in blocks for line in text.casefold().split('\n')
+                    if '[superseded:' not in line and any(value in line for value in forbidden)
+                    and not any(value in line for value in expected))
+        lines += count
+        with_dead += bool(count)
+    return {'episodes_observed': observed, 'episodes_with_dead_values': with_dead, 'dead_value_lines': lines,
+            'unreadable_traces': unreadable, 'basis': DEAD_VALUE_BASIS}
+
+
 def _tick_output_cell(output):
     if not output or not output.get('episodes_with_ticks'):
         return 'no ticks'
@@ -778,6 +844,7 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
     rows = {arm: [] for arm in labels}
     cases = {arm: [] for arm in labels}
     workloads = {arm: [] for arm in labels}
+    members = {arm: [] for arm in labels}
     pairs = []
     for declared in manifest['pairs']:
         results = {arm: _row(directory, manifest, declared['arms'][arm]) for arm in labels}
@@ -785,6 +852,7 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
             rows[arm].append(results[arm])
             cases[arm].append(declared['arms'][arm].get('case'))
             workloads[arm].append(_workload_observations(directory, declared['arms'][arm], results[arm]))
+            members[arm].append(declared['arms'][arm])
         complete = {arm: _completion(results[arm]) for arm in labels}
         projections = {arm: None for arm in labels}
         if report_protocol == REPORT_PROTOCOL:
@@ -823,6 +891,7 @@ def summarize(directory, *, report_protocol=REPORT_PROTOCOL):
             'accounting': _accounting(rows[arm]), 'timing': _timing(rows[arm]),
             'native_turns': _native_turns(rows[arm]),
             'tick_output': _tick_output(rows[arm], cases[arm]),
+            'dead_values_in_context': _dead_values(directory, members[arm]),
             'request_workloads': _workloads(workloads[arm])}
     score = None
     if full:
@@ -957,6 +1026,12 @@ def markdown(report):
         lines.append(f"| {arm} | {shown} | {row['attributed_completed']}/{row['declared_episodes']} | {row['outcomes']} | "
                      f"{turns['incomplete_agent_turns']}/{turns['agent_turns']} "
                      f"in {turns['episodes_with_incomplete_turn']} episodes | {_tick_output_cell(row.get('tick_output'))} |")
+    dead = {arm: report['arms'][arm].get('dead_values_in_context') or {} for arm in arms}
+    if any(value.get('episodes_observed') for value in dead.values()):
+        lines.extend(['', 'Dead values in the injected context of the last agent request (secondary, report-only): '
+                      + '; '.join(f"{arm} {value.get('episodes_with_dead_values', 0)}/"
+                                  f"{value.get('episodes_observed', 0)} episodes, {value.get('dead_value_lines', 0)} lines"
+                                  for arm, value in dead.items()) + '.'])
     score = report['paired_score']
     lines.extend(['', (f"Completion delta ({score.get('treatment', arms[1])} minus {score.get('comparator', reference)}): "
         f"{score['delta_percentage_points']:+.1f} percentage points. "
