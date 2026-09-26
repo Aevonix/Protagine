@@ -279,3 +279,13 @@ def test_each_shown_superseded_value_needs_its_own_answer_within_one_artifact(tm
         both + ' [superseded id=c-1: now "front lobby"]',
         'It moved from the corner office to the front lobby.']))
     assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
+
+
+def test_short_values_are_matched_as_whole_words(tmp_path):
+    """Round 3, new P2: a fully corrected short value is answered, and a short value inside a word is not shown."""
+    member = dead_value_member(tmp_path, [spec('42', '43'), spec('US', 'UK')], '\n'.join([
+        'Locker 42 [superseded: now "43"]',
+        'Ships from the US [superseded id=claim:0a: now "UK" since 2026-09-19]',
+        'Ships to Belarus and the 1420 depot.',   # "us" and "42" only inside other words
+        'Locker 42 and the US office.']))         # both shown, neither answered
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1

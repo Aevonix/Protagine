@@ -552,7 +552,7 @@ def _value_tokens(value: str) -> tuple:
     return tuple(words[1:] if len(words) > 1 and words[0] in ("the", "a", "an") else words)
 
 
-def _shows(words: list[str], value: str) -> bool:
+def shows(words: list[str], value: str) -> bool:
     """``words`` (a line's tokens) hold ``value``'s tokens as one run, by the same tokenizer as selection."""
     wanted = _value_tokens(value)
     if not wanted:
@@ -591,9 +591,9 @@ def stated(line: str, record: Superseded) -> tuple[str | None, str]:
     # Only words: matched in the record's own words, never in identifiers and timestamps (identity already makes
     # them the record's, so a value of any length ("42") counts, and a "42" inside 09:42:00 does not).
     strings = [tokens(word) for part in own for word in part.words]  # a value never spans two strings
-    if any(_shows(words, record.current) for words in strings):
+    if any(shows(words, record.current) for words in strings):
         return "current", record.current
-    if any(_shows(words, record.old) for words in strings):
+    if any(shows(words, record.old) for words in strings):
         return "stale", record.old
     return None, ""
 

@@ -752,8 +752,8 @@ DEAD_VALUE_BASIS = (
     'lines of the injected memory context that show, outside a "[superseded" note, more of the values an artifact '
     'forbids than the line answers: each note stating one of that artifact\'s expected values answers one, and each '
     'of its fields whose expected value the line itself shows answers one; one field\'s answer never covers '
-    'another\'s, and an artifact that expects no value counts its forbidden values wherever shown. JSON escapes are '
-    'read as the characters they stand for. Read from the private trace; no trace text is copied.')
+    'another\'s, and an artifact that expects no value counts its forbidden values wherever shown. Values are '
+    'whole words of the context\'s tokenizer, of any length; JSON escapes are read as the characters they stand for. Read from the private trace; no trace text is copied.')
 _MEMORY_CONTEXT = re.compile(r'<memory-context>(.*?)</memory-context>', re.S)
 _SUPERSEDED_NOTE = re.compile(r'\[superseded(?: id=[^\s\]"]+?)?:(?:[^\]"]|"(?:[^"\\]|\\.)*")*\]')
 
@@ -785,6 +785,7 @@ def _unescaped(text):
 
 def _dead_values(directory, members):
     """Forbidden (superseded) values the model was shown as current, per arm; counts only."""
+    from protagine.memory.compass import shows, tokens  # the context's own tokenizer: values are whole words
     root = Path(directory).resolve()
     observed = with_dead = lines = unreadable = 0
     for member in members:
@@ -793,11 +794,11 @@ def _dead_values(directory, members):
                  if isinstance(spec, dict) and spec.get('forbidden')]
         # Each artifact pairs its forbidden values with its own fields' expected values: a note stating one
         # artifact's expected value says nothing about another artifact's forbidden value on the same line.
-        pairs = [({value.casefold() for value in spec['forbidden'] if isinstance(value, str) and value.strip()},
+        pairs = [({value for value in spec['forbidden'] if isinstance(value, str) and value.strip()},
                   [expected for item in spec.get('assertions', [])
                    if isinstance(item, dict) and item.get('op') == 'label_one_of'
-                   for expected in [{value.casefold() for value in item.get('value', [])
-                                     if isinstance(value, str) and len(value.strip()) >= 3}] if expected])
+                   for expected in [{value for value in item.get('value', [])
+                                     if isinstance(value, str) and value.strip()}] if expected])
                  for spec in specs]
         pairs = [(forbidden, expected) for forbidden, expected in pairs if forbidden]
         if not pairs or not case.get('id'):
@@ -832,19 +833,18 @@ def _dead_values(directory, members):
             # Every forbidden value the line shows needs its own answer: a note stating one of the artifact's
             # expected values, or a field whose expected value the line itself shows. One field's answer never
             # covers another field's stale value; two notes answer two versions of one field.
-            notes = _SUPERSEDED_NOTE.findall(line)
-            bare = _SUPERSEDED_NOTE.sub(' ', line)
+            notes = [tokens(note) for note in _SUPERSEDED_NOTE.findall(line)]
+            bare = tokens(_SUPERSEDED_NOTE.sub(' ', line))
             for forbidden, fields in pairs:
-                shown = sum(value in bare for value in forbidden)
+                shown = sum(shows(bare, value) for value in forbidden)
                 if not shown:
                     continue
-                answers = (sum(any(value in note for field in fields for value in field) for note in notes)
-                           + sum(any(value in bare for value in field) for field in fields))
+                answers = (sum(any(shows(note, value) for field in fields for value in field) for note in notes)
+                           + sum(any(shows(bare, value) for value in field) for field in fields))
                 if shown > answers:
                     return True
             return False
-        count = sum(1 for text in blocks for line in (_unescaped(raw).casefold() for raw in text.split('\n'))
-                    if dead(line))
+        count = sum(1 for text in blocks for line in (_unescaped(raw) for raw in text.split('\n')) if dead(line))
         lines += count
         with_dead += bool(count)
     return {'episodes_observed': observed, 'episodes_with_dead_values': with_dead, 'dead_value_lines': lines,
