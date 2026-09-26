@@ -324,11 +324,25 @@ def _sentences(text: str) -> List[str]:
     return [" ".join(part.split()) for part in _SENTENCE.split(str(text or "")) if part.strip()]
 
 
+# Words that say nothing of the topic: the research itself (that it ran, was done, found or changed nothing),
+# its status, and the connecting words around them. A sentence of these and the topic is no finding: "No
+# changes to report about tidal energy", "Research on tidal energy is complete".
+NO_SUBSTANCE = frozenset("""
+finding findings report reports reported reporting update updates updated news research researched researching
+complete completed completes done finished finish looked look looking searched search searches checked check
+checking reviewed review reviewing scanned monitored monitoring change changes changed unchanged same still
+again nothing none anything something everything new notable noteworthy further more else additional add added
+status result results today yesterday week month currently now time this that these those there here the and
+for with about into from was were are has have had been being any all its it's can could would will not
+""".split())
+
+
 def says_something(sentence: str, topic: str) -> bool:
-    """A sentence that reports something: not a null report, and naming more than the topic itself."""
+    """A sentence that reports something: not a null report, and naming more than the topic and the research
+    itself (``NO_SUBSTANCE``)."""
     if NULL_REPORT.search(sentence):
         return False
-    return bool(_tokens(sentence) - _tokens(topic) - {"finding", "findings", "report", "update"})
+    return bool(_tokens(sentence) - _tokens(topic) - NO_SUBSTANCE)
 
 
 def repeated(text: str, inputs: OutreachInputs) -> bool:
@@ -762,7 +776,7 @@ def pause_until(entry: Optional[Dict[str, Any]]) -> Optional[datetime]:
 
 __all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "CHECK_IN_OFFERS", "CONVERSATION_GAP", "bears_on", "Care", "DIGEST_FLOOR",
            "FINDING_WINDOW", "Finding", "Followup", "INDEFINITE", "Interest", "Loop", "MESSAGE_CHARS", "MIN_GAP",
-           "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NULL_REPORT", "repeated", "says_something", "settle",
+           "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NO_SUBSTANCE", "NULL_REPORT", "repeated", "says_something", "settle",
            "NOT_NOW_HOLD", "OWNER_TURN_KEY", "OutreachInputs", "PAUSE_KEY", "REPLY_HOURS", "Sent", "TIMING_PREFIX", "answer_candidate",
            "backoff_until", "candidates", "care_candidate", "digest_value", "excerpt", "finding_candidate",
            "followup_candidate", "followups", "holds", "keeps_followup", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",

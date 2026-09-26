@@ -471,3 +471,23 @@ async def test_a_finding_whose_message_expired_unsent_is_listed_once(make):
     await fx.tick()
     digest, = [p["text"] for p in fx.sent if p["type"] == "digest"]
     assert digest.count("QX-41") == 1
+
+
+@pytest.mark.parametrize("summary", [
+    "No changes to report about tidal energy.",
+    "Research on tidal energy is complete.",
+    "finding: I looked into tidal energy again; there is nothing I could add.",
+    "Tidal energy: no updates this week. Research done.",
+])
+def test_a_report_that_says_nothing_beyond_its_topic_and_the_research_itself_is_empty(summary):
+    finding = outreach.Finding(id="f-1", type="research", topic="tidal energy", slug="tidal-energy",
+                               summary=summary, completed_at=T0)
+    assert outreach.settle(finding, outreach.OutreachInputs(now=T0, owner_id=OWNER)) == "empty"
+
+
+def test_a_report_with_a_fact_is_a_finding():
+    for summary in (report("QX-41", "tidal energy"), "Tidal energy prices fell 4% in the auction.",
+                    "No changes to the tidal energy tariff, but the Orkney site closes in May."):
+        finding = outreach.Finding(id="f-1", type="research", topic="tidal energy", slug="tidal-energy",
+                                   summary=summary, completed_at=T0)
+        assert outreach.settle(finding, outreach.OutreachInputs(now=T0, owner_id=OWNER)) is None, summary
