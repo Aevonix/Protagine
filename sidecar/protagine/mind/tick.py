@@ -3032,7 +3032,7 @@ class Mind:
             row = self.store.get(str(payload["id"]))
             try:
                 if (row is None or self._invalidated(row) or await self._cancel_if_replied(row)
-                        or await self._permission_withdrawn(row, now)):
+                        or await self._permission_withdrawn(row, now) or self._withdrawn_by_hold(row, now)):
                     continue
             except Exception as error:
                 logger.warning("message %s held: %s", row.id, error if isinstance(error, Unreadable) else type(error).__name__)
@@ -3044,6 +3044,35 @@ class Mind:
                 payload["recipient_handles"] = handles
             ready.append(payload)
         return ready
+
+    def _withdrawn_by_hold(self, row: StoredInitiative, now: datetime) -> bool:
+        """Holds are re-checked at send time: an outreach queued before the owner held its matter (an item held,
+        listed or from its first mention, that it names or is about: ``outreach.held``) is withdrawn at the pull,
+        cancelled like any outreach the owner's word stopped (a finding's then goes to the digest, an answer
+        waits pending until the hold lifts). Raises ``Unreadable`` when the owner's items cannot be read: the
+        row is held this pull, never sent."""
+        if row.type not in OUTREACH_MESSAGES or self.commitments is None:
+            return False
+        try:
+            rows = list(self.commitments.list(status=["pending", "overdue"], limit=500).get("commitments", []))
+        except Exception as error:
+            raise Unreadable(f"the owner's holds cannot be read ({type(error).__name__})") from None
+        held = self._held_matters(rows)
+        if not held:
+            return False
+        context = row.context if isinstance(row.context, dict) else {}
+        named = [str(item)[len("commitment:"):] for item in context.get("evidence") or []
+                 if str(item).startswith("commitment:")]
+        named += [str(context[key]) for key in ("bound_commitment", "commitment") if context.get(key)]
+        state = outreach_functions.OutreachInputs(now=now, owner_id=str(self.owner_id), held=held)
+        topic = str(context.get("topic") or "")
+        matter = next((found for found in (outreach_functions.held(state, topic, commitment=ident)
+                                           for ident in [*named, None]) if found), None)
+        if matter is None:
+            return False
+        self.outcomes.record(row.id, status="cancelled", summary=f"withdrawn: the owner holds {matter[:120]}",
+                             verified="check", by="mind", implicit_verdict=False)
+        return True
 
     OBSERVATION_LISTS = (("stale_tasks", "stale_task"), ("blocked_tasks", "blocked_task"), ("goals", "goal"),
                          ("mind_tasks", "mind_task"))

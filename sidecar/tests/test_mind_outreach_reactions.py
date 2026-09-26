@@ -1072,3 +1072,71 @@ def test_a_promise_binds_only_the_outreach_it_was_linked_to():
                    {"description": "Cancel the tidal energy trial", "metadata": {"kind": "reminder", "outreach": "o-1"}},
                    {"description": "Report back on it", "metadata": None}):
         assert not outreach.binds_followup(record, item), record
+
+
+# -- round 3: a hold is re-checked at send time: a queued offer about a held matter is withdrawn --------------
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("hold_words", ["No reminders about it.", "I'm handling the parcel receipt myself, don’t remind me."])
+async def test_a_queued_care_offer_is_withdrawn_once_its_matter_is_held(make, linked, hold_words):
+    """Re-check round 2, item 8: a parcel-receipt care offer is queued and not yet collected; the owner then holds
+    the matter. The next pull carries no care payload, and the offer is withdrawn (cancelled), not left waiting."""
+    fx = make()
+    fx.owner_spoke(fx.now - 3 * H)
+    item = fx.owner_commitment("Handle the parcel receipt", due=fx.now + timedelta(days=3), created=fx.now - 2 * H) \
+        if linked else None
+    fx.mind.mind_state.set("care:parcel-receipt", level=1.0, text="parcel receipt",
+                           causes=["turn:t-5", *([f"commitment:{item['id']}"] if item else [])],
+                           half_life_s=72 * 3600, now=fx.now)
+    await fx.mind.tick(force=True)
+    care, = fx.outreach_rows("outreach_care")
+    assert care.status == "approved"
+    if item is not None:
+        fx.commitments.update(item["id"], clear_due_at=True, metadata={"reschedule": HELD})
+    else:
+        fx.owner_commitment("Handle the parcel receipt", created=fx.now, reschedule=HELD)
+    await say(fx, hold_words, "t-hold")
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "outreach_care"] == []
+    assert fx.store.get(care.id).status == "cancelled"
+
+
+async def test_a_queued_finding_is_withdrawn_once_its_matter_is_held_and_the_digest_keeps_it(make):
+    fx = make()
+    fx.owner_spoke()
+    fx.mind.add_interest("tidal energy", by="turn:t-1")
+    done = await fx.research("tidal energy", report("QX-41", "tidal energy"))
+    fx.shift(timedelta(minutes=30))
+    await fx.mind.tick(force=True)
+    row, = fx.outreach_rows("outreach_finding")
+    fx.owner_commitment("Look at the tidal energy plans", created=fx.now, reschedule=HELD)
+    assert [p for p in await fx.mind.outbox_ready() if p["type"] == "outreach_finding"] == []
+    assert fx.store.get(row.id).status == "cancelled"
+    assert fx.store.get(done.id).result_metadata["outreach"]["state"] == "digest"
+
+
+async def test_a_queued_offer_about_a_matter_no_one_holds_still_goes(make):
+    fx = make()
+    fx.owner_spoke(fx.now - 3 * H)
+    fx.mind.mind_state.set("care:parcel-receipt", level=1.0, text="parcel receipt", causes=["turn:t-5"],
+                           half_life_s=72 * 3600, now=fx.now)
+    await fx.mind.tick(force=True)
+    fx.owner_commitment("Renew the car insurance", created=fx.now, reschedule=HELD)
+    assert [p["type"] for p in await fx.mind.outbox_ready()] == ["outreach_care"]
+
+
+async def test_a_queued_offer_is_held_while_the_owners_holds_cannot_be_read(make, monkeypatch):
+    import sqlite3
+    fx = make()
+    fx.owner_spoke(fx.now - 3 * H)
+    fx.mind.mind_state.set("care:parcel-receipt", level=1.0, text="parcel receipt", causes=["turn:t-5"],
+                           half_life_s=72 * 3600, now=fx.now)
+    await fx.mind.tick(force=True)
+    care, = fx.outreach_rows("outreach_care")
+    listing = fx.commitments.list
+
+    def failing(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(fx.commitments, "list", failing)
+    assert await fx.mind.outbox_ready() == [] and fx.store.get(care.id).status == "approved"
+    monkeypatch.setattr(fx.commitments, "list", listing)
+    assert [p["type"] for p in await fx.mind.outbox_ready()] == ["outreach_care"]
