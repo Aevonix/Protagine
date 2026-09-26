@@ -74,6 +74,8 @@ OPEN_ITEMS_LISTED = 12
 # characters, about 1,700 tokens) and lost two owner turns after three attempts. This fits that thinking
 # and a long turn's answer (test_commitment_capture_budget); the router clamps to the tier's maximum anyway.
 OUTPUT_BUDGET_TOKENS = 4096
+# The decision model's questions one captured turn may ask per point (``protagine.decisions``).
+DECIDED_PER_TURN = 3
 # Earlier turns shown with the audited turn, so an amendment ("make that
 # noon") or an acceptance ("fine, I'll do it") is judged with its referent.
 CONTEXT_TURNS, CONTEXT_WINDOW_SECONDS, CONTEXT_CHARS = 3, 3600, 3000
@@ -1191,6 +1193,8 @@ class CommitmentExtractor:
         self.ledger, self.commitments_provider, self.clock = ledger, commitments_provider, clock
         self.aliases = aliases
         self.interests = interests
+        # The fast decision layer (``protagine.decisions``): None is the process's, from its environment.
+        self.decisions: Any = None
         with closing(ledger._connect()) as conn, conn:
             initialize(conn)
 
@@ -1489,6 +1493,55 @@ class CommitmentExtractor:
                     logger.warning("interest not settled (%s)", type(error).__name__)
         return kept, settled
 
+    def _decider(self) -> Any:
+        from protagine import decisions
+        return self.decisions or decisions.shared()
+
+    async def _decided_holds(self, items: List[Dict[str, Any]], text: str) -> List[Dict[str, Any]]:
+        """The HOLD rule's first mention, read by the decision model (point ``no_reminders``): a new item the
+        capture call gave a reminder (a due time or a heads-up) that the person's words ask no reminders about
+        is created held, open with no time and no heads-up. A message to a contact (a notice, a check-in, a
+        cadence) is no reminder and is never asked about; no answer leaves the item as the call gave it."""
+        decider = self._decider()
+        if not decider.enabled("no_reminders"):
+            return items
+        result, asked = [], 0
+        for item in items:
+            metadata = item.get("metadata") if isinstance(item, dict) and isinstance(item.get("metadata"), dict) else {}
+            reminds = isinstance(item, dict) and (item.get("due_at") or metadata.get("heads_up_at")
+                                                  or metadata.get("lead_minutes"))
+            if (reminds and str(item.get("action") or "").strip().lower() == "create" and asked < DECIDED_PER_TURN
+                    and metadata.get("kind") not in {"notice", "check_in", "cadence"}):
+                asked += 1
+                decision = await decider.decide("no_reminders", item=str(item.get("description") or ""), text=text)
+                if decision is not None and decision.label == "yes":
+                    kept = {key: value for key, value in metadata.items() if key not in {"heads_up_at", "lead_minutes"}}
+                    item = {**item, "due_at": None, "due_text": None, "metadata": kept or None}
+            result.append(item)
+        return result
+
+    async def _decided_settlements(self, interests: List[str], settled: List[str], *, person_id: str, text: str,
+                                   turn_id: str) -> List[str]:
+        """An open interest the owner's words name and the decision model reads as answered or no longer wanted
+        (point ``interest_settled``), which the capture call left open, is settled as the call's complete or
+        cancel settles it (``Mind.settle_interest``). A turn that does not name the topic is never asked about."""
+        decider = self._decider()
+        mind = self._mind(person_id) if interests and decider.enabled("interest_settled") else None
+        if mind is None:
+            return []
+        from protagine.mind.outreach import similar
+        done: List[str] = []
+        for topic in [topic for topic in interests if topic not in settled and similar(topic, text)][:DECIDED_PER_TURN]:
+            decision = await decider.decide("interest_settled", topic=topic, text=text)
+            if decision is None or decision.label != "yes":
+                continue
+            try:
+                if mind.settle_interest(topic, cause=f"turn:{turn_id}"):
+                    done.append(topic)
+            except Exception as error:
+                logger.warning("interest not settled (%s)", type(error).__name__)
+        return done
+
     def unfinished(self, contact_id: str) -> int:
         """The person's capture jobs queued since this release started (never the backlog) and not finished:
         turns of theirs capture has not landed yet. The tick holds optional work while the owner has any."""
@@ -1602,6 +1655,9 @@ class CommitmentExtractor:
             logger.warning("commitment extraction deferred for %s (%s)", job["turn_id"], defect or type(error).__name__)
             self._retry(job, defect or type(error).__name__, immediate=defect is not None)
             return {}
+        items = await self._decided_holds(items, user_message)
+        settled += await self._decided_settlements(interests, settled, person_id=person_id, text=user_message,
+                                                   turn_id=job["turn_id"])
         from protagine.identity import get_owner_contact_id, get_owner_name, get_persona_name
         owner_id = get_owner_contact_id()
         # The names the owner and the assistant go by, so an item naming either is never read as one

@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
+from protagine import decisions
 from protagine.contacts.comms import MIND_REF, conversation_cadence_minutes
 from protagine.contacts.digest import TEMPLATE_SOURCES, render_digest
 from protagine.initiatives.models import MIND_ACTIVE_STATUSES, StoredInitiative
@@ -257,6 +258,8 @@ class Mind:
                                  enabled=self.faculties["people"])
         self.goals = Goals(store, budgets=self.policy.budgets, clock=self.clock,
                            enabled=self.faculties["goals"] and self.faculties["drives"])
+        # The fast decision layer (``protagine.decisions``): None is the process's, from its environment.
+        self.decisions: Any = None
         # Lessons (architecture 4.8): the mind's own record of what verified results taught it.
         self.lessons = Lessons(ledger=ledger, store=store, owner_id=self.owner_id, autobiography=self.autobiography,
                                clock=self.clock, enabled=self.faculties["lessons"], mind_state=self.mind_state)
@@ -1364,10 +1367,14 @@ class Mind:
         cls = reading.reaction(about=self._about(row)) if row is not None else None
         if how == "position" and cls is None:
             row, how = None, ""    # nothing in the turn is about what was sent
+        read = ""
+        if row is not None and cls is None:
+            cls = await self._decided_reply(body, row)
+            read = "decision" if cls is not None else ""
         self._apply_holds(reading, summary, cause=cause, now=now, linked=cls)
         if row is not None:
             summary["linked"] = row.id
-            summary["applied"].append(self._react(row, cls or "engaged", turn=turn, how=how, now=now))
+            summary["applied"].append(self._react(row, cls or "engaged", turn=turn, how=how, now=now, read=read))
         for topic in reading.negative_objects:
             self._mute(topic, cause=cause, now=now)
         muted = {slug(topic) for topic in reading.negative_objects}
@@ -1397,7 +1404,7 @@ class Mind:
                      linked: Optional[str]) -> None:
         """The owner's stop, resume or pause for today: an explicit one always, a bare "stop" or a vague
         "not today" only as the reaction of a reply linked to an outreach (``linked``)."""
-        if reading.stop_explicit or (reading.stop and linked == "stop"):
+        if reading.stop_explicit or linked == "stop":
             self.pause_outreach(None, by=cause, now=now)
             summary["applied"].append("paused")
         elif reading.resume:
@@ -1512,13 +1519,28 @@ class Mind:
         return lambda text: bool(topic and outreach_functions.similar(topic, text)) or not (
             reactions.content_terms(text) - known)
 
-    def _react(self, row: StoredInitiative, cls: str, *, turn: str, how: str, now: datetime) -> str:
-        """Record the owner's reaction on the row and learn from it."""
+    # The decision model's labels for a reply (``decisions.POINTS["outreach_reply"]``) as the reactions' classes.
+    REPLY_CLASSES = {"dig_deeper": "positive", "not_interested": "negative", "not_now": "not_now", "stop": "stop"}
+
+    async def _decided_reply(self, body: str, row: StoredInitiative) -> Optional[str]:
+        """The decision model's reading of a linked reply the phrase tables read nothing in, as a reaction class;
+        None (the point off, no answer, an unsure one, or "engaged") leaves the reply engagement."""
+        decider = self.decisions or decisions.shared()
+        if not decider.enabled("outreach_reply"):
+            return None
+        context = row.context if isinstance(row.context, dict) else {}
+        decision = await decider.decide("outreach_reply", text=body, topic=str(context.get("topic") or "a finding"))
+        return self.REPLY_CLASSES.get(decision.label) if decision is not None else None
+
+    def _react(self, row: StoredInitiative, cls: str, *, turn: str, how: str, now: datetime, read: str = "") -> str:
+        """Record the owner's reaction on the row and learn from it; ``read`` names what read the class when it
+        was not the phrase tables ("decision": the decision model)."""
         o = outreach_functions
         context = row.context if isinstance(row.context, dict) else {}
         topic = str(context.get("topic") or "")
         metadata = dict(row.result_metadata or {})
-        metadata["reaction"] = {"class": cls, "turn": turn, "at": now.isoformat(), "by": how or "phrase"}
+        metadata["reaction"] = {"class": cls, "turn": turn, "at": now.isoformat(), "by": how or "phrase",
+                                **({"read": read} if read else {})}
         self.store.update(row.id, result_metadata=metadata)
         news = row.type in {"outreach_finding", OUTREACH_ANSWER}
         cause = f"reaction:{row.id}"
