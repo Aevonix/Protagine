@@ -14,7 +14,10 @@ logged.
 
 Superseded values: a line that asserts a value the current record has
 superseded (a changed or corrected claim, a rescheduled commitment) is annotated
-inline with the current value and date; nothing is deleted. Earlier turns of a
+inline with the current value and date; nothing is deleted. A line is a
+record's only by identity: it carries the commitment's id, or the claim's id or
+the source that stated it; shared words or an equal value elsewhere never make
+it one. Earlier turns of a
 conversation are replayed by the host as they were, so values served earlier
 that have since been superseded are listed once more, as corrections, in the
 new turn's context.
@@ -22,6 +25,7 @@ new turn's context.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import math
@@ -72,9 +76,6 @@ _SKIP_KEY = re.compile(r"(?:^|_)(?:id|ids|sha256|hash|uri|version|anchor|anchors
                        r"applicability|epistemic_state|claim_status|content_format|conversation_context|"
                        r"confidence|excerpt_truncated|precision)$")
 _IDENTIFIER = re.compile(r"^(?:[0-9a-f]{16,}|[\w.:-]*\d{4}-\d\d-\d\dT[\w.:+-]*|turn:\S+|claim:\S+)$", re.I)
-_STOP = frozenset("the a an and or of to in on at for with by from is are was were be it this that my your "
-                  "their our his her its as about into over under than then there here what when where which "
-                  "who whom whose how".split())
 
 
 @dataclass(frozen=True)
@@ -363,13 +364,16 @@ async def select_context(sections: list, query: str, rerank_fn, *, settings: Sel
 
 @dataclass(frozen=True)
 class Superseded:
-    """A value the current record no longer holds: ``old`` was replaced by ``current`` on ``since``."""
+    """A value the current record no longer holds: ``old`` was replaced by ``current`` on ``since``.
+
+    ``keys`` are the record's identity as the context renders it (a commitment's ``id=<id>``; a claim's id and the
+    ``turn:<id>`` of the source that stated it). Only a line carrying one of them states this record's value."""
     old: str
     current: str
     since: str = ""
     subject: str = ""
     kind: str = "changed"  # changed | corrected | rescheduled
-    source_ids: tuple = ()
+    keys: tuple = ()
 
     def note(self) -> str:
         date = f" since {self.since[:10]}" if self.since else ""
@@ -391,31 +395,30 @@ def _pattern(value: str):
     return re.compile(r"(?<!\w)" + r"\s+".join(re.escape(word) for word in text.split()) + r"(?!\w)", re.I)
 
 
-def _distinctive(value: str) -> bool:
-    text = _normal(value)
-    return len(text) >= 8 and len(text.split()) >= 2
+@functools.lru_cache(maxsize=4096)
+def _identity(keys: tuple):
+    """A line carries one of ``keys`` as a whole token (``id=c-1`` is not ``id=c-10``)."""
+    keys = [key for key in keys if key]
+    if not keys:
+        return None
+    return re.compile(r"(?<![\w.:=-])(?:" + "|".join(re.escape(key) for key in keys) + r")(?![\w-]|[.:]\w)")
 
 
-def _subject_words(subject: str) -> set:
-    return {word for word in re.findall(r"\w+", _normal(subject)) if len(word) >= 4 and word not in _STOP}
+def _carries(line: str, record: Superseded) -> bool:
+    pattern = _identity(tuple(record.keys))
+    return pattern is not None and bool(pattern.search(line))
 
 
 def asserts_superseded(line: str, record: Superseded) -> bool:
-    """``line`` states ``record.old`` as it stands: the old value without the current one and without a note.
-    An old value that is short or common counts only on a line from a source that stated it, or on a line
-    naming its subject."""
-    if MARKER in line:
+    """``line`` is ``record``'s (it carries the record's identity) and states ``record.old`` as it stands: the old
+    value without the current one and without a note."""
+    if MARKER in line or not _carries(line, record):
         return False
     old = _pattern(record.old)
     if old is None or not old.search(line):
         return False
     current = _pattern(record.current)
-    if current is not None and current.search(line):
-        return False
-    if any(source and source in line for source in record.source_ids) or _distinctive(record.old):
-        return True
-    words = _subject_words(record.subject)
-    return bool(words) and bool(words & set(re.findall(r"\w+", line.casefold())))
+    return current is None or not current.search(line)
 
 
 def annotate_superseded(sections: list, records: list[Superseded], *, per_line: int = 2) -> list:
@@ -494,7 +497,8 @@ def claim_supersessions(ledger, *, contact_id: str, session_id: str, limit: int 
         records.append(Superseded(old=old_value, current=new_value,
                                   since=str(latest.get("valid_from") or latest.get("observed_at") or "")[:10],
                                   subject=str(old.get("subject") or ""), kind=kinds[claim_id],
-                                  source_ids=(str(old.get("turn_id") or ""),)))
+                                  keys=tuple(key for key in ("turn:" + str(old.get("turn_id") or ""), claim_id)
+                                             if key != "turn:")))
     return records
 
 
@@ -508,11 +512,18 @@ def commitment_reschedules(rows: Iterable[dict[str, Any]]) -> list[Superseded]:
         if old and old != str(row.get("due_at") or ""):
             records.append(Superseded(old=old, current=str(row.get("due_at") or ""), kind="rescheduled",
                                       since=str(row.get("updated_at") or "")[:10],
-                                      subject=str(row.get("description") or "")))
+                                      subject=str(row.get("description") or ""),
+                                      keys=(f"id={row['id']}",) if row.get("id") else ()))
     return records
 
 
 # -- Earlier turns in the window ------------------------------------------------------------------
+
+def correction_line(record: Superseded) -> str:
+    """One correction, carrying the record's identity so a later turn can tell it was delivered or is stale."""
+    subject = f" ({record.subject})" if record.subject else ""
+    return f"- {record.keys[0]}; {json.dumps(record.old, ensure_ascii=False)}{subject}: {record.note()}"
+
 
 class ServedWindow:
     """What this sidecar served to each conversation, so a value superseded after it was served is corrected in
@@ -531,8 +542,7 @@ class ServedWindow:
         lines, notes = served.split("\n"), []
         for record in records:
             if any(asserts_superseded(line, record) for line in lines):
-                subject = f" ({record.subject})" if record.subject else ""
-                notes.append(f'- "{record.old}"{subject}: {record.note()}')
+                notes.append(correction_line(record))
             if len(notes) >= self._lines:
                 break
         return ("Earlier context in this conversation showed values the record has since superseded:\n"

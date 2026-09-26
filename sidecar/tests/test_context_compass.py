@@ -199,8 +199,9 @@ def test_settings_come_from_the_environment(monkeypatch):
 # -- superseded values --------------------------------------------------------------------------
 
 VENUE = Superseded(old="the corner office", current="the front lobby", since="2026-09-18", subject="design review",
-                   kind="changed", source_ids=("s-old",))
-DAY = Superseded(old="Monday", current="Thursday", since="2026-09-19", subject="dentist appointment")
+                   kind="changed", keys=("turn:s-old",))
+DAY = Superseded(old="Monday", current="Thursday", since="2026-09-19", subject="dentist appointment",
+                 keys=("turn:s-dentist",))
 
 
 def test_a_line_stating_a_superseded_value_is_annotated_never_removed():
@@ -208,15 +209,18 @@ def test_a_line_stating_a_superseded_value_is_annotated_never_removed():
         '- {"source": "turn:s-old"} "The design review is in the corner office."',
         '- {"source": "turn:s-new"} "The review moved to the front lobby; the corner office is no longer right."',
         "- Book a Monday slot for the gym.",
-        "- The dentist appointment is on Monday.",
-    ])), ContextSection(id="protagine-stances", title="Your recorded views", body="- The corner office is too loud.")]
+        '- {"source": "turn:s-dentist"} "The dentist appointment is on Monday."',
+    ])), ContextSection(id="protagine-stances", title="Your recorded views", body="- The corner office is too loud."),
+        ContextSection(id="protagine-appraisals", title="Relevant working perspective",
+                       body='- {"source": "turn:s-old"} The corner office is where the review is held.')]
     annotated = compass.annotate_superseded(sections, [VENUE, DAY])
     lines = annotated[0].body.split("\n")
     assert lines[0].endswith('[superseded: now "the front lobby" since 2026-09-18]')
-    assert lines[1] == sections[0].body.split("\n")[1]          # it names the current value too
-    assert lines[2] == "- Book a Monday slot for the gym."       # a common word needs its subject
+    assert lines[1] == sections[0].body.split("\n")[1]          # another source's line
+    assert lines[2] == "- Book a Monday slot for the gym."       # a line of no record
     assert lines[3].endswith('[superseded: now "Thursday" since 2026-09-19]')
-    assert annotated[1].body.endswith('[superseded: now "the front lobby" since 2026-09-18]')  # every lane
+    assert annotated[1] is sections[1]                           # the old value, but not the record's line
+    assert annotated[2].body.endswith('[superseded: now "the front lobby" since 2026-09-18]')  # every lane
     assert len(annotated[0].body.split("\n")) == 4
     assert compass.dead_value_lines("\n".join(s.body for s in sections), [VENUE, DAY]) == 3
     assert compass.dead_value_lines("\n".join(s.body for s in annotated), [VENUE, DAY]) == 0
@@ -259,7 +263,8 @@ async def test_changed_and_corrected_claims_are_read_from_the_ledger_with_their_
     assert {(r.old, r.current, r.kind) for r in records} == {
         ("the corner office", "the front lobby", "corrected"), ("the east room", "the front lobby", "corrected")}
     assert all(r.subject == "design review" and r.since for r in records)
-    assert {r.source_ids for r in records} == {("first",), ("second",)}
+    assert {r.keys[0] for r in records} == {"turn:first", "turn:second"}
+    assert all(r.keys[1].startswith("claim:") for r in records)
     assert compass.claim_supersessions(ledger, contact_id="contact-b", session_id="later") == []
     ledger.erase_sources(contact_id="contact-a", turn_ids=["third"])
     with closing(ledger._connect()) as conn:
@@ -333,3 +338,58 @@ async def test_a_value_served_earlier_and_superseded_since_is_corrected_in_that_
     assert compass.dead_value_lines(correction, [VENUE]) == 0
     # Another conversation was never served the old value.
     assert "protagine-corrections" not in await post(app, "anything else?", session="s-other")
+
+
+# -- round 2: identity, chains, decoding, caps ---------------------------------------------------
+
+def commitment(cid, description, due, moved_from=None, updated="2026-09-20T08:00:00+00:00"):
+    metadata = {"reschedule": {"from": moved_from, "by": "conversation"}} if moved_from else {}
+    return {"id": cid, "description": description, "due_at": due, "updated_at": updated, "metadata": metadata}
+
+
+def commitment_line(cid, description, due):
+    return f"- [pending] id={cid}; {description} (due: {due}); work=unclaimed"
+
+
+def quote_line(turn, text, **encoding):
+    return "- " + json.dumps({"kind": "source_quote", "source": "turn:" + turn}, **encoding) + " " + json.dumps(
+        text, **encoding)
+
+
+def claim_record(old, current, turn, claim_id="", subject="", since="2026-09-19"):
+    """A changed claim as ``claim_supersessions`` makes it: keyed by its claim id and the source that stated it."""
+    return Superseded(old=old, current=current, since=since, subject=subject, kind="changed",
+                      keys=tuple(key for key in ("turn:" + turn, claim_id) if key))
+
+
+def body_of(sections):
+    return "\n".join(section.body for section in sections)
+
+
+def test_a_reschedule_marks_only_the_commitment_it_moved():
+    """Finding 1: identity, never shared subject words or a shared old value."""
+    tax_old, tax_new = "2026-09-21T09:00:00+00:00", "2026-09-29T09:00:00+00:00"
+    records = compass.commitment_reschedules([commitment("c-tax", "Send the tax form", tax_new, tax_old),
+                                              commitment("c-bank", "Send the bank form", tax_old)])
+    listed = [ContextSection(id="protagine-commitments", title="Pending Commitments", body="\n".join([
+        "Open commitments (a live reservation held by another session is that session's work):",
+        commitment_line("c-tax", "Send the tax form", tax_new),
+        commitment_line("c-bank", "Send the bank form", tax_old),
+        commitment_line("c-tax-2", "Send the tax form copy", tax_old)]))]
+    assert body_of(compass.annotate_superseded(listed, records)) == listed[0].body
+    stale = [ContextSection(id="protagine-commitments", title="Pending Commitments",
+                            body=commitment_line("c-tax", "Send the tax form", tax_old))]
+    assert body_of(compass.annotate_superseded(stale, records)).endswith(f'rescheduled to "{tax_new}" since 2026-09-20]')
+
+
+def test_a_changed_claim_marks_only_lines_from_its_own_record():
+    """Finding 1, claims: a multiword old value on an unrelated line or another source is not the record's."""
+    record = claim_record("the corner office", "the front lobby", "s-old", claim_id="claim-7")
+    sections = [ContextSection(id="protagine-memory", title="Relevant Memories", body="\n".join([
+        quote_line("s-old", "The design review is in the corner office."),
+        quote_line("s-other", "The corner office has a broken heater."),
+        '- {"kind": "source_quote", "content": {"assertions": [{"claim_id": "claim-7", "value": "the corner office"}]}}',
+        '- {"kind": "source_quote", "content": {"assertions": [{"claim_id": "claim-70", "value": "the corner office"}]}}',
+    ])), ContextSection(id="protagine-stances", title="Your recorded views", body="- The corner office is too loud.")]
+    lines = body_of(compass.annotate_superseded(sections, [record])).split("\n")
+    assert [compass.MARKER in line for line in lines] == [True, False, True, False, False]

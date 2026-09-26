@@ -181,10 +181,11 @@ keeps its words and gains the current value: `[superseded: now "<value>" since
 <date>]`, `corrected to` for a correction, `rescheduled to` for a commitment
 deadline. The records are the scope's changed and corrected source claims
 (followed to the latest claim; an erased or unattributed successor asserts
-nothing) and the listed commitments' previous deadlines. A line counts when it
-carries the old value without the current one. A short or common old value
-(under eight characters, or one word) counts only on a line citing the source
-that stated it or naming a word of its subject.
+nothing) and the listed commitments' previous deadlines. A line is a record's
+only by identity: it carries the commitment's `id=`, or the claim's id or the
+`turn:` of the source that stated it. Shared subject words, or the same value on
+another record's line, never count. A record's line counts when it carries the
+old value without the current one.
 
 The host replays earlier turns' context as it was. The sidecar keeps, per
 conversation and in memory only, what it served; when a value served earlier has
