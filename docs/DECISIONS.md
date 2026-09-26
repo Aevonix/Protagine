@@ -20,7 +20,8 @@ and its calibrated probability) or `None`, and `None` always means: keep the exi
   the question and its options included) is not sent, never cut to fit;
 - the call takes longer than `timeout_ms` (250 ms by default), the endpoint is busy (429), failing or
   unreachable;
-- the answer is not the typed answer asked for (another protocol, other labels, a probability out of range);
+- the answer is not the typed answer asked for (another protocol, an input the model did not read whole
+  (`input_truncated` not `false`), answers to other questions, other labels, a probability out of range);
 - the calibrated probability falls inside the point's abstain band.
 
 Calibration is temperature scaling: a probability p becomes p^(1/T), renormalised (for yes/no the log-odds are

@@ -130,6 +130,36 @@ async def test_a_failed_or_malformed_answer_is_no_answer(response):
     assert ask.stats["outreach_reply"]["failed"] == 1
 
 
+def _enveloped(body, **changes):
+    body = {**body, **changes}
+    return {key: value for key, value in body.items() if value is not _DROP}
+
+
+_DROP = object()
+
+
+@pytest.mark.parametrize("changes", [
+    {"input_truncated": True},                  # the model read a cut input: its answer is about other words
+    {"input_truncated": _DROP},                 # the contract says it was not cut; an answer that does not say so
+    {"input_truncated": None},
+    {"input_truncated": 0},
+    {"input_truncated": "false"},
+])
+async def test_an_answer_that_does_not_say_its_input_was_read_whole_is_no_answer(changes):
+    server = Server(lambda body: _enveloped(yes_no_answer(0.01), **changes))
+    ask = decider(server, owner_verdict={})
+    assert await ask.decide("owner_verdict", reply="The order code is C4411.", text="That was wrong.") is None
+    assert ask.stats["owner_verdict"]["failed"] == 1 and "answered" not in ask.stats["owner_verdict"]
+
+
+async def test_an_answer_to_other_questions_than_the_one_asked_is_no_answer():
+    extra = yes_no_answer(0.01, question=decisions._QUESTION)
+    extra["answers"]["another"] = dict(extra["answers"][decisions._QUESTION])
+    ask = decider(Server(lambda body: httpx.Response(200, json=extra)), owner_verdict={})
+    assert await ask.decide("owner_verdict", reply="The order code is C4411.", text="That was wrong.") is None
+    assert ask.stats["owner_verdict"]["failed"] == 1
+
+
 async def test_a_slow_endpoint_is_no_answer_within_the_timeout():
     async def slow(request):
         await asyncio.sleep(2)

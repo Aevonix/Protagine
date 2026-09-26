@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 
 from protagine.commitments.extract import CommitmentExtractor
@@ -37,6 +38,16 @@ class Decider:
         self.calls.append((point, fields))
         answer = self.answers.get(point)
         return None if answer is None else Decision(point, answer, 0.97, {answer: 0.97}, 12.0)
+
+
+def served(answer, *, point, truncated=False):
+    """The real decision client, with ``point`` enabled, over an endpoint that always gives ``answer``."""
+    from protagine import decisions
+    body = {"protocol": "local-decision.v1", "backend": {"name": "fake"}, "elapsed_ms": 3.0,
+            "usage": {"input_tokens": 40, "output_tokens": 0}, "input_truncated": truncated,
+            "answers": {decisions._QUESTION: answer}}
+    return decisions.Decider("http://decide.test", points={point: {"enabled": True}},
+                             transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)))
 
 
 # -- the owner's reply to an outreach -----------------------------------------------------------------------
@@ -233,6 +244,17 @@ async def test_no_answer_leaves_the_reported_verdict_standing(tmp_path, monkeypa
     two_requests(fx)
     result = await night(fx)
     assert "lesson_verdicts_vetoed" not in result["counts"] and result["counts"].get("lessons_admitted") == 1
+    fx.store.close()
+
+
+async def test_a_veto_read_from_a_cut_input_leaves_the_reported_verdict_standing(tmp_path, monkeypatch):
+    fx = lesson_fixture(tmp_path, monkeypatch, reported_request)
+    fx.mind.lessons.decisions = served({"type": "noul", "noul": 0.01, "confidence": 0.99}, point="owner_verdict",
+                                       truncated=True)
+    two_requests(fx)
+    result = await night(fx)
+    assert "lesson_verdicts_vetoed" not in result["counts"] and result["counts"].get("lessons_admitted") == 1
+    assert fx.mind.lessons.decisions.stats["owner_verdict"]["failed"] >= 1
     fx.store.close()
 
 

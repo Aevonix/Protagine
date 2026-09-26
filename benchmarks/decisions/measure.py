@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sets  # noqa: E402
 
-from protagine.decisions import MAX_STATE_CHARS, POINTS, calibrate, calibrate_yes  # noqa: E402
+from protagine.decisions import MAX_STATE_CHARS, POINTS, answer_probabilities, calibrate, calibrate_yes  # noqa: E402
 
 TURN_TIME = "2026-09-24T12:00:00+00:00"
 FOLDS = 5
@@ -196,9 +196,11 @@ def decide(args) -> None:
                     answers["items"][key(entry)] = {"error": response.status_code}
                     continue
                 body = response.json()
-                answer = body["answers"]["decision"]
-                raw = answer["probabilities"] if spec.kind == "choice" else {"yes": answer["noul"],
-                                                                             "no": 1 - answer["noul"]}
+                try:                # read as the sidecar reads it: an answer it would refuse is no answer here
+                    raw = answer_probabilities(spec, body)
+                except ValueError as error:
+                    answers["items"][key(entry)] = {"error": str(error)}
+                    continue
                 answers["items"][key(entry)] = {"raw": raw, "server_ms": body["elapsed_ms"], "rtt_ms": rtt,
                                                 "tokens": body["usage"]["input_tokens"]}
     Path(args.out).write_text(json.dumps(answers, indent=1, sort_keys=True))

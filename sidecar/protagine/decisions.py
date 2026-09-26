@@ -8,8 +8,9 @@ Protagine asks one only at a decision point that already has an answer of its ow
 call), and only where that point is enabled (``decisions.points.<name>.enabled``). Whatever goes wrong gives
 ``None`` and the caller keeps its existing path: no endpoint configured, the point disabled, an input longer
 than the model reads (its context is 512 tokens; a longer input is never cut, it is not sent), a timeout (250 ms
-by default), a busy, failing or unreachable endpoint, an answer that is not the typed answer asked for, or an
-answer whose calibrated probability falls inside the point's abstain band. The model's answer is a reading of
+by default), a busy, failing or unreachable endpoint, an answer that is not the typed answer asked for or that
+does not say the model read its input whole (``answer_probabilities``), or an answer whose calibrated probability
+falls inside the point's abstain band. The model's answer is a reading of
 words, never an authority: it can only do what the point's existing path could have done with the same words.
 
 Calibration is temperature scaling: a probability p becomes p^(1/T), renormalised (for yes/no, the log-odds are
@@ -21,7 +22,7 @@ only where its decision with the fallback was at least as accurate as the existi
 The HTTP contract (``local-decision.v1``): ``POST <url>/v1/decide`` with ``{"state", "questions": {name:
 {"type": "choice", "instructions", "criteria": {label: description}} | {"type": "noul", "instructions",
 "criteria": {"false", "true"}}}}``; the answer carries ``answers[name]`` with ``probabilities`` (choice) or
-``noul`` (the probability of yes).
+``noul`` (the probability of yes), and ``"input_truncated": false``.
 """
 
 from __future__ import annotations
@@ -205,34 +206,49 @@ class Decider:
     @staticmethod
     def _read(spec: Point, body: Any, elapsed_ms: float) -> Optional[Decision]:
         """The calibrated decision, or None inside the abstain band; ValueError for anything malformed."""
-        if not isinstance(body, dict) or body.get("protocol") != PROTOCOL:
-            raise ValueError("not a decision answer")
-        answer = (body.get("answers") or {}).get(_QUESTION)
-        if not isinstance(answer, dict):
-            raise ValueError("the question is not answered")
         low, high = spec.abstain
+        raw = answer_probabilities(spec, body)
         if spec.kind == "choice":
-            raw = answer.get("probabilities")
-            if answer.get("type") != "choice" or not isinstance(raw, dict) or set(raw) != set(spec.labels):
-                raise ValueError("not a choice over the point's labels")
-            values = {label: _probability(value) for label, value in raw.items()}
-            if any(value is None for value in values.values()):
-                raise ValueError("a probability is out of range")
-            probabilities = calibrate(values, spec.temperature)
+            probabilities = calibrate(raw, spec.temperature)
             label = max(probabilities, key=probabilities.get)
             if probabilities[label] < high:
                 return None
             return Decision(spec.name, label, probabilities[label], probabilities, elapsed_ms)
-        p_yes = _probability(answer.get("noul"))
-        if answer.get("type") != "noul" or p_yes is None:
-            raise ValueError("not a yes/no answer")
-        p_yes = calibrate_yes(p_yes, spec.temperature)
+        p_yes = calibrate_yes(raw["yes"], spec.temperature)
         probabilities = {"yes": p_yes, "no": 1.0 - p_yes}
         if p_yes >= high:
             return Decision(spec.name, "yes", p_yes, probabilities, elapsed_ms)
         if p_yes <= low:
             return Decision(spec.name, "no", 1.0 - p_yes, probabilities, elapsed_ms)
         return None
+
+
+def answer_probabilities(spec: Point, body: Any) -> Dict[str, float]:
+    """The model's uncalibrated answer to ``spec``'s question in a ``local-decision.v1`` body: the probability of
+    each label (a choice), or of "yes" and "no" (a yes/no). ValueError for anything the contract does not promise:
+    another protocol, an input the model did not read whole (``input_truncated`` must be ``false``), answers to
+    other questions than the one asked, or an answer that is not the typed answer asked for. The sidecar and the
+    measurement read answers only through this, so a measured answer is one the sidecar would have acted on."""
+    if not isinstance(body, dict) or body.get("protocol") != PROTOCOL:
+        raise ValueError("not a decision answer")
+    if body.get("input_truncated") is not False:
+        raise ValueError("the input was not read whole")
+    answers = body.get("answers")
+    if not isinstance(answers, dict) or set(answers) != {_QUESTION} or not isinstance(answers[_QUESTION], dict):
+        raise ValueError("not an answer to the question asked")
+    answer = answers[_QUESTION]
+    if spec.kind == "choice":
+        raw = answer.get("probabilities")
+        if answer.get("type") != "choice" or not isinstance(raw, dict) or set(raw) != set(spec.labels):
+            raise ValueError("not a choice over the point's labels")
+        values = {label: _probability(value) for label, value in raw.items()}
+        if any(value is None for value in values.values()):
+            raise ValueError("a probability is out of range")
+        return values
+    p_yes = _probability(answer.get("noul"))
+    if answer.get("type") != "noul" or p_yes is None:
+        raise ValueError("not a yes/no answer")
+    return {"yes": p_yes, "no": 1.0 - p_yes}
 
 
 def _override(override: Any) -> Optional[Dict[str, Any]]:
@@ -299,5 +315,5 @@ def shared() -> Decider:
     return _SHARED[key]
 
 
-__all__ = ["DEFAULT_TIMEOUT_S", "MAX_STATE_CHARS", "POINTS", "Decider", "Decision", "Point", "calibrate",
-           "calibrate_yes", "from_environment", "shared"]
+__all__ = ["DEFAULT_TIMEOUT_S", "MAX_STATE_CHARS", "POINTS", "Decider", "Decision", "Point", "answer_probabilities",
+           "calibrate", "calibrate_yes", "from_environment", "shared"]
