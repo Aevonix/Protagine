@@ -678,12 +678,6 @@ async def test_a_quoted_resume_never_lifts_the_owners_pause(make):
     assert fx.mind.state()["outreach"]["paused_until"] is None
 
 
-async def test_a_quoted_stop_never_pauses_outreach(make):
-    fx = make()
-    summary = await say(fx, "My boss wrote \"stop checking in on the team every hour\". How do I answer that?", "t-1")
-    assert "paused" not in summary["applied"] and fx.mind.state()["outreach"]["paused_until"] is None
-
-
 def test_only_an_answer_the_turn_asked_for_keeps_a_followup():
     """The binding is typed and linked: a promise binds only when capture typed it an answer (finding out and
     reporting back) linked to that outreach; what the finding shared never makes an action an answer."""

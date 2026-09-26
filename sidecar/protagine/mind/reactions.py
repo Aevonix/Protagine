@@ -226,7 +226,8 @@ def strip_prefix(text: str) -> str:
 # did NOT say something ("I never said ...") is no instruction either.
 _TYPOGRAPHIC = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "′": "'", "`": "'",
                               "“": '"', "”": '"', "„": '"', "«": '"', "»": '"'})
-_QUOTED = re.compile(r'"[^"\n]*"|(?<![\w\'])\'[^\'\n]+\'(?![\w\'])')
+_QUOTED = re.compile(r'"[^"]*"|(?<![\w\'])\'[^\'\n]+\'(?![\w\'])')
+_UNCLOSED = re.compile(r'"[^"]*$')
 _REPORT_VERB = re.compile(r"\b(?:said|says|say|told|tells|tell|wrote|writes|write|texted|texts|messaged|emailed"
                           r"|asked|asks|ask|replied|replies|reply|answered|mentioned|added|commented|posted|tweeted"
                           r"|put\s+it)\b", re.IGNORECASE)
@@ -283,13 +284,35 @@ def _chat_speaker(line: str) -> Optional[tuple]:
     return who in _OWN_SPEAKERS or who == "owner", match.group("rest")
 
 
+# The markers of words that may be someone else's: any quotation mark, a blockquote, a colon (a speaker label,
+# a frame, "I insist: ..."), "according to", "I quote", and a verb that reports or relays speech (its noun forms,
+# "messages", "texts", aside). Beside one of
+# these, whose instruction a stop, a pause or a resume is cannot be read reliably from the words alone: it is
+# the model's to decide (``decisions.owner_instruction``), and without it the conservative fallback applies.
+_MARKERS = re.compile(
+    r'["\'«»“”„‘’]|^\s*>|:|\baccording to\b|\bquot(?:e|es|ed|ing)\b|\b(?:fwd|forward(?:s|ed|ing)?)\b'
+    r"|\b(?:said|says|say|saying|told|tell|tells|telling|wrote|write|writes|writing|texted|texting"
+    r"|messaged|messaging|emailed|emailing|asks|asked|asking|replies|replied|replying|answered|answering"
+    r"|mention(?:s|ed|ing)?|added|commented|posted|tweeted|claim(?:s|ed|ing)?|insist(?:s|ed|ing)?|put\s+it)\b",
+    re.IGNORECASE | re.MULTILINE)
+
+
+def reported_speech(text: str) -> bool:
+    """Whether a turn carries any marker of someone else's words (``_MARKERS``), apostrophes inside words aside."""
+    return bool(_MARKERS.search(re.sub(r"(?<=\w)['’](?=\w)", "", str(text or ""))))
+
+
 def own_words(text: str, *, strict: bool = False) -> str:
     """The owner's own words in a turn, with every quotation and reported speech blanked out (``" "``), line by
     line. Where the extent of someone else's words is uncertain the two readings differ: ``strict`` (for words
     that would lift the owner's pause) blanks a reported sentence to the end of its line and every line a frame
     ending in ":" introduces, to the next blank line; the default (for a stop or a pause) blanks to the end of the
     sentence and the first line the frame introduces. An uncertain stop is taken, an uncertain resume is not."""
-    text = _QUOTED.sub(" ", str(text or "").translate(_TYPOGRAPHIC))
+    def blank(match: re.Match) -> str:           # a quotation over several lines keeps its line breaks
+        return re.sub(r"[^\n]+", " ", match.group(0))
+    text = _QUOTED.sub(blank, str(text or "").translate(_TYPOGRAPHIC))
+    if strict:
+        text = _UNCLOSED.sub(blank, text)        # an unclosed quotation runs on to the end
     kept: List[str] = []
     framed = False            # the lines a frame introduced are someone else's
     seen = False              # a framed line was blanked already (the default reading blanks only the first)
@@ -526,6 +549,28 @@ class Reading:
     strains: List[str] = field(default_factory=list)
     reliefs: List[str] = field(default_factory=list)
     relieved: bool = False     # a relief that names nothing ("all good now")
+    # The instructions the reader could not attribute (a cue beside reported-speech markers): the model's to decide
+    # (``decided``). Until then, and when it cannot, the fallback stands: a stop or a pause is taken, a resume is
+    # not, unless it is a reply linked to an outreach and the strict reading finds it the owner's
+    # (``resume_if_linked``).
+    unsure: List[str] = field(default_factory=list)
+    resume_if_linked: bool = False
+
+    def decided(self, instruction: Optional[str]) -> None:
+        """Apply the model's typed decision on the unsure instructions: ``stop``, ``pause_today``, ``resume`` or
+        ``none`` settles each (taken when named, dropped otherwise). None (unavailable, unsure), or a decision
+        naming an instruction the reader never saw, leaves the fallback as it is."""
+        if instruction is None or not self.unsure or (instruction != "none" and instruction not in self.unsure):
+            return
+        for kind in self.unsure:
+            taken = instruction == kind
+            if kind == "stop" and not taken:
+                self.stop = self.stop_explicit = False
+            elif kind == "pause_today" and not taken:
+                self.pause_today = self.pause_explicit = False
+            elif kind == "resume":
+                self.resume = taken
+        self.unsure, self.resume_if_linked = [], False
 
     def reaction(self, about: Optional[Callable[[str], bool]] = None) -> Optional[str]:
         """The one reaction a linked outreach takes from this turn, strongest first. With ``about`` (whether a
@@ -569,13 +614,31 @@ def read(text: str, *, contacts: Iterable[str] = ()) -> Reading:
     reading = Reading()
     if not body.strip():
         return reading
-    # A stop, a resume or a pause is an instruction to the assistant: read from the owner's own words only.
+    # A stop, a resume or a pause is an instruction to the assistant, the owner's own. Without reported-speech
+    # markers the turn is theirs and the cues decide (the fast path). Beside a marker, whose instruction it is
+    # stays unsure (``unsure``, the model's to decide): meanwhile a stop or a pause is taken, a resume is not.
     own = own_words(body)
+    raw = body.translate(_TYPOGRAPHIC)
+    reported = reported_speech(body)
     reading.stop_explicit = bool(_find(own, STOP_CUES, contacts))
     reading.stop = reading.stop_explicit or bool(_find(own, BARE_STOP_CUES, contacts))
-    reading.resume = bool(_find(own_words(body, strict=True), RESUME_CUES, contacts))
+    strict_resume = bool(_find(own_words(body, strict=True), RESUME_CUES, contacts))
+    reading.resume = strict_resume
     reading.pause_explicit = bool(_find(own, PAUSE_TODAY_CUES, contacts))
     reading.pause_today = reading.pause_explicit or bool(_find(own, VAGUE_PAUSE_CUES, contacts))
+    said_stop = bool(_find(raw, STOP_CUES, contacts)) or any(
+        phrase.casefold().startswith(("stop sending", "quit sending")) and (target is None or target.casefold() in _GENERIC)
+        for phrase, target, _ in _hits(raw, NEGATIVE_CUES, contacts))
+    if reported and said_stop:
+        reading.unsure.append("stop")
+        reading.stop = reading.stop_explicit = True
+    if reported and _find(raw, (*PAUSE_TODAY_CUES, *VAGUE_PAUSE_CUES), contacts):
+        reading.unsure.append("pause_today")
+        reading.pause_explicit = reading.pause_explicit or bool(_find(raw, PAUSE_TODAY_CUES, contacts))
+        reading.pause_today = True
+    if reported and _find(raw, RESUME_CUES, contacts):
+        reading.unsure.append("resume")
+        reading.resume, reading.resume_if_linked = False, strict_resume
     reading.not_now = bool(_find(body, NOT_NOW_CUES, contacts))
     negatives = _hits(body, NEGATIVE_CUES, contacts)
     stop_sending = [target for phrase, target, _ in _hits(own, NEGATIVE_CUES, contacts)
@@ -644,4 +707,5 @@ def resume(text: str) -> bool:
 
 __all__ = ["Cue", "MAX_OBJECT_WORDS", "REPLY_WORDS", "Reading", "classify_reaction", "clean_object", "content_terms",
            "declared_interest", "disinterest", "elsewhere", "mentions_contact", "own_words", "pause_today", "read", "refers_back",
+           "reported_speech",
            "relief", "resume", "stop", "strain", "strip_prefix"]

@@ -307,15 +307,18 @@ def test_a_reply_about_the_outreach_itself_is_not_elsewhere(text):
     "My manager said: stop checking in so often. Is that fair?",
 ])
 def test_a_hold_phrase_someone_else_said_is_not_the_owners_instruction(text):
+    """Round 3: the reader never takes such a resume; a stop beside reported speech is put to the model
+    (``unsure``), standing meanwhile (``test_mind_typed_decisions``)."""
     reading = read(text)
-    assert not reading.resume and not reading.stop and not reading.pause_today
+    assert not reading.resume and reading.unsure and (not reading.stop or "stop" in reading.unsure), text
 
 
 @pytest.mark.parametrize("text", ["You can check in again, I said.", "Ok, you can check in again.",
                                   "Stop checking in, I don't need it.", "I said stop checking in!"])
 def test_the_owners_own_hold_phrase_still_counts(text):
+    """Taken by the reader, or put to the model with the reply-linked fallback ready (``resume_if_linked``)."""
     reading = read(text)
-    assert reading.resume or reading.stop
+    assert reading.resume or reading.stop or reading.resume_if_linked
 
 
 # -- round 2: whose words, across lines, blockquotes and adverbs ---------------------------------------------
@@ -360,11 +363,12 @@ STOP_LAYOUTS = [
 
 @pytest.mark.parametrize("layout", STOP_LAYOUTS)
 @pytest.mark.parametrize("reporter, verb", [(r, v) for r in REPORTERS for v in VERBS][::9])
-def test_a_stop_in_someone_elses_words_is_never_the_owners(layout, reporter, verb):
+def test_a_stop_in_someone_elses_words_is_put_to_the_model(layout, reporter, verb):
+    """Round 3: whose stop this is, is the model's typed decision; meanwhile (and without it) the stop stands, a
+    pause the owner can lift (``test_mind_typed_decisions``)."""
     text = layout.format(r=reporter, v=verb)
     text = text[0].upper() + text[1:]
-    reading = read(text)
-    assert not reading.stop and not reading.pause_today, text
+    assert "stop" in read(text).unsure, text
 
 
 @pytest.mark.parametrize("text", [
@@ -387,11 +391,15 @@ def test_the_owners_own_report_of_their_stop_is_a_stop(text):
     "Like I said, feel free to reach out.", "I’ve said it already, you can check in again.",
 ])
 def test_the_owners_own_report_of_their_resume_is_a_resume(text):
-    assert read(text).resume, text
+    """Beside reported-speech markers a resume is the model's to decide; without it, the strict reading finds it
+    the owner's, taken as a reply linked to an outreach (``resume_if_linked``)."""
+    reading = read(text)
+    assert "resume" in reading.unsure and reading.resume_if_linked, text
 
 
 @pytest.mark.parametrize("text", ["I never said you can check in again.", "I didn't say stop checking in.",
                                   "I did not tell you to stop checking in.", "I haven't said you can check in again."])
 def test_what_the_owner_says_they_did_not_say_is_no_instruction(text):
+    """A denied resume is never taken, even as a linked reply; a denied stop is the model's to decide."""
     reading = read(text)
-    assert not reading.resume and not reading.stop, text
+    assert not reading.resume and not reading.resume_if_linked and (not reading.stop or "stop" in reading.unsure), text

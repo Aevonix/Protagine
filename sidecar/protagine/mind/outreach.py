@@ -145,6 +145,7 @@ class Finding:
     completed_at: datetime
     requested_by: Optional[str] = None      # the outreach the owner answered with "dig deeper"
     bound_commitment: Optional[str] = None  # an assistant promise the answer keeps
+    decided: Optional[str] = None           # the model's typed decision on an undecided report (``substance``)
 
 
 @dataclass
@@ -326,16 +327,20 @@ def _sentences(text: str) -> List[str]:
     return [" ".join(part.split()) for part in _SENTENCE.split(str(text or "")) if part.strip()]
 
 
-# Whether a report's sentence is a finding is a typed decision (``substance``): FINDING, EMPTY or UNCERTAIN, read
-# from word classes. A report about the research itself (``PROCESS_WORDS``) or holding only a null marker
-# (``NULL_MARKERS``) says nothing; a state the topic itself reached (``EVENT_WORDS`` with the topic named: "the
-# Orkney project was completed") is a milestone, a finding; facts beyond the topic are findings. What the rule
-# cannot decide (one stray word) is UNCERTAIN: it goes to the digest, never sent at once nor discarded.
+# Whether a report's sentence is a finding is a typed decision (``substance``): FINDING, EMPTY or UNCERTAIN. The
+# reader decides the clear cases, clause by clause (a contrast, "but", "however", ";", splits a sentence): a clause
+# with no null marker and two content words or a number is a finding, as is a state the topic itself reached
+# (``EVENT_WORDS`` with the topic named: "the Orkney project was completed"); the research talking about itself
+# (``PROCESS_WORDS``) or a null marker alone says nothing. A null marker beside anything else ("nothing
+# groundbreaking, sadly"; "approved without any changes") is the ambiguous band, UNCERTAIN: the model's typed
+# decision (``decisions.report_substance``, ``Finding.decided``), and without it the digest's, never sent at once
+# nor discarded.
 FINDING, EMPTY, UNCERTAIN = "finding", "empty", "uncertain"
 PROCESS_WORDS = frozenset("""
 research researched researching report reports reported reporting finding findings search searched searching
 searches look looked looking checked check checking review reviewed reviewing scan scanned scanning monitoring
 monitored investigation investigated investigating dig digging sources source summary results result status
+found
 """.split())
 NULL_WORDS = frozenset("""
 nil nothing none quiet unchanged same remains remain remained significant notable noteworthy developments
@@ -356,22 +361,33 @@ NO_SUBSTANCE = PROCESS_WORDS | NULL_WORDS | EVENT_WORDS | CONNECTIVES
 _LABEL = re.compile(r"^\s*(?:findings?|report|update|result|summary)\s*[:=-]\s*", re.IGNORECASE)
 
 
-def substance(sentence: str, topic: str) -> str:
-    """The typed decision on one sentence of a report: ``FINDING``, ``EMPTY`` or ``UNCERTAIN`` (see above)."""
-    sentence = _LABEL.sub("", str(sentence or ""))
-    if NULL_REPORT.search(sentence):
-        return EMPTY
-    words, about = _tokens(sentence), _tokens(topic)
+_CONTRAST = re.compile(r"\s*(?:;|,?\s+(?:but|however|although|though|while|whereas|yet)\b,?|\s[-\u2013\u2014]{1,2}\s)\s*",
+                       re.IGNORECASE)
+_NULL_WORD = re.compile(r"\b(?:no|not|nothing|none|never|nil|without)\b|n't\b", re.IGNORECASE)
+
+
+def _clause(clause: str, topic: str) -> str:
+    """The reader's decision on one clause (see above)."""
+    null = bool(NULL_REPORT.search(clause) or _NULL_WORD.search(clause))
+    words, about = _tokens(NULL_REPORT.sub(" ", clause)), _tokens(topic)
     content = words - about - NO_SUBSTANCE
+    process, event = bool(words & PROCESS_WORDS), bool(words & EVENT_WORDS and words & about)
+    null = null or bool(words & NULL_MARKERS)
+    if null:
+        return EMPTY if not content and (process or not event) else UNCERTAIN
     if len(content) >= 2 or any(any(ch.isdigit() for ch in word) for word in content):
         return FINDING
-    if words & PROCESS_WORDS:
-        return UNCERTAIN if content else EMPTY
-    if words & EVENT_WORDS and words & about:
-        return FINDING
-    if words & NULL_MARKERS or re.search(r"\bno\b", sentence, re.IGNORECASE):
-        return UNCERTAIN if content else EMPTY
+    if event and not process:
+        return FINDING                  # the topic's own milestone, a stray word or none beside it
     return UNCERTAIN if content else EMPTY
+
+
+def substance(sentence: str, topic: str) -> str:
+    """The reader's typed decision on one sentence of a report: ``FINDING`` when a clause is one, else
+    ``UNCERTAIN`` when a clause is undecided, else ``EMPTY`` (see above)."""
+    verdicts = {_clause(clause, topic) for clause in _CONTRAST.split(_LABEL.sub("", str(sentence or "")))
+                if clause.strip()}
+    return FINDING if FINDING in verdicts else UNCERTAIN if UNCERTAIN in verdicts else EMPTY
 
 
 def says_something(sentence: str, topic: str) -> bool:
@@ -393,7 +409,8 @@ def repeated(text: str, inputs: OutreachInputs) -> bool:
 
 def settle(finding: Finding, inputs: OutreachInputs) -> Optional[str]:
     """``empty`` for a report that found nothing, ``repeat`` for one already shared, ``uncertain`` for one whose
-    sentences the typed decision (``substance``) cannot call a finding, else None. An answer the owner asked for
+    sentences the reader (``substance``) cannot call a finding and the model did not decide (``decided``), else
+    None. An answer the owner asked for
     is never settled here: "I looked and found nothing more" is its honest answer."""
     if finding.requested_by is not None:
         return None
@@ -402,9 +419,21 @@ def settle(finding: Finding, inputs: OutreachInputs) -> Optional[str]:
         return EMPTY
     if repeated(text, inputs):
         return "repeat"
-    if not any(substance(sentence, finding.topic) == FINDING for sentence in _sentences(finding.summary)):
-        return UNCERTAIN            # the digest's, never a message of its own nor discarded
-    return None
+    if any(substance(sentence, finding.topic) == FINDING for sentence in _sentences(finding.summary)):
+        return None
+    if finding.decided in {FINDING, EMPTY}:
+        return None if finding.decided == FINDING else EMPTY     # the model's typed decision
+    return UNCERTAIN            # the digest's, never a message of its own nor discarded
+
+
+def needs_decision(finding: Finding) -> bool:
+    """A report the reader leaves undecided (says something, yet no sentence is certainly a finding) and the model
+    has not decided: the one band ``decisions.report_substance`` is asked about. Never an answer the owner asked
+    for (always sent)."""
+    if finding.requested_by is not None or finding.decided in {FINDING, EMPTY}:
+        return False
+    return bool(excerpt(finding.summary, finding.topic, substantive=True)) and not any(
+        substance(sentence, finding.topic) == FINDING for sentence in _sentences(finding.summary))
 
 
 def novelty(inputs: OutreachInputs, slug: str, type: str) -> float:
@@ -822,7 +851,7 @@ def pause_until(entry: Optional[Dict[str, Any]]) -> Optional[datetime]:
 
 __all__ = ["CARE_HALF_LIFE", "CARE_PREFIX", "CHECK_IN_OFFERS", "CONVERSATION_GAP", "bears_on", "Care", "DIGEST_FLOOR",
            "FINDING_WINDOW", "Finding", "Followup", "INDEFINITE", "Interest", "Loop", "MESSAGE_CHARS", "MIN_GAP",
-           "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NO_SUBSTANCE", "NULL_REPORT", "repeated", "says_something", "settle", "substance",
+           "MUTE_FLOOR", "MUTE_HALF_LIFE", "MUTE_PREFIX", "NO_SUBSTANCE", "NULL_REPORT", "needs_decision", "repeated", "says_something", "settle", "substance",
            "NOT_NOW_HOLD", "OWNER_TURN_KEY", "OutreachInputs", "PAUSE_KEY", "REPLY_HOURS", "Sent", "TIMING_PREFIX", "answer_candidate",
            "backoff_until", "candidates", "care_candidate", "digest_value", "excerpt", "finding_candidate",
            "followup_candidate", "followups", "held", "holds", "binds_followup", "interest_origin", "interruption_cost", "loop_candidate", "match", "muted",
