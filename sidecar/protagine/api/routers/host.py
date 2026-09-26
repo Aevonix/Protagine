@@ -1677,7 +1677,9 @@ async def context_assemble(
         source_erasure_watermark = get_turn_idempotency_ledger(get_state_dir()).erasure_watermark(body.context.contact_id)
     except Exception:
         logger.warning("context erasure freshness unavailable")
-    sections = await _assemble_sections(body, viewer_person_id=viewer, request=request)
+    superseded: list = []
+    sections = await _assemble_sections(body, viewer_person_id=viewer, request=request, superseded=superseded)
+    sections = await _turn_context_selection(body, sections, superseded, viewer=viewer)
 
     if _telemetry is not None:
         try:
@@ -1698,11 +1700,35 @@ _GUEST_CONTEXT_NOTICE = (
     "relationship, shared-fact and global context are omitted.")
 
 
+async def _turn_context_selection(body: ContextAssembleRequest, sections: list[ContextSection],
+                                  superseded: list, *, viewer: Optional[str]) -> list[ContextSection]:
+    """The per-turn injection: the selection within the budget (``memory.compass``), then the corrections for
+    values this conversation was served earlier that the record has since superseded."""
+    from protagine.memory import compass
+    settings = compass.selection_settings()
+    if settings.enabled:
+        query = body.incoming_message.content if body.incoming_message else ""
+        provider = _reranker
+        sections, report = await compass.select_context(
+            sections, query, provider.rerank if provider is not None else None, settings=settings)
+        logger.debug("context selection: %s", report)
+    session_id = body.context.session_id if body.context else ""
+    if session_id:
+        key = (viewer or "", session_id)
+        note = compass.SERVED.corrections(key, superseded)
+        if note:
+            sections = [*sections, ContextSection(id=compass.CORRECTIONS, title="Corrections to earlier context",
+                                                  body=note, priority=99)]
+        compass.SERVED.remember(key, "\n".join(section.body for section in sections))
+    return sections
+
+
 async def _assemble_sections(
     body: ContextAssembleRequest,
     *,
     viewer_person_id: Optional[str],
     request: Request | None = None,
+    superseded: list | None = None,
 ) -> list[ContextSection]:
     """The context sections for ``body``'s contact as ``viewer_person_id`` may see them.
 
@@ -1713,7 +1739,9 @@ async def _assemble_sections(
     reserved ``owner`` person, so every named viewer is a guest. ``None`` is
     the key holder asking about no one (the owner's own API), which keeps the
     unscoped context. The route and the mind's recipient packet
-    (``assemble_packet``) share this one assembly.
+    (``assemble_packet``) share this one assembly. A line asserting a value
+    the record has superseded carries the current value (``memory.compass``);
+    those records are added to ``superseded`` when it is given.
     """
     owner_id = owner_person_id()
     _canonical_only = bool(viewer_person_id) and viewer_person_id != owner_id
@@ -1724,6 +1752,7 @@ async def _assemble_sections(
     _tom_context_facts = (None if _canonical_only or _facts_store is None
                           else _facts_store.automatic_view())
     sections: list[ContextSection] = []
+    records: list = []
     query_text = body.incoming_message.content if body.incoming_message else ""
 
     # Read authenticated work before recall selection. Native requests still
@@ -1884,6 +1913,8 @@ async def _assemble_sections(
             _seen_ids = {c.get("id") for c in _listed}
             all_comms = _listed + [c for c in overdue[:5]
                                    if c.get("id") not in _seen_ids]
+            from protagine.memory.compass import commitment_reschedules
+            records.extend(commitment_reschedules(all_comms))
             if all_comms:
                 from protagine.commitments.work import CommitmentWork
                 reservations = {}
@@ -2092,6 +2123,20 @@ async def _assemble_sections(
         except Exception as exc:
             logger.debug("context_assemble comms landscape failed: %s", exc)
 
+    if contact_id and (Path(get_state_dir()) / "turn-idempotency.db").exists():
+        try:
+            from protagine.memory.compass import claim_supersessions
+            from protagine.turns import get_turn_idempotency_ledger
+            records.extend(await asyncio.to_thread(
+                claim_supersessions, get_turn_idempotency_ledger(get_state_dir()),
+                contact_id=contact_id, session_id=body.context.session_id))
+        except Exception:
+            logger.debug("superseded claim values unavailable", exc_info=True)
+    if records:
+        from protagine.memory.compass import annotate_superseded
+        sections = annotate_superseded(sections, records)
+        if superseded is not None:
+            superseded.extend(records)
     return sections
 
 

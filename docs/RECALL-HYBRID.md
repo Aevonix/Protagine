@@ -134,6 +134,65 @@ Reranker failure uses one shared bounded fallback and marks returned records
 outage. Unconfigured reranking retains rank-fusion fallback. This budget
 covers the mixed memory packet, not other existing context sections.
 
+## Per-turn context selection
+
+The memory packet is one lane of the per-turn context. With selection on
+(`PROTAGINE_CONTEXT_SELECTION`, default `on`), `/context/assemble` pools the
+items of every lane it assembled (recalled evidence, pending commitments,
+recorded views, lessons, the relationship and communication-landscape lines,
+observed work and the other sections), has the same reranker score each against
+the incoming message, and keeps the best-scoring items within one character
+budget (`PROTAGINE_CONTEXT_SELECTION_CHARS`, default 3,000). Kept items stay in
+their sections, in their assembled order and words; a section keeps its header
+while any of its items remains, and its citations shrink to the sources its
+remaining text names. An assertion card's shared quotation (`evidence_ref`)
+follows the card that cites it. The judge reads each item's words with its
+section title, without identifiers, hashes or timestamps, at most 600
+characters of it; at most `PROTAGINE_CONTEXT_SELECTION_CANDIDATES` (48) items
+are judged, the higher-priority sections first.
+
+Pinned items are never judged and never dropped: Current Time, Expected replies
+(the open asks), the owner's communication preferences and priority
+corrections, the corrections to earlier context below, and every commitment
+that is overdue or due within `PROTAGINE_CONTEXT_DUE_SOON_HOURS` (24). A context
+that already fits is returned without a reranker call. With no reranker
+configured, or when it fails, answers late
+(`PROTAGINE_CONTEXT_SELECTION_TIMEOUT_MS`, default 2,000) or returns an
+incomplete, duplicate or non-finite score set, the assembled context is used
+unchanged and the fallback is logged (a failure at most once per five minutes
+at warning level). `PROTAGINE_CONTEXT_SELECTION_MIN_SCORE` (default unset)
+drops judged items below a score even when the budget has room; like the recall
+cutoff, a threshold belongs to the deployment's reranker and corpus.
+
+Measured on the memory family's development render (two runs, three plugin
+arms, 433 turns, 144 probe turns) with Qwen3-Reranker-8B and the Qwen3
+template: at 3,000 characters every probe answer present in the assembled
+context stayed in the selected one (90 of 90) and the mean block went from
+1,368 to 1,269 characters (most blocks already fit). With each probe block
+padded to a live-sized one (about 11,600 characters, from other families'
+sections), the mean went to 3,194 characters and 90 of 90 answers stayed; at
+2,000 characters 87 of 90 stayed. This is answer retention in the context, not
+a model-in-the-loop accuracy run.
+
+## Superseded values
+
+A line of any section that states a value the record has since superseded
+keeps its words and gains the current value: `[superseded: now "<value>" since
+<date>]`, `corrected to` for a correction, `rescheduled to` for a commitment
+deadline. The records are the scope's changed and corrected source claims
+(followed to the latest claim; an erased or unattributed successor asserts
+nothing) and the listed commitments' previous deadlines. A line counts when it
+carries the old value without the current one. A short or common old value
+(under eight characters, or one word) counts only on a line citing the source
+that stated it or naming a word of its subject.
+
+The host replays earlier turns' context as it was. The sidecar keeps, per
+conversation and in memory only, what it served; when a value served earlier has
+been superseded since, the new turn carries a pinned "Corrections to earlier
+context" section naming the old value and the current one. That record is
+bounded, per process and lost on restart, so after a restart only the current
+turn's lines are annotated.
+
 Integrated regressions cover mixed abstention, one budget/section, selection
 without any graph import, visibility before model input, failure fallback,
 excerpt preservation and the shared result limit.

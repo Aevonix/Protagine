@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased - per-turn context selection, superseded values
+
+The per-turn context is chosen, not concatenated: `/context/assemble` pools the items of every lane,
+has the recall reranker score them against the message and keeps the best within 3,000 characters,
+with the current time, the open asks, the owner's standing instructions and corrections and the
+commitments due within a day pinned (`PROTAGINE_CONTEXT_SELECTION*`; any reranker trouble returns the
+assembled context, logged). A line stating a value the record has superseded (a changed or corrected
+claim, a moved deadline) is annotated with the current value and date, never removed, and a value the
+conversation was served before it was superseded is corrected in the next turn. The paired report
+counts, as a secondary, forbidden values the model was shown as current. See
+[docs/RECALL-HYBRID.md](docs/RECALL-HYBRID.md), Per-turn context selection.
+
 ## Unreleased - self log, owner decisions, settled interests, held first mentions, unchanged sections
 
 From the re-pilot's self, opinions and drives diagnosis and the prompt-cache check. `protagine_self log`
