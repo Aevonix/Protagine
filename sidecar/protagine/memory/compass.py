@@ -25,7 +25,9 @@ new turn's context.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import functools
+import itertools
 import json
 import logging
 import math
@@ -462,6 +464,19 @@ def _identity(keys: tuple):
     return re.compile(r"(?<![\w.:=-])(?:" + "|".join(re.escape(key) for key in keys) + r")(?![\w-]|[.:]\w)")
 
 
+def _key_positions(text: str, record: Superseded):
+    """Where ``text`` carries one of the record's keys as a whole token."""
+    pattern = _identity(tuple(record.keys))
+    if pattern is None:
+        return
+    for key in {key for key in record.keys if key}:
+        position = text.find(key)
+        while position >= 0:
+            if pattern.match(text, position):
+                yield position
+            position = text.find(key, position + 1)
+
+
 def _carries(line: str, record: Superseded) -> bool:
     pattern = _identity(tuple(record.keys))
     return pattern is not None and bool(pattern.search(line))
@@ -625,10 +640,13 @@ class ServedWindow:
         if not served or not records:
             return ""
         lines, owed = served.split("\n"), []
+        starts = list(itertools.accumulate((len(line) + 1 for line in lines[:-1]), initial=0))
         for order, record in enumerate(records):
             stale = shown = -1
-            for index, line in enumerate(lines):
-                state = line_state(line, record)
+            # Only the lines carrying the record's identity can be its lines: a substring scan finds them.
+            carrying = sorted({bisect.bisect_right(starts, position) - 1 for position in _key_positions(served, record)})
+            for index in carrying:
+                state = line_state(lines[index], record)
                 if state == "stale":
                     stale = index
                 elif state == "current":
