@@ -609,22 +609,96 @@ def _parties_of(item: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> set
     return {name for name in (party(value) for value in values) if name not in (None, OWNER, ASSISTANT)}
 
 
+# Times and dates are read as times, never as a matter or an identifier: "remind me at 17:00" differs from the
+# item only by when, which the due times decide (the same word, its heads-up, a word after).
+_TIME_WORDS = frozenset("""
+noon midday midnight tonight morning mornings afternoon evening evenings night overnight eod eow cob asap oclock
+monday tuesday wednesday thursday friday saturday sunday mon tue tues wed thu thur thurs fri sat sun weekend
+january february march april may june july august september october november december
+jan feb mar apr jun jul aug sep sept oct nov dec next last early later latest end half quarter past
+""".split())
+_MONTHS = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|"
+           r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?")
+_CLOCK_NUMBERS = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+_TIME = re.compile(rf"""(?ix)
+    \b\d{{4}}-\d{{1,2}}-\d{{1,2}}(?:[t\s]\d{{1,2}}:\d{{2}}(?::\d{{2}})?)?(?!\w)          # 2026-10-02[ 16:00]
+  | \b\d{{1,2}}(?::\d{{2}})?\s*[ap]\.?\s?m\b\.?                                   # 5pm, 5 pm, 5:00 p.m.
+  | \b\d{{1,2}}:\d{{2}}(?::\d{{2}})?(?!\w)                                          # 17:00
+  | \b\d{{1,2}}h\d{{2}}\b                                                         # 17h00
+  | \b(?:{_MONTHS})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b                # Oct 2, October 2nd 2026
+  | \b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:{_MONTHS})\b(?:\s+\d{{4}})?           # 2nd of October
+  | \b\d{{1,2}}[/.]\d{{1,2}}[/.]\d{{2,4}}\b                                         # 2/10/2026
+  | \b(?:on|by|before|after|until|till|from)\s+(?:the\s+)?\d{{1,2}}(?:/\d{{1,2}}|st|nd|rd|th)\b   # on 2/10, by the 3rd
+  | \b(?:at|by|before|after|until|till|around|from)\s+(?:\d{{1,4}}|{_CLOCK_NUMBERS})\b(?![-_./#:]\w)  # at 9, at five
+  | \b(?:in|within|after|for)\s+(?:\d+|an?|one|two|three|few|a\s+few|a\s+couple\s+of|couple\s+of)\s+
+        (?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\b                          # in 2 hours
+""")
+# Nouns an identifier follows ("invoice A", "plan B", "room X"): the letter after one is that identifier.
+_IDENTIFIER_NOUNS = frozenset("""
+invoice invoices form forms plan version option section part room building unit apartment apt floor gate lot
+phase stage appendix exhibit annex chapter item ticket case order account box bay door desk table row seat
+level block sheet tab draft revision rev model type grade class team group wing tower line route bus track
+platform terminal zone sector area schedule figure fig page clause article lane suite flat house vol volume
+issue episode series batch contract policy project site test round quote bill receipt cheque file folder
+""".split())
+_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "′": "'", "`": "'"})
+_TOKEN = re.compile(r"[^\W_]+(?:[-_./#][^\W_]+)*")
+_SHORT_STOP = frozenset("a i am an as at be by do go he hi if in is it me my no of oh ok on or so to up us we vs re pm".split())
+
+
+def _content(description: Any, parties: set) -> tuple:
+    """``(matter words, identifiers)`` of an item's wording, its times and dates set aside. An identifier is kept
+    whole: a token holding a digit, an underscore or a ``#`` ("AB_12", "p-41", "2.1", "report_v2"), a hyphen or
+    dot joining a part of at most two characters ("a-1"), a word of one or two letters that is no function word
+    ("AB"), and a single letter after an identifier noun ("invoice A"). Everything else of three letters or more
+    that carries meaning is a matter word. Parties' own names and ids are neither."""
+    text = str(description or "").translate(_APOSTROPHES)
+    text = re.sub(r"'s\b", "", text).replace("'", "")
+    text = _TIME.sub(" ", text)
+    names = {token.casefold() for name in parties for token in _TOKEN.findall(str(name).translate(_APOSTROPHES))}
+    names |= {part for name in names for part in re.split(r"[-_./#]", name)}
+    words, identifiers, previous = set(), set(), ""
+    for raw in _TOKEN.findall(text):
+        token = raw.casefold()
+        if token in names:
+            previous = token
+            continue
+        parts = re.split(r"[-_./#]", token)
+        if (any(char.isdigit() for char in token) or "_" in token or "#" in token
+                or (len(parts) > 1 and min(len(part) for part in parts) <= 2)
+                or (len(token) == 1 and previous in _IDENTIFIER_NOUNS)
+                or (len(token) == 2 and token not in _SHORT_STOP)
+                or (len(token) == 1 and token not in _SHORT_STOP)):
+            identifiers.add(token)
+        else:
+            words |= {part for part in parts
+                      if len(part) >= 3 and part not in _MATTER_STOP and part not in _TIME_WORDS}
+        previous = token
+    return words, identifiers
+
+
 def _matter_words(description: Any, parties: set) -> set:
-    names = {word for name in parties for word in re.findall(r"[^\W_]+", name)}
-    return {word for word in re.findall(r"[^\W_]+", str(description or "").casefold())
-            if len(word) >= 3 and not word.isdigit() and word not in _MATTER_STOP and word not in names}
-
-
-# A number or an id ("invoice 123", "the Q3 report", "form W-2"): a token that holds a digit.
-_IDENTIFIER = re.compile(r"[^\W_]+(?:[-./#:][^\W_]+)*")
+    return _content(description, parties)[0]
 
 
 def _identifiers(description: Any, parties: set) -> set:
-    """The numbers and ids an item names, its parties' own ids ("p-41") aside: which document, which invoice.
-    ``_matter_words`` leaves them out, so they are compared here on their own."""
-    names = {token for name in parties for token in _IDENTIFIER.findall(str(name).casefold())}
-    return {token for token in _IDENTIFIER.findall(str(description or "").casefold())
-            if any(char.isdigit() for char in token) and token not in names}
+    """The numbers and ids an item names, kept whole, its parties' own ids ("p-41") aside (``_content``)."""
+    return _content(description, parties)[1]
+
+
+def _same_word(word: tuple, other: tuple) -> bool:
+    """A reminder ``(description, parties, due)`` repeats a known item: the same time (``SAME_WORD``, or neither
+    has one), a similar wording, the same identifiers and no matter word the other lacks. Anything less certain
+    keeps the reminder as its own item: a word the owner asked for is never dropped as a duplicate."""
+    from protagine.commitments.store import _normalize_desc, _similar_desc
+    (text, parties, due), (other_text, other_parties, other_due) = word, other
+    if (due is None) != (other_due is None) or (due is not None and abs(due - other_due) > SAME_WORD):
+        return False
+    if not _similar_desc(_normalize_desc(text), _normalize_desc(other_text)):
+        return False
+    both = set(parties) | set(other_parties)
+    (mine, ids), (theirs, other_ids) = _content(text, both), _content(other_text, both)
+    return ids == other_ids and mine <= theirs
 
 
 def _adds_no_matter(word: tuple, item: tuple) -> bool:
@@ -1000,6 +1074,9 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
     known += [(_normalize_desc(r.get("description") or ""), _effect(r.get("metadata")))
               for r in rejections if r.get("outcome") != "obsolete"]
     known = [k for k in known if k[0]]
+    # What a reminder is compared with (``_same_word``): the open items and blocked wordings with their times.
+    known_words = [(str(c.get("description") or ""), _parties_of({}, c.get("metadata")), _utc(c.get("due_at")))
+                   for c in [*existing, *(r for r in rejections if r.get("outcome") != "obsolete")]]
     note = f"turn:{turn_id}" if turn_id else source_context
     created: List[str] = []
     updated: List[str] = []
@@ -1127,7 +1204,12 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         # A message the owner asked for is its own action: only a message to the same recipient worded
         # alike repeats it, never the promise it chases ("Chase p-05 for the site photos" beside "p-05
         # sends the site photos"). Anything else is judged against every open item, as the store does.
-        if any(_similar_desc(norm, wording) for wording, other in known if not confirmed or other == effect):
+        # A reminder the owner asked for repeats something only when it is the same word at the same time
+        # (``_same_word``); when that is not certain it is kept as its own item, never dropped.
+        word = str((stated or {}).get("kind") or "") == REMINDER_KIND and not confirmed
+        this = (description, _parties_of(item, stated), _utc(item.get("due_at")))
+        if (any(_same_word(this, other) for other in known_words) if word else
+                any(_similar_desc(norm, wording) for wording, other in known if not confirmed or other == effect)):
             skipped += 1
             continue
         metadata = message_metadata(stated, owner_turn=owner_turn, turn_text=owner_text,
@@ -1148,7 +1230,8 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
             metadata["reschedule"] = {"from": None, "by": "conversation", "note": note, "hold": "first_mention"}
         try:
             row = commitment_store.create(
-                person_id=person_id, description=description[:1000], dedupe=not confirmed, allow_overdue=True,
+                person_id=person_id, description=description[:1000], dedupe=not confirmed and not word,
+                allow_overdue=True,
                 due_at=(item.get("due_at") or None), priority=int(item["priority"]),
                 source_type=item["source_type"], source_context=source_context,
                 metadata=metadata or None)
@@ -1160,6 +1243,7 @@ def record_items(items: List[Dict[str, Any]], *, person_id: str, commitment_stor
         else:
             created.append(row.get("id"))
         known.append((norm, effect))
+        known_words.append(this)
     return {"created": created, "updated": updated, "resolved": resolved, "candidates": len(items),
             "skipped_duplicates": skipped, "ignored_actions": ignored, "conflicts": conflicts,
             "between_others": others, "owner_reminders": reminders, "folded": folded}
