@@ -45,8 +45,8 @@ NEVER_HIGH, NEVER_LOW = 1.01, -0.01
 HIGHS = (0.2, 0.3, 0.4, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.93, 0.95, 0.97, 0.99, NEVER_HIGH)
 LOWS = (0.5, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.07, 0.05, 0.03, 0.01, NEVER_LOW)
 # How the decision composes with the existing path at each point (as wired in the sidecar):
-#   fill: the existing answer when it has one, else the model's when it is sure (outreach_reply, opt_out,
-#         interest_settled); guard: the model may only turn a reminder into a hold (no_reminders);
+#   fill: where the sidecar asks the model (``eligible``), its answer when it is sure, else the existing one
+#         (outreach_reply, opt_out, no_reminders, interest_settled);
 #   veto: the model may only withdraw a reported verdict (owner_verdict).
 COMPOSITION = {"outreach_reply": "fill", "opt_out": "fill", "no_reminders": "fill", "interest_settled": "fill",
                "owner_verdict": "veto"}
@@ -225,16 +225,32 @@ def fit_temperature(point: str, rows) -> float:
     return min(TEMPERATURES, key=lambda t: (nll(point, usable, t), abs(math.log(t)))) if usable else 1.0
 
 
+def eligible(point: str, row: Dict[str, Any]) -> bool:
+    """Whether the sidecar asks the model about this row, given what the existing path answered (as wired):
+    the phrase points where the tables said nothing (``fired``, which ``rules_answer`` records: a phrase row
+    without it is refused, never assumed); ``no_reminders`` where the capture call gave the new item a reminder
+    (``_decided_holds``); ``interest_settled`` where the call left the interest open and the turn names its topic
+    (``_decided_settlements``); ``owner_verdict`` where the lesson call reported a verdict (``_vetted``)."""
+    if point in ("outreach_reply", "opt_out"):
+        return not row["fired"]
+    if point == "no_reminders":
+        return row["current"] == "no"
+    if point == "interest_settled":
+        from protagine.mind.outreach import similar
+        return row["current"] == "no" and bool(similar(row["fields"]["topic"], row["fields"]["text"]))
+    if point == "owner_verdict":
+        return row["current"] == "yes"
+    raise KeyError(point)
+
+
 def composed(point: str, row: Dict[str, Any], temperature: float, threshold: float) -> str:
     """The point's answer with the model and the fallback, as the sidecar wires it."""
     existing = row["current"]
-    if not row.get("raw"):
+    if not row.get("raw") or not eligible(point, row):
         return existing
     probabilities = tempered(point, row["raw"], temperature)
     if COMPOSITION[point] == "veto":
-        return "no" if existing == "yes" and probabilities["yes"] <= threshold else existing
-    if row["fired"]:
-        return existing
+        return "no" if probabilities["yes"] <= threshold else existing
     if POINTS[point].kind == "choice":
         label = max(probabilities, key=probabilities.get)
         return label if probabilities[label] >= threshold else existing
@@ -351,7 +367,7 @@ def analyse(args) -> None:
                     continue            # an existing-path call that failed is left out (counted below)
                 rows.append({"key": key(entry), "fields": entry["fields"], "gold": entry["gold"],
                              "kind": entry["source"].split(":")[0], "current": now["label"],
-                             "fired": now.get("fired", True), "current_ms": now["ms"],
+                             **({"fired": now["fired"]} if "fired" in now else {}), "current_ms": now["ms"],
                              **({k: said[k] for k in ("raw", "server_ms", "rtt_ms", "tokens")} if "raw" in said
                                 else {})})
             result = analyse_point(point, rows)

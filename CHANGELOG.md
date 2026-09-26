@@ -11,8 +11,8 @@ endpoint, a disabled point, an input over the model's 512-token context, a timeo
 answer inside the point's calibrated abstain band keeps the existing path. `protagine.yaml` gains a `decisions`
 section (url, timeout, per point enabled, temperature and abstain band). Measured against the existing paths on
 345 labelled items from the repository's own generators and tests (`benchmarks/decisions`), only
-`owner_verdict` is on by default: the night's lesson call took eight owner requests after an agent reply for
-verdicts, and the model withdrew all eight and no real verdict, held out. The phrase tables stay ahead of the
+`owner_verdict` is on by default: the night's lesson call took five owner requests after an agent reply for
+verdicts, and the model withdrew all five and no real verdict, held out. The phrase tables stay ahead of the
 model where they speak; the other four points ship off with their numbers.
 
 ## Unreleased - self log, owner decisions, settled interests, held first mentions, unchanged sections

@@ -73,8 +73,11 @@ The decision model measured is Laya (Apache-2.0; ModernBERT-large, 512-token con
 `1c5edc17`), both its English root and its typed-decisions checkpoint, served one request at a time on one GPU.
 The existing path's model calls ran on the evaluation model (GLM-5.3-Flash, 4-bit EXL3) on a shared endpoint.
 Sets: 98 replies, 102 opt-out phrases, 30 reminder turns, 38 interest turns, 77 owner messages (345 in all; of
-them 68 are `novel`). Five owner messages are left out of `owner_verdict`: the lesson call's answer did not
-parse, on two tries each (the night would have learned nothing from them either).
+them 68 are `novel`). Five owner messages are left out of `owner_verdict`: the lesson call gave no answer
+that parsed (four) or failed (one), on two tries each (the night would have learned nothing from them either).
+This is the second run of the measurement: the first let neither capture point act (its composition treated
+every model-call row as one the existing path had answered); the harness now asks the model exactly where the
+sidecar would (`measure.eligible`), and both steps were run again.
 
 Typed-decisions checkpoint (the defaults in `protagine.decisions` are this checkpoint's). Accuracy is correct/n,
 with the repository's own items in brackets; ECE is the expected calibration error of the top answer;
@@ -86,28 +89,28 @@ it changed from the existing path's, right and wrong; T and the threshold are fi
 |---|---|---|---|---|---|---|---|
 | `outreach_reply` | 74/98 (66/68) | 62/98 / 0.25 | 62/98 / 0.11 | 71/98 (60/68; novel 11/30) | 3 / 6 | 0.33, 0.55 | no |
 | `opt_out` | 89/102 (79/86) | 83/102 / 0.17 | 83/102 / 0.04 | 89/102 (75/86; novel 14/16) | 5 / 5 | 0.33, 0.85 | no |
-| `no_reminders` | 27/30 (20/22) | 24/30 / 0.28 | 24/30 / 0.14 | 27/30 (20/22; novel 7/8) | 0 / 0 | 0.25, never | no |
+| `no_reminders` | 30/30 (22/22) | 24/30 / 0.28 | 24/30 / 0.14 | 30/30 (22/22; novel 8/8) | 0 / 0 | 0.25, never | no |
 | `interest_settled` | 37/38 (31/32) | 32/38 / 0.23 | 32/38 / 0.16 | 37/38 (31/32; novel 6/6) | 0 / 0 | 0.25, never | no |
-| `owner_verdict` | 63/72 (56/64) | 67/72 / 0.29 | 67/72 / 0.10 | **71/72 (63/64; novel 8/8)** | 8 / 0 | 0.25, 0.03 | **yes** |
+| `owner_verdict` | 65/72 (57/64) | 67/72 / 0.29 | 67/72 / 0.10 | **70/72 (62/64; novel 8/8)** | 5 / 0 | 0.25, 0.03 | **yes** |
 
 English root checkpoint, for comparison: `outreach_reply` 56/98 alone, 70/98 with fallback (hurt 7);
 `opt_out` 62/102 alone, 84/102 with fallback (hurt 7); `no_reminders` 26/30 alone; `interest_settled` 35/38
-alone; `owner_verdict` 69/72 alone (ECE 0.23, 0.03 with T fitted) but 65/72 with fallback (helped 5, hurt 3).
+alone; `owner_verdict` 69/72 alone (ECE 0.23, 0.03 with T fitted) but 62/72 with fallback (helped 0, hurt 3).
 Neither checkpoint beats the phrase tables at a point they cover; the typed-decisions checkpoint is the one to
 serve.
 
 Latency. The decision model's own time was 16 to 18 ms at the median and under 19 ms at p95 for every point
 (inputs up to 196 tokens). A round trip on the same private network was 19 ms at the median (20 ms p95); across
-two extra network hops it was 37 to 42 ms (p95 86 to 103 ms), inside the 250 ms limit. The phrase tables take
-under 0.2 ms. The model calls they would stand beside took 11 s (`interest_settled`), 23 s (`no_reminders`) and
-35 s (`owner_verdict`) at the median on the shared endpoint, queueing included, and up to 80 s at p95; the
+two extra network hops it was 37 to 42 ms (p95 73 to 137 ms), inside the 250 ms limit. The phrase tables take
+under 0.3 ms. The model calls they would stand beside took 13 s (`interest_settled`), 21 s (`no_reminders`) and
+39 s (`owner_verdict`) at the median on the shared endpoint, queueing included, and up to 79 s at p95; the
 decision model adds its answer to those paths, it does not replace the call.
 
 What the numbers say:
 
-- `owner_verdict` is enabled. The lesson call reported eight of the owner's plain requests that follow an agent
-  reply ("p-95 has a shipment of 52 kg going out. I need the fee.") as verdicts on the work, and missed one
-  verdict. The decision model withdrew all eight and no real verdict, held out. It errs only toward learning
+- `owner_verdict` is enabled. The lesson call reported five of the owner's plain requests that follow an agent
+  reply ("p-95 has a shipment of 52 kg going out. I need the fee.") as verdicts on the work, and missed two
+  verdicts. The decision model withdrew all five and no real verdict, held out. It errs only toward learning
   less: a withdrawn verdict admits and scores nothing. It acts only when the calibrated probability of a
   verdict is at most 0.03 (about 0.30 before calibration); the requests measured 0.15 to 0.37 before
   calibration and the verdicts 0.36 and above, so the margin is narrow and the band keeps to the clear side.
@@ -115,12 +118,14 @@ What the numbers say:
   labels, and where they say nothing the model more often invents a class ("I need to focus on the grant report
   this week" read as not now, "Drop it" and "Not interested" read as an opt-out) than finds a missed one. On
   the `novel` paraphrases it helps (opt-out 14/16 against 11/16), which is not enough to enable it.
-- `no_reminders` and `interest_settled` stay off: the capture call gets most of them right, and the model is
-  not sure enough of the few it misses to fix any without breaking others. The capture call gave a reminder to
-  two no-reminder turns of the repository's own, the capture test's sentence ("I am handling it myself. No
-  reminders about it.") among them, which the typed-decisions checkpoint put at 0.55 and 0.49 (the English
-  root put the test's sentence at 0.79); and it left "that one is theirs and I do not want you on it" open,
-  which the model put at 0.38.
+- `no_reminders` and `interest_settled` stay off. On this run the capture call held all 30 no-reminder turns
+  and left one interest open ("that one is theirs and I do not want you on it"), which the model does not
+  settle surely enough; so there is nothing for the model to fix. The capture call is not steady across runs:
+  19 of its 345 answers changed from the first run, when it gave a reminder to three no-reminder turns (the
+  capture test's own sentence, "I am handling it myself. No reminders about it.", among them). Over that first
+  recording the corrected harness fits `no_reminders` to act at 0.4 (T 0.25) and fixes two of the three with no
+  harm, 29/30 held out, which would enable it; over this one it fits "never". The point stays off by the rule,
+  and the case for it rests on how often the capture call misses a hold, which one run does not settle.
 - The existing paths' own misses the sets exposed: a contact's "Stop checking in on me", "Only message me when I
   ask" and five like them are an owner's stop cues (`mind/reactions.py`) but not contact opt-out phrases
   (`contacts/optout.py`); and a reply whose positive cue is aimed at a detail the outreach did not name ("Look
@@ -148,7 +153,9 @@ python benchmarks/decisions/measure.py analyse --current current.json --answers 
 way the sidecar reads it. `decide` asks the decision model every item's question, one at a time. `analyse`
 reports, per point and checkpoint: the existing path's accuracy and time; the model alone, zero-shot and with a
 fitted temperature, with its expected calibration error (ten equal-width bins over the top answer's
-probability); and the model with the fallback, composed as the sidecar wires it, with the temperature (least
+probability); and the model with the fallback, composed as the sidecar wires it (asked only where the sidecar
+asks: the phrase tables said nothing, the capture call gave the item a reminder, it left a named interest open,
+or the lesson call reported a verdict), with the temperature (least
 negative log-likelihood) and the abstain threshold (most accurate; among equals, the one that lets the model
 act least, "never" included) fitted by five-fold cross-validation, so the accuracy reported is the held-out
 folds'. A point is enabled by default only when that is at least the existing path's accuracy overall and on

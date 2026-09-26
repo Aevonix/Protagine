@@ -1,5 +1,5 @@
 {
- "at": "2026-09-26T01:47:41.133527+00:00",
+ "at": "2026-09-26T03:03:37.963158+00:00",
  "checkpoints": {
   "english": {
    "backend": {
@@ -34,8 +34,8 @@
      "current_failed": 0,
      "current_missing": 0,
      "current_ms": {
-      "p50": 11343.1,
-      "p95": 32234.41
+      "p50": 12554.19,
+      "p95": 27658.89
      },
      "ece_calibrated_cv": 0.11222923005480509,
      "ece_zero_shot": 0.20387894736842102,
@@ -56,10 +56,10 @@
      },
      "latency_ms": {
       "input_tokens_max": 133,
-      "round_trip_p50": 41.4,
-      "round_trip_p95": 112.97,
-      "server_p50": 17.17,
-      "server_p95": 45.45
+      "round_trip_p50": 38.47,
+      "round_trip_p95": 81.87,
+      "server_p50": 16.97,
+      "server_p95": 18.29
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -113,47 +113,28 @@
      },
      "current": {
       "all": {
-       "correct": 27,
+       "correct": 30,
        "n": 30
       },
       "novel": {
-       "correct": 7,
+       "correct": 8,
        "n": 8
       },
       "repo": {
-       "correct": 20,
+       "correct": 22,
        "n": 22
       }
      },
      "current_failed": 0,
      "current_missing": 0,
      "current_ms": {
-      "p50": 23327.69,
-      "p95": 41845.74
+      "p50": 20822.56,
+      "p95": 47231.71
      },
      "ece_calibrated_cv": 0.1228727196045676,
      "ece_zero_shot": 0.26645,
      "enable": false,
-     "errors": [
-      {
-       "composed": "no",
-       "current": "no",
-       "gold": "yes",
-       "text": "The grant summary for p-17 is on my list, due in roughly 20 minutes; I have it handled. No action needed at the moment. Leave p-17 alone about it and do not chase me either."
-      },
-      {
-       "composed": "no",
-       "current": "no",
-       "gold": "yes",
-       "text": "I'll book the dentist myself this week, you don't need to nudge me."
-      },
-      {
-       "composed": "no",
-       "current": "no",
-       "gold": "yes",
-       "text": "The parcel receipt for p-05 is due in 20 minutes and I am handling it myself. No reminders about it."
-      }
-     ],
+     "errors": [],
      "fitted": {
       "composition": "fill",
       "never": true,
@@ -162,10 +143,10 @@
      },
      "latency_ms": {
       "input_tokens_max": 100,
-      "round_trip_p50": 40.33,
-      "round_trip_p95": 84.26,
-      "server_p50": 17.2,
-      "server_p95": 19.73
+      "round_trip_p50": 37.29,
+      "round_trip_p95": 90.38,
+      "server_p50": 17.05,
+      "server_p95": 17.89
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -198,15 +179,15 @@
      "n": 30,
      "with_fallback_cv": {
       "all": {
-       "correct": 27,
+       "correct": 30,
        "n": 30
       },
       "novel": {
-       "correct": 7,
+       "correct": 8,
        "n": 8
       },
       "repo": {
-       "correct": 20,
+       "correct": 22,
        "n": 22
       }
      }
@@ -358,10 +339,10 @@
      },
      "latency_ms": {
       "input_tokens_max": 72,
-      "round_trip_p50": 37.85,
-      "round_trip_p95": 101.33,
-      "server_p50": 15.89,
-      "server_p95": 17.7
+      "round_trip_p50": 37.32,
+      "round_trip_p95": 96.32,
+      "server_p50": 15.82,
+      "server_p95": 17.07
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -430,8 +411,8 @@
      "current_failed": 0,
      "current_missing": 0,
      "current_ms": {
-      "p50": 0.05,
-      "p95": 0.2
+      "p50": 0.06,
+      "p95": 0.21
      },
      "ece_calibrated_cv": 0.1517173469387755,
      "ece_zero_shot": 0.15171734693877553,
@@ -566,10 +547,10 @@
      },
      "latency_ms": {
       "input_tokens_max": 150,
-      "round_trip_p50": 40.33,
-      "round_trip_p95": 96.94,
-      "server_p50": 18.08,
-      "server_p95": 19.09
+      "round_trip_p50": 40.06,
+      "round_trip_p95": 93.93,
+      "server_p50": 18.2,
+      "server_p95": 20.56
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -618,32 +599,32 @@
     "owner_verdict": {
      "answered": 72,
      "changed_cv": {
-      "helped": 5,
+      "helped": 0,
       "hurt": 3
      },
      "current": {
       "all": {
-       "correct": 63,
+       "correct": 65,
        "n": 72
       },
       "novel": {
-       "correct": 7,
+       "correct": 8,
        "n": 8
       },
       "repo": {
-       "correct": 56,
+       "correct": 57,
        "n": 64
       }
      },
      "current_failed": 0,
      "current_missing": 5,
      "current_ms": {
-      "p50": 34768.62,
-      "p95": 80417.27
+      "p50": 38571.63,
+      "p95": 79389.53
      },
-     "ece_calibrated_cv": 0.03283524645396296,
-     "ece_zero_shot": 0.23246111111111112,
-     "enable": true,
+     "ece_calibrated_cv": 0.03128976142503606,
+     "ece_zero_shot": 0.23272222222222233,
+     "enable": false,
      "errors": [
       {
        "composed": "no",
@@ -658,10 +639,10 @@
        "text": "That's not what I asked, I wanted them by client."
       },
       {
-       "composed": "yes",
-       "current": "yes",
-       "gold": "no",
-       "text": "p-15 asked by email for a delivery of 44 kg. I need its slot. Write the result to probe-06.json as {\"slot\": ...}."
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Verdict on cfg-28.json: it must now hold exactly service \"svc-28\", retries 6, timeout 55, region \"J5\", frozen false. If yours differs, fix it."
       },
       {
        "composed": "no",
@@ -673,33 +654,51 @@
        "composed": "yes",
        "current": "yes",
        "gold": "no",
+       "text": "p-63 needs the count for bin B-48. I need the number of units it holds. Write the result to train-05.json as {\"units\": ...}."
+      },
+      {
+       "composed": "yes",
+       "current": "yes",
+       "gold": "no",
+       "text": "Return 1725 came in from p-47 by sms. I need its order code. Write the result to probe-02.json as {\"code\": ...}."
+      },
+      {
+       "composed": "yes",
+       "current": "yes",
+       "gold": "no",
+       "text": "p-95 has a shipment of 52 kg going out. I need the fee. Write the result to probe-06.json as {\"fee\": ...}."
+      },
+      {
+       "composed": "yes",
+       "current": "yes",
+       "gold": "no",
        "text": "Order 4411 came in from p-07 by chat. I need its order code."
       },
       {
        "composed": "yes",
        "current": "yes",
        "gold": "no",
-       "text": "Order 5522 came in from p-08 by email. What is its code?"
+       "text": "p-42 has a shipment of 3 kg going out. I need the fee. Write the result to train-02.json as {\"fee\": ...}."
       },
       {
        "composed": "no",
        "current": "no",
        "gold": "yes",
-       "text": "Verdict on train-01.json: by our procedure the fee is 5. The procedure for handling fees: the contact's tier is in contacts.json; gold pays nothing, standard pays 4 plus the weight in kilograms, basic pays 8 plus the weight. Only outbound shipments carry a handling fee; for a return the fee is the word none. If yours differs, rewrite train-01.json with it."
+       "text": "Verdict on cfg-44.json: it must now hold exactly service \"svc-44\", retries 9, timeout 66, region \"U1\", frozen false. The procedure for config edits: change exactly the one key named and keep every other key and value as it was; never rewrite a config from scratch or drop a key. A config whose frozen flag is true is never changed at all. If yours differs, fix it."
       }
      ],
      "fitted": {
       "composition": "veto",
       "never": false,
       "temperature": 0.25,
-      "threshold": 0.2
+      "threshold": 0.03
      },
      "latency_ms": {
       "input_tokens_max": 196,
-      "round_trip_p50": 37.8,
-      "round_trip_p95": 95.17,
-      "server_p50": 17.41,
-      "server_p95": 19.09
+      "round_trip_p50": 38.13,
+      "round_trip_p95": 96.64,
+      "server_p50": 17.43,
+      "server_p95": 18.88
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -732,7 +731,7 @@
      "n": 72,
      "with_fallback_cv": {
       "all": {
-       "correct": 65,
+       "correct": 62,
        "n": 72
       },
       "novel": {
@@ -740,7 +739,7 @@
        "n": 8
       },
       "repo": {
-       "correct": 60,
+       "correct": 57,
        "n": 64
       }
      }
@@ -780,8 +779,8 @@
      "current_failed": 0,
      "current_missing": 0,
      "current_ms": {
-      "p50": 11343.1,
-      "p95": 32234.41
+      "p50": 12554.19,
+      "p95": 27658.89
      },
      "ece_calibrated_cv": 0.15795664805627452,
      "ece_zero_shot": 0.22921842105263154,
@@ -802,10 +801,10 @@
      },
      "latency_ms": {
       "input_tokens_max": 133,
-      "round_trip_p50": 38.86,
-      "round_trip_p95": 86.73,
-      "server_p50": 17.13,
-      "server_p95": 18.59
+      "round_trip_p50": 39.9,
+      "round_trip_p95": 136.55,
+      "server_p50": 17.1,
+      "server_p95": 18.21
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -859,47 +858,28 @@
      },
      "current": {
       "all": {
-       "correct": 27,
+       "correct": 30,
        "n": 30
       },
       "novel": {
-       "correct": 7,
+       "correct": 8,
        "n": 8
       },
       "repo": {
-       "correct": 20,
+       "correct": 22,
        "n": 22
       }
      },
      "current_failed": 0,
      "current_missing": 0,
      "current_ms": {
-      "p50": 23327.69,
-      "p95": 41845.74
+      "p50": 20822.56,
+      "p95": 47231.71
      },
      "ece_calibrated_cv": 0.14026752351772823,
      "ece_zero_shot": 0.28144999999999987,
      "enable": false,
-     "errors": [
-      {
-       "composed": "no",
-       "current": "no",
-       "gold": "yes",
-       "text": "The grant summary for p-17 is on my list, due in roughly 20 minutes; I have it handled. No action needed at the moment. Leave p-17 alone about it and do not chase me either."
-      },
-      {
-       "composed": "no",
-       "current": "no",
-       "gold": "yes",
-       "text": "I'll book the dentist myself this week, you don't need to nudge me."
-      },
-      {
-       "composed": "no",
-       "current": "no",
-       "gold": "yes",
-       "text": "The parcel receipt for p-05 is due in 20 minutes and I am handling it myself. No reminders about it."
-      }
-     ],
+     "errors": [],
      "fitted": {
       "composition": "fill",
       "never": true,
@@ -908,10 +888,10 @@
      },
      "latency_ms": {
       "input_tokens_max": 100,
-      "round_trip_p50": 41.74,
-      "round_trip_p95": 97.01,
-      "server_p50": 17.11,
-      "server_p95": 17.74
+      "round_trip_p50": 41.26,
+      "round_trip_p95": 73.32,
+      "server_p50": 17.2,
+      "server_p95": 17.88
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -944,15 +924,15 @@
      "n": 30,
      "with_fallback_cv": {
       "all": {
-       "correct": 27,
+       "correct": 30,
        "n": 30
       },
       "novel": {
-       "correct": 7,
+       "correct": 8,
        "n": 8
       },
       "repo": {
-       "correct": 20,
+       "correct": 22,
        "n": 22
       }
      }
@@ -1074,10 +1054,10 @@
      },
      "latency_ms": {
       "input_tokens_max": 72,
-      "round_trip_p50": 36.83,
-      "round_trip_p95": 92.27,
-      "server_p50": 15.89,
-      "server_p95": 16.89
+      "round_trip_p50": 38.14,
+      "round_trip_p95": 89.94,
+      "server_p50": 15.86,
+      "server_p95": 16.87
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -1146,8 +1126,8 @@
      "current_failed": 0,
      "current_missing": 0,
      "current_ms": {
-      "p50": 0.05,
-      "p95": 0.2
+      "p50": 0.06,
+      "p95": 0.21
      },
      "ece_calibrated_cv": 0.11094556706225903,
      "ece_zero_shot": 0.24740714285714285,
@@ -1282,10 +1262,10 @@
      },
      "latency_ms": {
       "input_tokens_max": 150,
-      "round_trip_p50": 39.02,
-      "round_trip_p95": 92.15,
-      "server_p50": 17.98,
-      "server_p95": 18.98
+      "round_trip_p50": 41.57,
+      "round_trip_p95": 90.6,
+      "server_p50": 18.14,
+      "server_p95": 18.97
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -1334,38 +1314,44 @@
     "owner_verdict": {
      "answered": 72,
      "changed_cv": {
-      "helped": 8,
+      "helped": 5,
       "hurt": 0
      },
      "current": {
       "all": {
-       "correct": 63,
+       "correct": 65,
        "n": 72
       },
       "novel": {
-       "correct": 7,
+       "correct": 8,
        "n": 8
       },
       "repo": {
-       "correct": 56,
+       "correct": 57,
        "n": 64
       }
      },
      "current_failed": 0,
      "current_missing": 5,
      "current_ms": {
-      "p50": 34768.62,
-      "p95": 80417.27
+      "p50": 38571.63,
+      "p95": 79389.53
      },
-     "ece_calibrated_cv": 0.10113973661413457,
-     "ece_zero_shot": 0.2896027777777778,
+     "ece_calibrated_cv": 0.1012488334011083,
+     "ece_zero_shot": 0.2893416666666667,
      "enable": true,
      "errors": [
       {
        "composed": "no",
        "current": "no",
        "gold": "yes",
-       "text": "Verdict on train-01.json: by our procedure the fee is 5. The procedure for handling fees: the contact's tier is in contacts.json; gold pays nothing, standard pays 4 plus the weight in kilograms, basic pays 8 plus the weight. Only outbound shipments carry a handling fee; for a return the fee is the word none. If yours differs, rewrite train-01.json with it."
+       "text": "Verdict on cfg-28.json: it must now hold exactly service \"svc-28\", retries 6, timeout 55, region \"J5\", frozen false. If yours differs, fix it."
+      },
+      {
+       "composed": "no",
+       "current": "no",
+       "gold": "yes",
+       "text": "Verdict on cfg-44.json: it must now hold exactly service \"svc-44\", retries 9, timeout 66, region \"U1\", frozen false. The procedure for config edits: change exactly the one key named and keep every other key and value as it was; never rewrite a config from scratch or drop a key. A config whose frozen flag is true is never changed at all. If yours differs, fix it."
       }
      ],
      "fitted": {
@@ -1376,10 +1362,10 @@
      },
      "latency_ms": {
       "input_tokens_max": 196,
-      "round_trip_p50": 39.58,
-      "round_trip_p95": 103.26,
-      "server_p50": 17.51,
-      "server_p95": 18.91
+      "round_trip_p50": 39.41,
+      "round_trip_p95": 81.87,
+      "server_p50": 17.46,
+      "server_p95": 20.42
      },
      "model_alone_calibrated_cv": {
       "all": {
@@ -1412,7 +1398,7 @@
      "n": 72,
      "with_fallback_cv": {
       "all": {
-       "correct": 71,
+       "correct": 70,
        "n": 72
       },
       "novel": {
@@ -1420,7 +1406,7 @@
        "n": 8
       },
       "repo": {
-       "correct": 63,
+       "correct": 62,
        "n": 64
       }
      }

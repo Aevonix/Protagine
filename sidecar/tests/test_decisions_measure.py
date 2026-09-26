@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,6 +81,64 @@ def test_the_temperature_that_fits_best_is_found():
     overconfident = [row("no", "yes", {"yes": 0.99, "no": 0.01}) for _ in range(6)] + [
         row("no", "no", {"yes": 0.99, "no": 0.01}) for _ in range(4)]
     assert measure.fit_temperature("opt_out", overconfident) > 1.0
+
+
+def _analysed(tmp_path, monkeypatch, entries, current, raw):
+    """``analyse`` over ``entries``, the existing path's records as ``current`` writes them, and the model's."""
+    import json
+    monkeypatch.setattr(measure.sets, "build", lambda: {point: [e for e in entries if e["point"] == point]
+                                                        for point in {e["point"] for e in entries}})
+    (tmp_path / "current.json").write_text(json.dumps({measure.key(e): current(e) for e in entries}))
+    (tmp_path / "answers.json").write_text(json.dumps({"label": "m", "items": {
+        measure.key(e): {"raw": {"yes": raw(e), "no": 1 - raw(e)}, "server_ms": 5.0, "rtt_ms": 9.0, "tokens": 40}
+        for e in entries}}))
+    measure.analyse(SimpleNamespace(current=str(tmp_path / "current.json"),
+                                    answers=[str(tmp_path / "answers.json")], out=str(tmp_path / "out.json")))
+    return json.loads((tmp_path / "out.json").read_text())["checkpoints"]["m"]["points"]
+
+
+def _entry(point, gold, index, **fields):
+    return {"point": point, "gold": gold, "source": f"test:{index}", "fields": fields}
+
+
+def test_a_confident_model_corrects_a_capture_miss_the_wiring_would_ask_about(tmp_path, monkeypatch):
+    """The model-call points record what ``_model_call`` records (a label, an error, a time; no ``fired``): the
+    model may act exactly where the sidecar would ask it, so ten capture misses it reads right are corrected."""
+    entries = ([_entry("no_reminders", "yes", i, item="Pay the rent", text=f"I'll do it, no reminders ({i}).")
+                for i in range(10)]
+               + [_entry("no_reminders", "no", 10 + i, item="Pay the rent", text=f"Remind me at five ({i}).")
+                  for i in range(10)]
+               + [_entry("interest_settled", "yes", i, topic="tide tables",
+                         text=f"Found a video on tide tables, so I'm sorted there ({i}).") for i in range(10)]
+               + [_entry("interest_settled", "no", 10 + i, topic="tide tables",
+                         text=f"The lease is signed, so I'm sorted there ({i}).") for i in range(10)])
+
+    def current(entry):                 # the capture call missed every hold and every settlement
+        return {"label": "no", "error": None, "ms": 900.0}
+
+    def raw(entry):                     # the model reads each case right, and is sure of the unrelated settlement
+        text = entry["fields"]["text"]
+        return 0.99 if "no reminders" in text or "sorted" in text else 0.01
+
+    points = _analysed(tmp_path, monkeypatch, entries, current, raw)
+    held, settled = points["no_reminders"], points["interest_settled"]
+    assert held["current"]["all"] == {"correct": 10, "n": 20}
+    assert held["with_fallback_cv"]["all"] == {"correct": 20, "n": 20} and held["enable"] is True
+    # A turn that does not name the topic is never asked (the sidecar's prefilter): the model's sure "yes" to the
+    # signed lease is not an answer, so only the ten that name it are corrected.
+    assert settled["with_fallback_cv"]["all"] == {"correct": 20, "n": 20} and settled["enable"] is True
+
+
+def test_a_capture_point_is_never_asked_where_the_existing_path_already_acted():
+    held = {"current": "yes", "gold": "no", "raw": {"yes": 0.01, "no": 0.99}, "fields": {"item": "x", "text": "y"}}
+    assert measure.composed("no_reminders", held, 1.0, 0.5) == "yes"        # a guard only turns a reminder into a hold
+    assert measure.composed("interest_settled", {**held, "fields": {"topic": "tide tables",
+                                                                    "text": "tide tables, sorted"}}, 1.0, 0.5) == "yes"
+
+
+def test_a_phrase_point_without_its_record_of_firing_is_refused():
+    with pytest.raises(KeyError):
+        measure.composed("opt_out", {"current": "no", "gold": "yes", "raw": {"yes": 0.99, "no": 0.01}}, 1.0, 0.5)
 
 
 def test_the_defaults_are_the_recorded_measurement():
