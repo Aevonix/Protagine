@@ -177,6 +177,41 @@ async def test_a_slow_endpoint_is_no_answer_within_the_timeout():
     assert loop.time() - started < 1.0
 
 
+class Hanging(httpx.AsyncBaseTransport):
+    """An endpoint that accepts the request and never answers."""
+
+    async def handle_async_request(self, request):
+        await asyncio.Event().wait()
+
+
+@pytest.mark.parametrize("raw", ["inf", "Infinity", "-inf", "nan", "NaN", "0", "-5", "0.5", "5001", "60000",
+                                 "1e308", "abc", ""])
+async def test_an_unusable_time_limit_from_the_environment_keeps_the_default_one(raw):
+    """A time limit outside 1 to 5000 ms (what protagine.yaml accepts), or not a finite number, is ignored: the
+    call still ends at the default limit, so a hanging endpoint never holds the caller."""
+    ask = from_environment({"PROTAGINE_DECISIONS_URL": URL, "PROTAGINE_DECISIONS_TIMEOUT_MS": raw,
+                            "PROTAGINE_DECISIONS_POINTS": json.dumps({"opt_out": {"enabled": True}})})
+    assert ask.timeout_s == decisions.DEFAULT_TIMEOUT_S
+    ask.transport = Hanging()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    assert await asyncio.wait_for(ask.decide("opt_out", text="leave it"), 2.0) is None
+    assert loop.time() - started < decisions.DEFAULT_TIMEOUT_S + 0.5
+
+
+@pytest.mark.parametrize("seconds", [math.inf, -math.inf, math.nan, 0.0, -1.0, 5.001, 600.0, "soon", None, True])
+async def test_the_client_refuses_an_unusable_time_limit(seconds):
+    ask = Decider(URL, timeout_s=seconds, points={"opt_out": {"enabled": True}}, transport=Hanging())
+    assert ask.timeout_s == decisions.DEFAULT_TIMEOUT_S
+    assert await asyncio.wait_for(ask.decide("opt_out", text="leave it"), 2.0) is None
+
+
+def test_a_usable_time_limit_is_kept():
+    assert from_environment({"PROTAGINE_DECISIONS_TIMEOUT_MS": "1"}).timeout_s == pytest.approx(0.001)
+    assert from_environment({"PROTAGINE_DECISIONS_TIMEOUT_MS": "5000"}).timeout_s == pytest.approx(5.0)
+    assert Decider(URL, timeout_s=0.05).timeout_s == pytest.approx(0.05)
+
+
 async def test_an_unreachable_endpoint_is_no_answer():
     def refuse(request):
         raise httpx.ConnectError("refused", request=request)

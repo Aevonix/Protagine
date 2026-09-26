@@ -348,7 +348,7 @@ def _number(value: Any) -> float | None:
 def _validate_decisions(value: Any) -> dict[str, Any]:
     """``decisions``: ``url`` (http or https, or empty), ``timeout_ms`` (1 to 5000) and ``points``, each a known
     decision point with ``enabled``, ``temperature`` (above 0) and ``abstain`` ([lo, hi], 0 <= lo <= hi <= 1)."""
-    from protagine.decisions import POINTS
+    from protagine.decisions import POINTS, TIMEOUT_MS_BOUNDS
     value = {} if value is None else value
     if not isinstance(value, dict):
         raise ConfigError("decisions must be a mapping with url, timeout_ms and points")
@@ -356,8 +356,8 @@ def _validate_decisions(value: Any) -> dict[str, Any]:
     if url and not re.match(r"^https?://[^\s/]+(?:/\S*)?$", url):
         raise ConfigError("decisions.url must be an http(s) URL, or empty to keep every point on its existing path")
     timeout = _number(value.get("timeout_ms", 250))
-    if timeout is None or not 1 <= timeout <= 5000:
-        raise ConfigError("decisions.timeout_ms must be a number of milliseconds from 1 to 5000")
+    if timeout is None or not TIMEOUT_MS_BOUNDS[0] <= timeout <= TIMEOUT_MS_BOUNDS[1]:
+        raise ConfigError("decisions.timeout_ms must be a number of milliseconds from %d to %d" % TIMEOUT_MS_BOUNDS)
     points = value.get("points") or {}
     if not isinstance(points, dict):
         raise ConfigError("decisions.points must be a mapping of decision points")

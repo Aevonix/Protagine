@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL = "local-decision.v1"
 DEFAULT_TIMEOUT_S = 0.25
+#: The time limits one answer may be given, in milliseconds (``protagine.yaml`` accepts the same). Anything else,
+#: a non-finite number included, is refused for the default: no setting can leave a call without a deadline.
+TIMEOUT_MS_BOUNDS = (1, 5000)
 #: The longest state sent: about 300 tokens of English, inside the 512-token context with the question and
 #: its options. A longer input keeps the existing path; it is never cut to fit.
 MAX_STATE_CHARS = 1200
@@ -155,7 +158,7 @@ class Decider:
                  points: Optional[Mapping[str, Mapping[str, Any]]] = None,
                  transport: Optional[httpx.AsyncBaseTransport] = None) -> None:
         self.url = str(url or "").rstrip("/")
-        self.timeout_s = float(timeout_s)
+        self.timeout_s = _timeout_seconds(timeout_s)
         self.transport = transport
         self.points: Dict[str, Point] = dict(POINTS)
         for name, override in (points or {}).items():
@@ -251,6 +254,16 @@ def answer_probabilities(spec: Point, body: Any) -> Dict[str, float]:
     return {"yes": p_yes, "no": 1.0 - p_yes}
 
 
+def _timeout_seconds(value: Any) -> float:
+    """A usable time limit in seconds (``TIMEOUT_MS_BOUNDS``), or the default one for anything else."""
+    low, high = TIMEOUT_MS_BOUNDS
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value * 1000 <= high:
+        if value != DEFAULT_TIMEOUT_S:
+            logger.warning("decision time limit %r refused; using %d ms", value, DEFAULT_TIMEOUT_S * 1000)
+        return DEFAULT_TIMEOUT_S
+    return float(value)
+
+
 def _override(override: Any) -> Optional[Dict[str, Any]]:
     """A point's ``{enabled, temperature, abstain}`` override checked, or None when any of it is unusable (the
     point then keeps its defaults whole: ``protagine.yaml`` refuses such a section, the environment may not)."""
@@ -282,13 +295,13 @@ def from_environment(environ: Optional[Mapping[str, str]] = None) -> Decider:
     which ``protagine.yaml``'s ``decisions`` section exports. No URL: every point is off."""
     environ = os.environ if environ is None else environ
     url = str(environ.get("PROTAGINE_DECISIONS_URL") or "").strip()
-    timeout_s = DEFAULT_TIMEOUT_S
+    timeout_s: Any = DEFAULT_TIMEOUT_S
     raw_timeout = str(environ.get("PROTAGINE_DECISIONS_TIMEOUT_MS") or "").strip()
     if raw_timeout:
         try:
-            timeout_s = max(float(raw_timeout), 1.0) / 1000.0
+            timeout_s = float(raw_timeout) / 1000.0     # checked by the Decider: out of bounds is the default
         except ValueError:
-            logger.warning("PROTAGINE_DECISIONS_TIMEOUT_MS is not a number; using %d ms", DEFAULT_TIMEOUT_S * 1000)
+            timeout_s = raw_timeout
     points: Dict[str, Any] = {}
     raw_points = str(environ.get("PROTAGINE_DECISIONS_POINTS") or "").strip()
     if raw_points:
@@ -315,5 +328,5 @@ def shared() -> Decider:
     return _SHARED[key]
 
 
-__all__ = ["DEFAULT_TIMEOUT_S", "MAX_STATE_CHARS", "POINTS", "Decider", "Decision", "Point", "answer_probabilities",
-           "calibrate", "calibrate_yes", "from_environment", "shared"]
+__all__ = ["DEFAULT_TIMEOUT_S", "MAX_STATE_CHARS", "POINTS", "TIMEOUT_MS_BOUNDS", "Decider", "Decision", "Point",
+           "answer_probabilities", "calibrate", "calibrate_yes", "from_environment", "shared"]

@@ -18,7 +18,8 @@ and its calibrated probability) or `None`, and `None` always means: keep the exi
 - no url is configured, or the point is not enabled;
 - the input is longer than the model reads: a state over 1,200 characters (the model's context is 512 tokens,
   the question and its options included) is not sent, never cut to fit;
-- the call takes longer than `timeout_ms` (250 ms by default), the endpoint is busy (429), failing or
+- the call takes longer than `timeout_ms` (250 ms by default; 1 to 5000 ms, and a value outside that from the
+  environment, a non-finite one included, is the default), the endpoint is busy (429), failing or
   unreachable;
 - the answer is not the typed answer asked for (another protocol, an input the model did not read whole
   (`input_truncated` not `false`), answers to other questions, other labels, a probability out of range);
