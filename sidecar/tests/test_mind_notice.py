@@ -586,3 +586,112 @@ async def test_an_asked_notice_formed_before_the_request_review_never_goes_on_th
     await fx.mind.answer(asked.ask_code, yes=True, contact_id=OWNER)
     assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
     assert fx.store.get(formed["id"]).status == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# every authorization read on the send path fails closed
+# ---------------------------------------------------------------------------
+
+async def _held_notice(fx, monkeypatch, *, legacy):
+    """A notice formed at 22:40 and held by quiet hours: ``legacy`` is one the previous release formed from a
+    row whose request was never confirmed; otherwise a confirmed grant. The clock is left at 07:10."""
+    from protagine.mind import drives
+    fx.now = T0.replace(hour=22, minute=30)
+    metadata = {**NOTICE["metadata"], "counterpart": CONTACT, "obligor": "assistant"}
+    fx.commitments.create(person_id=OWNER, description=NOTICE["description"],
+                          due_at=(fx.now + timedelta(minutes=10)).isoformat(), source_type="cognition",
+                          metadata=metadata if legacy else confirmed(metadata))
+    with monkeypatch.context() as previous:
+        if legacy:
+            previous.setattr(drives, "request_confirmed", lambda metadata: True)
+        fx.shift(timedelta(minutes=10) + PAST)
+        formed, = (await fx.tick())["formed"]
+    assert formed["type"] == "commitment_notice" and formed["status"] == "approved"
+    fx.shift(timedelta(hours=8, minutes=30))
+    return formed["id"]
+
+
+def _failing_on(monkeypatch, target, name, calls):
+    """``target.name`` raises the store's own error on the listed call numbers (0-based), succeeds otherwise."""
+    import sqlite3
+    original, seen = getattr(target, name), {"n": 0}
+
+    def wrapped(*args, **kwargs):
+        index, seen["n"] = seen["n"], seen["n"] + 1
+        if index in calls:
+            raise sqlite3.OperationalError("database is locked")
+        return original(*args, **kwargs)
+
+    async def awrapped(*args, **kwargs):
+        index, seen["n"] = seen["n"], seen["n"] + 1
+        if index in calls:
+            raise sqlite3.OperationalError("database is locked")
+        return await original(*args, **kwargs)
+
+    import inspect
+    monkeypatch.setattr(target, name, awrapped if inspect.iscoroutinefunction(original) else wrapped)
+
+
+@pytest.mark.parametrize("failing", [{0}, {1}, {2}, {3}, {1, 2, 3, 4, 5}, set(range(50))])
+async def test_a_legacy_notice_never_goes_when_any_commitment_read_on_the_send_path_fails(make, monkeypatch, failing):
+    """Re-check F1: the first read of the commitment succeeding and a later one failing (or any other pattern of
+    failures) never lets the stored grant carry the message: the pull holds it, and once the reads come back
+    the legacy row is the owner's reminder."""
+    fx = make([contact(CONTACT, may_contact="ask")], config={"quiet_hours": "22:00-07:00"})
+    ident = await _held_notice(fx, monkeypatch, legacy=True)
+    with monkeypatch.context() as broken:
+        _failing_on(broken, fx.commitments, "get", failing)
+        assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+    assert fx.store.get(ident).status == "cancelled"
+
+
+@pytest.mark.parametrize("failing", [{0}, {1}, set(range(50))])
+async def test_a_confirmed_notice_is_held_not_sent_while_a_commitment_read_fails_and_goes_once_it_reads(
+        make, monkeypatch, failing):
+    fx = make([contact(CONTACT, may_contact="ask")], config={"quiet_hours": "22:00-07:00"})
+    ident = await _held_notice(fx, monkeypatch, legacy=False)
+    with monkeypatch.context() as broken:
+        _failing_on(broken, fx.commitments, "get", failing)
+        assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+        await fx.tick()                                   # the tick's own checks hold it too, never cancel it
+    assert fx.store.get(ident).status == "approved"
+    assert [p["id"] for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == [ident]
+
+
+@pytest.mark.parametrize("stored", ["never", "ask"])
+async def test_a_granted_notice_is_held_while_the_recipients_permission_cannot_be_read(make, monkeypatch, stored):
+    """An unreadable contact record is no permission: the stored grant never turns a failed read into ``auto``."""
+    fx = make([contact(CONTACT, may_contact=stored)], config={"quiet_hours": "22:00-07:00"})
+    ident = await _held_notice(fx, monkeypatch, legacy=False) if stored == "ask" else None
+    if ident is None:                                     # formed while it could still be read, then opted out
+        fx.contacts.records[CONTACT]["may_contact"] = "ask"
+        ident = await _held_notice(fx, monkeypatch, legacy=False)
+        fx.contacts.records[CONTACT]["may_contact"] = "never"
+    with monkeypatch.context() as broken:
+        _failing_on(broken, fx.contacts, "get", set(range(50)))
+        assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+        await fx.tick()
+        assert fx.store.get(ident).status == "approved"
+    sent = [p["id"] for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT]
+    assert sent == ([] if stored == "never" else [ident])
+
+
+async def test_a_waiting_granted_notice_is_the_owners_reminder_once_people_is_off(make, monkeypatch):
+    """Re-check known gap: turning the people faculty off retires a granted message already waiting, as it
+    stops one forming; the owner is reminded instead."""
+    fx = make([contact(CONTACT, may_contact="ask")], config={"quiet_hours": "22:00-07:00"})
+    ident = await _held_notice(fx, monkeypatch, legacy=False)
+    fx.mind.faculties["people"] = False
+    assert [p for p in await fx.mind.outbox_ready() if p["recipient"] == CONTACT] == []
+    assert fx.store.get(ident).status == "cancelled"
+    later = [entry for _ in range(2) for entry in (await fx.tick())["formed"]]
+    assert [entry["type"] for entry in later] == ["commitment_reminder"]
+    assert [p["recipient"] for p in await fx.send_all()] == [OWNER]
+
+
+async def test_the_guard_blocks_a_message_whose_recipients_permission_cannot_be_read(make, monkeypatch):
+    fx = make([contact(CONTACT, may_contact="auto")])
+    _failing_on(monkeypatch, fx.contacts, "get", set(range(50)))
+    verdict = await fx.mind.guard(tool="send_message", args={"contact_id": CONTACT, "message": "hi"}, run="mind")
+    assert verdict["allow"] is False and "unreadable" in verdict["reason"]

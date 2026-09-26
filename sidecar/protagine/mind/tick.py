@@ -171,6 +171,12 @@ def faculties_of(config: Mapping[str, Any] | None) -> Dict[str, bool]:
     return values
 
 
+class Unreadable(Exception):
+    """A read that decides whether an intention may act (its commitment, its recipient's permission, a reply)
+    failed. The intention does not act on this pass and is not cancelled either: it waits for a read that
+    succeeds (every authorization read on the send path fails closed)."""
+
+
 class Mind:
     def __init__(self, *, config: Mapping[str, Any] | None, store: Any, state_dir: str | os.PathLike[str],
                  owner_id: str | None, commitments: Any = None, followups: Any = None, feedback: Any = None,
@@ -601,7 +607,10 @@ class Mind:
         (``invalidates_if``), the owner turned its drive off (weight 0), or the goal it is a
         step of is no longer open. Notices, the digest and messages other subsystems asked
         for are the mind's reporting, not a drive's work: a weight of 0 does not cancel them."""
-        reason = invalidation_reason(row.invalidates_if, commitments=self.commitments, followups=self.followups)
+        try:
+            reason = invalidation_reason(row.invalidates_if, commitments=self.commitments, followups=self.followups)
+        except Exception as error:
+            raise Unreadable(f"{row.invalidates_if} unreadable ({type(error).__name__})") from error
         if reason is None and row.source_type == "commitment" and row.source_id and self.commitments is not None:
             reason = self._commitment_stale_reason(row)
         drive_work = row.type not in audit.NOTICE_TYPES and not str(row.type or "").startswith("reach_out:")
@@ -621,13 +630,14 @@ class Mind:
         a heads-up came due before it went out, or a message to a third party no longer stands on
         the owner's confirmed request for it to that recipient (one formed by an earlier release, or
         before the recipient changed: the owner's reminder takes its place). ``dispatch`` and the
-        outbox check this too, so a push-out is safe across ticks."""
+        outbox check this too, so a push-out is safe across ticks. A failed read is ``Unreadable``: the
+        intention waits, never acts on what it was formed with. With the people faculty off a granted message
+        is the owner's reminder, as the duty drive forms it."""
         ident = str(row.source_id)
         try:
             record = self.commitments.get(ident)
         except Exception as error:
-            logger.debug("commitment %s unavailable (%s)", ident, type(error).__name__)
-            return None
+            raise Unreadable(f"commitment {ident} unreadable ({type(error).__name__})") from error
         if not isinstance(record, dict):
             return f"commitment {ident} was removed"
         now = self.clock()
@@ -644,14 +654,15 @@ class Mind:
             if warn_at is None or warn_at > now:
                 return f"commitment {ident} no longer wants a heads-up now"
         if row.type in GRANTED_TYPES:
-            granted = drive_functions.granted_message(record, owner_id=self.owner_id)
+            granted = drive_functions.granted_message(record, owner_id=self.owner_id) if self.faculties["people"] else None
             if granted is None or granted[1] != row.entity_id:
                 return (f"commitment {ident} is no confirmed request of the owner's to message {row.entity_id}; "
                         f"it is the owner's reminder")
         return None
 
     def _invalidated(self, row: StoredInitiative) -> bool:
-        """Cancel an intention whose justification is gone (the check's cancellation, not a dismissal)."""
+        """Cancel an intention whose justification is gone (the check's cancellation, not a dismissal).
+        Raises ``Unreadable`` when that cannot be read: the caller holds the row (it does not act)."""
         reason = self._stale_reason(row)
         if reason is None:
             return False
@@ -672,6 +683,15 @@ class Mind:
         if row.dedup_key and row.source_type == "commitment" and self._commitment_open(row.source_id):
             self.store.update(row.id, dedup_key=None)
 
+    def _blocked(self, row: StoredInitiative) -> bool:
+        """True when the row may not act now: cancelled as stale, or held because a read that decides it
+        failed (``Unreadable``, or any error while it was being decided or cancelled)."""
+        try:
+            return self._invalidated(row)
+        except Exception as error:
+            logger.warning("intention %s held: %s", row.id, error if isinstance(error, Unreadable) else type(error).__name__)
+            return True
+
     def _commitment_open(self, ident: Any) -> bool:
         if self.commitments is None or not ident:
             return False
@@ -686,8 +706,11 @@ class Mind:
         resolved is cancelled before it is approved, dispatched or sent."""
         count = 0
         for row in self.store.intentions(status=["proposed", "asked", "approved"], limit=500):
-            if self._invalidated(row):
-                count += 1
+            try:
+                if self._invalidated(row):
+                    count += 1
+            except Exception as error:
+                logger.warning("intention %s held: %s", row.id, error if isinstance(error, Unreadable) else type(error).__name__)
         return count
 
     def _resolve_expectations(self, now: datetime) -> Dict[str, int]:
@@ -847,7 +870,11 @@ class Mind:
             if row.decision != "defer":
                 continue
             context = row.context if isinstance(row.context, dict) else {}
-            may_contact = self._granted(context.get("grant"), await self._may_contact(row.entity_id), row.entity_id)
+            try:
+                may_contact = self._granted(context.get("grant"), await self._may_contact(row.entity_id), row.entity_id)
+            except Unreadable as error:
+                logger.warning("deferred %s held: %s", row.id, error)
+                continue
             if (row.kind == "message" and row.entity_id and not self._is_owner(row.entity_id)
                     and not context.get("text") and may_contact != "never" and self.enabled
                     and self.authority.budget_check(kind="message", recipient=row.entity_id, type=row.type, now=now,
@@ -1766,7 +1793,11 @@ class Mind:
             if not Deliberation.matches(row, events):
                 continue
             concern = self.concerns.by_key(row.dedup_key)
-            reason = self._stale_reason(row)
+            try:
+                reason = self._stale_reason(row)
+            except Unreadable as error:
+                logger.warning("intention %s held: %s", row.id, error)
+                continue
             decision = Deliberation.reconsider(row, concern, invalidated=reason)
             if decision == "cancel":
                 self._cancel_stale(row, str(reason))
@@ -1946,13 +1977,16 @@ class Mind:
     def _is_owner(self, recipient: Any) -> bool:
         return bool(self.owner_id) and recipient == self.owner_id
 
-    async def _contact_record(self, contact_id: str | None) -> Optional[Dict[str, Any]]:
-        """The contact as a dict, or None when there is no store, no such contact or the read failed."""
+    async def _contact_record(self, contact_id: str | None, *, strict: bool = False) -> Optional[Dict[str, Any]]:
+        """The contact as a dict, or None when there is no store, no such contact or the read failed; with
+        ``strict`` (a read that decides whether something may act) a failed read raises ``Unreadable``."""
         if not contact_id or self.contacts is None:
             return None
         try:
             contact = await self.contacts.get(contact_id)
         except Exception as error:
+            if strict:
+                raise Unreadable(f"contact {contact_id} unreadable ({type(error).__name__})") from error
             logger.debug("contact %s unavailable (%s)", contact_id, type(error).__name__)
             return None
         if contact is None:
@@ -1970,7 +2004,7 @@ class Mind:
             return "ask"
         if self._is_owner(recipient):
             return "auto"
-        record = await self._contact_record(recipient)
+        record = await self._contact_record(recipient, strict=True)
         return may_contact_of(record if record is not None else recipient, owner_id=self.owner_id)
 
     def _granted(self, grant: Any, stored: str, recipient: str | None) -> str:
@@ -2033,7 +2067,11 @@ class Mind:
         if self._formed(candidate.dedup_key, candidate):
             return None
         to_contact = candidate.kind == "message" and bool(candidate.recipient) and not self._is_owner(candidate.recipient)
-        stored = await self._may_contact(candidate.recipient)
+        try:
+            stored = await self._may_contact(candidate.recipient)
+        except Unreadable as error:
+            logger.warning("%s not formed on this tick: %s", candidate.dedup_key, error)
+            return None
         may_contact = self._granted(candidate.grant, stored, candidate.recipient)
         # Composition is a model call: made only for a message the budgets would let go now. One
         # they defer is composed when it goes (``_reconsider``), from the packet of that day.
@@ -2694,7 +2732,7 @@ class Mind:
         if not isinstance(condition, str) or not condition.startswith("contact:") or not condition.endswith(":replied"):
             return None
         contact_id = condition[len("contact:"):-len(":replied")]
-        record = await self._contact_record(contact_id)
+        record = await self._contact_record(contact_id, strict=True)
         last = _utc((record or {}).get("last_interaction_at"))
         created = _utc(row.created_at)
         if last is not None and created is not None and last > created:
@@ -2713,8 +2751,11 @@ class Mind:
         recipient's permission fell is withdrawn (``_permission_withdrawn``)."""
         count = 0
         for row in self.store.intentions(status=["proposed", "asked", "approved"], kind=["message"], limit=500):
-            if await self._cancel_if_replied(row) or await self._permission_withdrawn(row, now):
-                count += 1
+            try:
+                if await self._cancel_if_replied(row) or await self._permission_withdrawn(row, now):
+                    count += 1
+            except Exception as error:
+                logger.warning("message %s held: %s", row.id, error if isinstance(error, Unreadable) else type(error).__name__)
         return count
 
     async def _digests(self, now: datetime) -> Optional[int]:
@@ -2887,7 +2928,7 @@ class Mind:
         rows = self.store.intentions(status=["approved"], kind=["task"], limit=200)
         payloads = []
         for row in sorted(rows, key=lambda item: item.created_at):
-            if self._invalidated(row):
+            if self._blocked(row):
                 continue
             context = row.context if isinstance(row.context, dict) else {}
             # The worker reads the strategy-switch note as it stands at dispatch (PL/body.py sends the body verbatim).
@@ -2935,8 +2976,12 @@ class Mind:
         ready = []
         for payload in self.outbox.ready(enabled=self.enabled, quiet=self.in_quiet_hours()):
             row = self.store.get(str(payload["id"]))
-            if (row is None or self._invalidated(row) or await self._cancel_if_replied(row)
-                    or await self._permission_withdrawn(row, now)):
+            try:
+                if (row is None or self._invalidated(row) or await self._cancel_if_replied(row)
+                        or await self._permission_withdrawn(row, now)):
+                    continue
+            except Exception as error:
+                logger.warning("message %s held: %s", row.id, error if isinstance(error, Unreadable) else type(error).__name__)
                 continue
             handles = await self._handles(payload["recipient"])
             if handles != payload["recipient_handles"]:
@@ -3006,9 +3051,13 @@ class Mind:
         if not yes:
             updated = self.outcomes.record(row.id, status="denied", summary=f"the owner said no ({by})", by=by)
             return updated
-        if await self._permission_withdrawn(row, now):
-            # The recipient opted out (or was set to never) while the ask waited: the yes sends nothing.
-            return self.store.get(row.id)
+        try:
+            if await self._permission_withdrawn(row, now):
+                # The recipient opted out (or was set to never) while the ask waited: the yes sends nothing.
+                return self.store.get(row.id)
+        except Unreadable as error:
+            # The owner's yes is recorded; the outbox reads permission again before anything leaves.
+            logger.warning("ask %s approved unread: %s", row.id, error)
         updated = self.store.transition(row.id, "approved", action="queued", at=now, verdict="actioned",
                                         expires_at=now + TASK_WINDOW, details={"by": by, "code": code})
         if self.feedback is not None:
@@ -3116,7 +3165,10 @@ class Mind:
             wanted = [recipient]
         may_contact = None
         for recipient in wanted:
-            permission = await self._may_contact(recipient)
+            try:
+                permission = await self._may_contact(recipient)
+            except Unreadable:
+                return {"allow": False, "action": "block", "reason": f"permission for {recipient} unreadable"}
             if permission != "never":
                 budget = self.authority.budget_check(kind="message", recipient=recipient)
                 if budget:
