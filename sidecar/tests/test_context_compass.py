@@ -490,3 +490,19 @@ def test_a_short_value_on_its_own_record_is_corrected():
                                "reported_at": "2026-09-10T09:42:00+00:00"}) + ' "My locker moved."'
     other = quote_line("s-gym", "Bring 42 towels.")
     assert compass.dead_value_lines("\n".join([timed, other]), [record]) == 0
+
+
+def test_escaped_values_are_decoded_before_matching():
+    """Finding 7: a value serialized with JSON escapes is still the value."""
+    record = claim_record("Café Central", "Main Library", "s-meet")
+    line = quote_line("s-meet", "We meet at Café Central on Fridays.")  # json.dumps defaults: Café
+    assert "Caf\\u00e9" in line
+    annotated = body_of(compass.annotate_superseded(
+        [ContextSection(id="protagine-memory", title="Relevant Memories", body=line)], [record]))
+    assert annotated.endswith('[superseded: now "Main Library" since 2026-09-19]')
+    work = json.dumps({"label": "Café Central booking", "source": "turn:s-meet"})
+    assert compass.dead_value_lines(work, [record]) == 1
+    # Escaped literals outside a parsed JSON record: a text remainder, or a line in the correction shape.
+    remainder = '- {"source": "turn:s-meet"} said: ' + json.dumps("Meet at Café Central.")
+    correction = "- turn:s-meet; " + json.dumps("Café Central") + " (meeting place): noted"
+    assert compass.dead_value_lines("\n".join([remainder, correction]), [record]) == 2

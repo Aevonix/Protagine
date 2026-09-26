@@ -189,12 +189,28 @@ def _strings(value, key=""):
             yield from _strings(item, key)
 
 
+_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def _unescaped(text: str) -> str:
+    """``text`` with each JSON string literal's escapes read as the characters they stand for (Caf\\u00e9 is Café)."""
+    def read(match):
+        literal = match.group()
+        if "\\" not in literal:
+            return literal
+        try:
+            return '"' + json.loads(literal) + '"'
+        except ValueError:
+            return literal
+    return _LITERAL.sub(read, text)
+
+
 def _readable(text: str, *, fallback: bool = True) -> str:
     """What the judge reads: the words of an item, without identifiers, hashes and timestamps. Without
     ``fallback`` a record with no words reads as nothing (never as its identifiers)."""
     body = re.sub(r"^[-•*] ", "", text.strip())
     if not body.startswith("{"):
-        return body
+        return _unescaped(body)
     decoder, words = json.JSONDecoder(), []
     position = 0
     while position < len(body):
@@ -205,10 +221,10 @@ def _readable(text: str, *, fallback: bool = True) -> str:
         try:
             value, position = decoder.raw_decode(body, position)
         except ValueError:
-            words.append(body[position:])
+            words.append(_unescaped(body[position:]))
             break
         words.extend(_strings(value))
-    return " ".join(words) or (body if fallback else "")
+    return " ".join(words) or (_unescaped(body) if fallback else "")
 
 
 def _document(item: _Item, title: str, passages: dict[str, str]) -> str:

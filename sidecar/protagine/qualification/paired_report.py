@@ -750,7 +750,8 @@ def _tick_output(rows, cases):
 DEAD_VALUE_BASIS = (
     'Secondary, report-only: in the last agent model request of each episode whose artifacts forbid a value, the '
     'lines of the injected memory context that show a forbidden value with no expected value and no "[superseded:" '
-    'note. Read from the private trace; no trace text is copied.')
+    'note. JSON escapes are read as the characters they stand for. Read from the private trace; no trace text is '
+    'copied.')
 _MEMORY_CONTEXT = re.compile(r'<memory-context>(.*?)</memory-context>', re.S)
 
 
@@ -761,6 +762,22 @@ def _message_text(content):
         return ''.join(part.get('text', '') for part in content if isinstance(part, dict)
                        and isinstance(part.get('text'), str))
     return ''
+
+
+_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def _unescaped(text):
+    """``text`` with each JSON string literal's escapes read as the characters they stand for."""
+    def read(match):
+        literal = match.group()
+        if '\\' not in literal:
+            return literal
+        try:
+            return '"' + json.loads(literal) + '"'
+        except ValueError:
+            return literal
+    return _LITERAL.sub(read, text)
 
 
 def _dead_values(directory, members):
@@ -804,7 +821,7 @@ def _dead_values(directory, members):
         if blocks is None:
             continue
         observed += 1
-        count = sum(1 for text in blocks for line in text.casefold().split('\n')
+        count = sum(1 for text in blocks for line in (_unescaped(raw).casefold() for raw in text.split('\n'))
                     if '[superseded:' not in line and any(value in line for value in forbidden)
                     and not any(value in line for value in expected))
         lines += count

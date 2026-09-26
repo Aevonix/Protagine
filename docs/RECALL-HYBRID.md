@@ -189,7 +189,9 @@ unattributed successor asserts nothing) and the listed commitments' previous dea
 only by identity: it carries the commitment's `id=`, or the claim's id or the
 `turn:` of the source that stated it. Shared subject words, or the same value on
 another record's line, never count. Values are matched in the line's words (a
-JSON record read as its string values, identifiers and timestamps left out), so
+JSON record read as its string values, identifiers and timestamps left out, and
+every JSON escape read as the character it stands for, so `Caf\u00e9` is
+`Café`), so
 a value of any length counts on its own record's line and a "42" inside a
 timestamp does not. A record's line counts when it carries the
 old value without the current one, or a note whose value the record has since

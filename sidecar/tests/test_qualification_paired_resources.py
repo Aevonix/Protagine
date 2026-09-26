@@ -208,3 +208,25 @@ def test_dead_values_in_the_injected_context_are_a_secondary_count_per_arm(tmp_p
     assert 'corner office' not in json.dumps(report['arms']) and 'corner office' not in rendered
     assert paired_report._dead_values(tmp_path, [{'path': 'runs/one', 'case': {'id': 'x', 'oracle': {}}}])[
         'episodes_observed'] == 0
+
+
+def dead_value_member(tmp_path, specs, block):
+    case = {'id': 'knowledge-update.07', 'oracle': {'artifacts': specs}}
+    path = tmp_path / 'runs/one/attempts/knowledge-update.07/private-trace.jsonl'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({'protocol': 'paired-private-trace-1', 'kind': 'model_request', 'thread': 'Thread-6',
+                                'data': {'request_id': 1, 'payload': {'messages': [{'role': 'user', 'content':
+                                    f'Where?\n\n<memory-context>\n{block}\n</memory-context>'}]}}}))
+    return {'path': 'runs/one', 'case': case}
+
+
+def spec(forbidden, expected):
+    return {'path': 'answer.json', 'forbidden': [forbidden],
+            'assertions': [{'path': ['value'], 'op': 'label_one_of', 'value': [expected]}]}
+
+
+def test_dead_values_are_matched_in_decoded_text(tmp_path):
+    """A forbidden value serialized with JSON escapes is still shown to the model."""
+    block = '- {"source": "turn:s-meet"} ' + json.dumps('We meet at Café Central.')
+    member = dead_value_member(tmp_path, [spec('Café Central', 'Main Library')], block)
+    assert paired_report._dead_values(tmp_path, [member])['dead_value_lines'] == 1
